@@ -2,8 +2,9 @@ import React, { useMemo } from 'react';
 import type { StaticSnapshot, Tick } from '../../collector-types';
 import type { SensorIndex } from './sensors';
 import type { Ring } from './history';
-import { Panel } from './Panel';
+import { Panel, type PanelChrome } from './Panel';
 import { Sparkline } from './Sparkline';
+import { BAR_GRID } from './Bar';
 import { TONE } from './Pill';
 import { systemPower, type SystemPower as Estimate } from '../../analysis/power';
 
@@ -12,14 +13,16 @@ interface Props {
   tick: Tick;
   ring: Ring;
   snapshot: StaticSnapshot | null;
+  panel?: PanelChrome;
 }
 
 /**
  * The SYSTEM POWER row (plan §13, shipped in Phase 1): package and board power
  * measured, the rest flat estimates, one bar with the split visible and every
- * part tagged. No PSU yet, so the scale is the session's own high-water mark.
+ * part tagged. DC side only: no PSU model yet, so no wall-side figure and the
+ * scale is the session's own high-water mark.
  */
-export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot }) => {
+export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, panel }) => {
   const ids = useMemo(() => {
     const cpu = index.hardware(/^cpu$/i);
     const io = index.hardware(/^(SuperIO|EmbeddedController)$/i);
@@ -51,8 +54,8 @@ export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot }) =>
   const part = (p: { label: string; watts: number }) => `${p.label} ${p.watts.toFixed(0)} W`;
 
   return (
-    <Panel title="System power" aside={<span className="label text-studio-subtle">wall-side efficiency arrives with the PSU model (Phase 6)</span>}>
-      <div className="grid grid-cols-[7.5rem_1fr_6.5rem] items-center gap-x-3 min-w-0">
+    <Panel kind="System power" {...panel}>
+      <div className={BAR_GRID}>
         <span className="label truncate">Total</span>
         <div className="min-w-0 py-1">
           <div className="relative h-1.5 rounded-full bg-studio-border">

@@ -11,7 +11,10 @@ import { cpuLayout, groupCores, mapLoads } from '../src/components/monitor/cpuLa
 import { gpuLayout } from '../src/components/monitor/gpuLayout';
 import { fanState } from '../src/components/monitor/fans';
 import { boardRails, railTone, socTone } from '../src/components/monitor/rails';
-import { UNKNOWN_VENDOR, vendorOf, vendorsOf } from '../src/components/monitor/vendors';
+import { boardPartnerOf, gpuTitle, UNKNOWN_VENDOR, vendorOf, vendorsOf } from '../src/components/monitor/vendors';
+import { cpuPowerLimit } from '../src/components/monitor/CpuPanel';
+import { panelName } from '../src/components/monitor/Panel';
+import { boardName } from '../src/components/monitor/BoardPanel';
 import { systemPower } from '../src/analysis/power';
 import { devbox, devboxMeta, devboxTick } from './fixtures';
 
@@ -235,7 +238,7 @@ describe('CPU layout', () => {
 });
 
 describe('GPU layout', () => {
-  it('finds the 5090\'s pins with A, V and W, the connector totals, the fans and the bus load', () => {
+  it('finds the 5090\'s pins with A, V and W, the connector totals, the fans', () => {
     const l = gpuLayout(index, 'NVIDIA GeForce RTX 5090');
     expect(l.pins).toHaveLength(6);
     expect(l.pins[0]).toEqual({ n: 1, ampsId: '/gpu-nvidia/0/current/1', voltsId: '/gpu-nvidia/0/voltage/0#1', wattsId: '/gpu-nvidia/0/power/2' });
@@ -243,13 +246,23 @@ describe('GPU layout', () => {
     expect(l.connectorW).toBe('/gpu-nvidia/0/power/1');
     expect(l.fans.map((f) => f.name)).toEqual(['Fan 1', 'Fan 2']);
     expect(l.fans[0].duty).toBe('/gpu-nvidia/0/control/1');
-    expect(l.bus).toBe('/gpu-nvidia/0/load/3');
     expect(l.memJunction).toBe('/gpu-nvidia/0/temperature/3');
     expect(l.hotSpot).toBeUndefined();
   });
 
   it('without a matching name falls back to the NVIDIA node, never the iGPU', () => {
     expect(gpuLayout(index, undefined).pins).toHaveLength(6);
+  });
+
+  it('the card schematic\'s rows: the six engines in plan order with every instance (six Copy engines), the PCIe Rx/Tx throughput, the core voltage', () => {
+    const l = gpuLayout(index, 'NVIDIA GeForce RTX 5090');
+    expect(l.engines.map((e) => e.name)).toEqual(['3D', 'Copy', 'Decode', 'Encode', 'OFA', 'JPEG']);
+    expect(l.engines.find((e) => e.name === 'Copy')?.ids).toHaveLength(6);
+    expect(l.engines.find((e) => e.name === '3D')?.ids).toEqual(['/gpu-nvidia/0/load/7']);
+    expect(l.engines.some((e) => e.ids.includes('/gpu-nvidia/0/load/3'))).toBe(false);
+    expect(l.rx).toBe('/gpu-nvidia/0/throughput/0');
+    expect(l.tx).toBe('/gpu-nvidia/0/throughput/1');
+    expect(l.coreV).toBe('/gpu-nvidia/0/voltage/0');
   });
 });
 
@@ -316,6 +329,41 @@ describe('vendors', () => {
     const v = vendorsOf(devbox());
     expect([v.cpu.vendor, v.gpu.vendor, v.board.vendor]).toEqual(['AMD', 'NVIDIA', 'MSI']);
     expect(vendorsOf(null).cpu).toBe(UNKNOWN_VENDOR);
+  });
+
+  it('the board partner from the PCI subsystem vendor id names the GPU panel (item 1)', () => {
+    expect(boardPartnerOf(0x1043)).toBe('ASUS');
+    expect(boardPartnerOf(0x1462)).toBe('MSI');
+    expect(boardPartnerOf(0x10de)).toBe('NVIDIA');
+    expect(boardPartnerOf(0xbeef)).toBeNull();
+    expect(boardPartnerOf(null)).toBeNull();
+    const gpu = devbox().gpus[0];
+    expect(gpuTitle(gpu)).toBe('ASUS · GeForce RTX 5090');
+    // NVIDIA's own board keeps the driver's name; an unknown id and a missing subsystem do too.
+    expect(gpuTitle({ ...gpu, pciSubsystem: { vendorId: 0x10de } })).toBe('NVIDIA GeForce RTX 5090');
+    expect(gpuTitle({ ...gpu, pciSubsystem: { vendorId: 0xbeef } })).toBe('NVIDIA GeForce RTX 5090');
+    expect(gpuTitle({ ...gpu, pciSubsystem: null })).toBe('NVIDIA GeForce RTX 5090');
+    expect(gpuTitle(undefined)).toBe('GPU');
+  });
+
+  it('panelName prefers the user\'s own name and falls back to the detected one; boardName is vendor + product', () => {
+    expect(panelName({ '/nvml/0': 'ROG Astral LC RTX 5090' }, '/nvml/0', 'ASUS · GeForce RTX 5090')).toBe('ROG Astral LC RTX 5090');
+    expect(panelName({ '/nvml/0': '  ' }, '/nvml/0', 'ASUS · GeForce RTX 5090')).toBe('ASUS · GeForce RTX 5090');
+    expect(panelName(undefined, '/nvml/0', 'x')).toBe('x');
+    expect(panelName({ '/nvml/0': 'y' }, undefined, 'x')).toBe('x');
+    expect(boardName(devbox())).toBe('MSI MAG X870E TOMAHAWK WIFI (MS-7E59)');
+    expect(boardName(null)).toBe('Board');
+  });
+});
+
+describe('CPU power limit (item 2)', () => {
+  it('unset falls back to the stock figure, tagged stock; a set limit is the limit; a part without a table row has no watts', () => {
+    expect(cpuPowerLimit(cpuLimits(RYZEN), null)).toEqual({ watts: 230, stock: true, name: 'PPT' });
+    expect(cpuPowerLimit(cpuLimits(RYZEN), 300)).toEqual({ watts: 300, stock: false, name: 'PPT' });
+    expect(cpuPowerLimit(cpuLimits(RAPTOR), undefined)).toEqual({ watts: 253, stock: true, name: 'PL2' });
+    expect(cpuPowerLimit(cpuLimits('Some CPU'), null)).toEqual({ watts: undefined, stock: true, name: 'PPT' });
+    expect(cpuPowerLimit(cpuLimits('Some CPU'), 200)).toEqual({ watts: 200, stock: false, name: 'PPT' });
+    expect(cpuPowerLimit(cpuLimits(RYZEN), 0).stock).toBe(true);
   });
 });
 

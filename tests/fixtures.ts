@@ -16,6 +16,10 @@ export const devboxMeta = (): SensorMeta[] => structuredClone(devboxMetaJson as 
 export const devboxTick = (): Tick => structuredClone(devboxTickJson as Tick);
 
 type Sample = LoadRun['gpuSamples'][number];
+type CpuSample = LoadRun['cpuSamples'][number];
+
+const HZ = 10_000_000;
+const QPC_START = 5_000_000_000;
 
 /**
  * A finished 2 Hz load run on the 10 MHz QPC clock; `shape(t)` overrides any sample field at
@@ -23,15 +27,33 @@ type Sample = LoadRun['gpuSamples'][number];
  * check's engagement gate passes unless a test says otherwise.
  */
 export function loadRun(kind: LoadKind, seconds: number, shape: (t: number) => Partial<Sample> = () => ({})): LoadRun {
-  const hz = 10_000_000;
-  const qpcStart = 5_000_000_000;
   const gpuSamples: Sample[] = [];
   for (let i = 0; i < seconds * 2; i++) {
     const t = i / 2;
     gpuSamples.push({
-      qpc: qpcStart + t * hz, smMhz: 2800, memMhz: 14000, powerMw: 550_000, temperatureC: 70,
+      qpc: QPC_START + t * HZ, smMhz: 2800, memMhz: 14000, powerMw: 550_000, temperatureC: 70,
       clocksEventReasons: 0, pcieGen: 5, pcieWidth: 16, ...shape(t)
     });
   }
-  return { id: `${kind}-${seconds}`, kind, seconds, state: 'done', exitCode: 0, qpcStart, qpcEnd: qpcStart + seconds * hz, gpuSamples, error: null };
+  return { id: `${kind}-${seconds}`, kind, seconds, state: 'done', exitCode: 0, qpcStart: QPC_START, qpcEnd: QPC_START + seconds * HZ, gpuSamples, cpuSamples: [], error: null };
+}
+
+/**
+ * A finished all-core CPU run, sampled the way the collector does it: the t = 0 sample is
+ * the idle reference taken before the worker starts, the rest are under load. The default
+ * is this box with PBO on: 245 W package against the 9950X's 230 W stock PPT, 88 °C, 5.2 GHz
+ * effective across all cores.
+ */
+export function cpuRun(seconds: number, shape: (t: number) => Partial<CpuSample> = () => ({})): LoadRun {
+  const cpuSamples: CpuSample[] = [];
+  for (let i = 0; i < seconds * 2; i++) {
+    const t = i / 2;
+    const idle = t === 0;
+    cpuSamples.push({
+      qpc: QPC_START + t * HZ,
+      packageW: idle ? 52 : 245, tctlC: idle ? 49 : 88, avgEffectiveMhz: idle ? 194 : 5200, maxCoreMhz: idle ? 5480 : 5250,
+      ...shape(t)
+    });
+  }
+  return { id: `cpu-${seconds}`, kind: 'cpu', seconds, state: 'done', exitCode: 0, qpcStart: QPC_START, qpcEnd: QPC_START + seconds * HZ, gpuSamples: [], cpuSamples, error: null };
 }

@@ -1,10 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Play, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Play, Copy, Check, ChevronDown, ChevronUp, Settings2 } from 'lucide-react';
 import { api, ipcErrorMessage } from '../api';
 import { runAudit, rankTop, type AuditFinding } from '../analysis/audit';
 import type { LoadKind, LoadRun } from '../collector-types';
 import { useCollectorStatus } from '../components/useCollectorStatus';
 import { CollectorStatusPill } from '../components/CollectorStatusPill';
+import { loadSettings } from '../settings';
+import { navigate } from '../components/navigate';
+import { gpuTitle } from '../components/monitor/vendors';
+import { panelName } from '../components/monitor/Panel';
+import { gpuKey } from '../components/monitor/GpuPanel';
+import { BOARD_KEY, boardName } from '../components/monitor/BoardPanel';
 
 const KEY = 'strata-tune.audit';
 const TOP = 5;
@@ -17,13 +23,17 @@ interface Saved {
   skipped: string[];
 }
 
-/** Expected seconds per step drive the progress line; the whole run is about 30 s. */
+/** Expected seconds per step drive the progress line; the whole run is about 50 s. */
 const STEPS = [
   { label: 'Reading the system snapshot', seconds: 2 },
   { label: 'Sampling idle background load', seconds: 5 },
   { label: 'PCIe link under a light load', seconds: 3 },
-  { label: 'Thermal headroom under a heavy load', seconds: 20 }
+  { label: 'Thermal headroom under a heavy load', seconds: 20 },
+  { label: 'CPU under an all-core load', seconds: 20 }
 ];
+
+/** The CPU package-power rule judges against the limit the user sets on the Monitor page (phase1-polish item 2); the card links there. */
+const LINKS_TO_CPU_PPT = 'cpu-package-power';
 const TOTAL_SECONDS = STEPS.reduce((a, s) => a + s.seconds, 0);
 
 function loadSaved(): Saved | null {
@@ -53,13 +63,14 @@ const STATE: Record<AuditFinding['state'], { label: string; cls: string }> = {
   unknown: { label: 'Unknown', cls: 'text-slate-400 border-slate-500/60 border-dashed' }
 };
 
-/** The cost text says what the fault would cost; on a passing check it would read as a price of being fine. */
-const showsCost = (f: AuditFinding) => f.state === 'warn' || f.state === 'bad' || f.state === 'info';
+const plain = (text: string) => text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+/** The cost text says what the fault would cost; on a passing check it would read as a price of being fine, and when the detail already says it, it is said once. */
+const showsCost = (f: AuditFinding) => (f.state === 'warn' || f.state === 'bad' || f.state === 'info') && !!f.costText && !plain(f.detail).includes(plain(f.costText));
 
 function reportText(s: Saved): string {
   const lines = [`Strata Tune audit — ${new Date(s.at).toLocaleString()}`, s.machine, ''];
   rankTop(s.findings, s.findings.length).forEach((f, i) => {
-    lines.push(`${i + 1}. [${STATE[f.state].label.toUpperCase()}] ${f.title}${showsCost(f) && f.costText ? ` — ${f.costText}` : ''}`);
+    lines.push(`${i + 1}. [${STATE[f.state].label.toUpperCase()}] ${f.title}${showsCost(f) ? ` — ${f.costText}` : ''}`);
     if (f.detail) lines.push(`   ${f.detail}`);
     if (f.fix) lines.push(`   Fix${f.fixWhere === 'none' ? '' : ` (${f.fixWhere})`}: ${f.fix}`);
   });
@@ -72,7 +83,7 @@ const Card: React.FC<{ f: AuditFinding }> = ({ f }) => (
     <div className="flex items-start gap-2.5">
       <span className={`shrink-0 mt-0.5 inline-flex items-center h-5 px-1.5 rounded border label ${STATE[f.state].cls}`}>{STATE[f.state].label}</span>
       <h3 className="text-sm font-semibold text-studio-text leading-5">{f.title}</h3>
-      {showsCost(f) && f.costText && <span className="ml-auto shrink-0 figure text-mini text-studio-muted">{f.costText}</span>}
+      {showsCost(f) && <span className="ml-auto shrink-0 max-w-[45%] text-right text-mini text-studio-muted leading-5">{f.costText}</span>}
     </div>
     {f.detail && <p className="text-mini text-studio-muted leading-relaxed">{f.detail}</p>}
     {f.fix && (
@@ -82,6 +93,11 @@ const Card: React.FC<{ f: AuditFinding }> = ({ f }) => (
         )}
         {f.fix}
       </p>
+    )}
+    {f.id === LINKS_TO_CPU_PPT && (
+      <button className="btn -ml-2" onClick={() => navigate({ page: 'monitor', intent: 'cpu-ppt' })}>
+        <Settings2 size={13} /> Set the CPU power limit
+      </button>
     )}
   </article>
 );
@@ -136,11 +152,15 @@ export const Audit: React.FC = () => {
       const hogs = await optional(1, () => c.hogs(5));
       const pcieUnderLoad = await load(2, 'light', 3);
       const thermalRamp = await load(3, 'heavy', 20);
+      const cpuLoad = await load(4, 'cpu', 20);
       const nowIso = new Date().toISOString();
-      const findings = runAudit({ snapshot, hogs, pcieUnderLoad, thermalRamp, nowIso });
+      const settings = loadSettings();
+      const findings = runAudit({ snapshot, hogs, pcieUnderLoad, thermalRamp, cpuLoad, cpuPptW: settings.cpuPptW, nowIso });
+      // The names the Monitor shows (the user's own where set); " / " because a GPU title carries " · " of its own.
+      const gpu = snapshot.gpus[0];
       const result: Saved = {
         at: nowIso,
-        machine: `${snapshot.cpu.name} · ${snapshot.gpus[0]?.name ?? 'no NVML GPU'} · ${snapshot.motherboard.product}`,
+        machine: [snapshot.cpu.name, gpu ? panelName(settings.panelNames, gpuKey(gpu), gpuTitle(gpu)) : 'no NVML GPU', panelName(settings.panelNames, BOARD_KEY, boardName(snapshot))].join(' / '),
         findings,
         skipped
       };
@@ -207,8 +227,9 @@ export const Audit: React.FC = () => {
       {!saved && !running && (
         <div className="rounded-md border border-studio-border bg-studio-panel/50 p-5 space-y-2">
           <p className="text-mini text-studio-muted leading-relaxed">
-            The audit reads your configuration and sensors, samples the machine idling, then runs the GPU for a few seconds lightly and for twenty seconds flat out to
-            measure the PCIe link and thermal headroom (about 30 seconds in all), and ranks what costs this PC performance, with a fix for each. It changes nothing.
+            The audit reads your configuration and sensors, samples the machine idling, runs the GPU for a few seconds lightly and for twenty seconds flat out to
+            measure the PCIe link and thermal headroom, then loads every CPU core for twenty seconds (about 50 seconds in all), and ranks what costs this PC
+            performance, with a fix for each. It changes nothing.
           </p>
           {status.status !== 'connected' && <p className="text-micro text-studio-subtle">{status.message}</p>}
         </div>

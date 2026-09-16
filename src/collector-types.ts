@@ -22,6 +22,12 @@ export interface Health {
   startedAt: string;
   /** Seconds since the collector started. */
   uptime: number;
+  /**
+   * True while the sensor groups are still being opened in the background: the collector
+   * answers and streams from its first moment, and the sensor list (/sensors/meta) grows
+   * until this turns false. Re-fetch the meta once it does.
+   */
+  warming: boolean;
 }
 
 /** Written by the collector to %LOCALAPPDATA%\Strata Tune\collector.json once it is listening. */
@@ -88,6 +94,18 @@ export interface GpuFacts {
   utilisation: { gpu: number; memory: number };
   /** Raw NVML clocks-event-reasons bitmask plus the decoded known bits; unknown bits stay in `raw`. */
   clocksEventReasons: { raw: number; names: string[] };
+  /** PCI subsystem ids from nvmlDeviceGetPciInfo_v3: the vendor id names the board partner (src/data/vendors.json); null when the driver did not report them. */
+  pciSubsystem: { vendorId: number; deviceId: number } | null;
+  /**
+   * Applied overclock offsets at P0 from nvmlDeviceGetClockOffsets (NVML 12.5+), and the
+   * driver's clock-table ceilings for the SM and memory clocks from nvmlDeviceGetMaxClockInfo
+   * (3090 / 14001 MHz on the dev box's RTX 5090: the top of the driver's table, not the
+   * board's rated boost, which lives in src/data/gpus.json). A card held above a ceiling
+   * under load is overclocked by a route the offsets do not report (a vendor tool, a VF
+   * curve): the dev box reads offsets 0 / 0 and holds 3226 / 16032 MHz. A driver without
+   * the export gives null for the whole block; a field the card does not answer is null alone.
+   */
+  clockOffsets: { smMhz: number | null; memMhz: number | null; maxClockSmMhz: number | null; maxClockMemMhz: number | null } | null;
 }
 
 export interface RamModule {
@@ -163,7 +181,8 @@ export interface HogsResult {
   processes: ProcessSample[];  // sorted by cpuPercent desc, own processes excluded
 }
 
-export type LoadKind = 'light' | 'heavy';
+/** 'light' and 'heavy' run the GPU worker; 'cpu' runs the all-logical-CPU vector FMA (logistic map) kernel and leaves the GPU alone. */
+export type LoadKind = 'light' | 'heavy' | 'cpu';
 
 export interface LoadRunRequest {
   kind: LoadKind;
@@ -181,6 +200,12 @@ export interface LoadRun {
   qpcEnd: number | null;
   /** GPU facts sampled at 2 Hz for the duration, so the caller can judge the steady window (t ≥ 3 s) against the start. */
   gpuSamples: { qpc: number; smMhz: number; memMhz: number; powerMw: number; temperatureC: number; clocksEventReasons: number; pcieGen: number; pcieWidth: number }[];
+  /**
+   * The CPU at 2 Hz from LibreHardwareMonitor for a 'cpu' run (empty for the GPU kinds). The
+   * first sample is taken before the worker starts, so it is the idle reference. A sensor
+   * the box does not expose reads NaN on the wire as null.
+   */
+  cpuSamples: { qpc: number; packageW: number | null; tctlC: number | null; avgEffectiveMhz: number | null; maxCoreMhz: number | null }[];
   error: string | null;
 }
 
@@ -189,4 +214,6 @@ export interface Tick {
   qpc: number;
   sensors: Record<string, number>;
   gpu: GpuFacts[];
+  /** Health.warming, on every tick, so a client sees the moment the sensor list is complete. */
+  warming: boolean;
 }

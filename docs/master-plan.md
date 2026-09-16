@@ -241,6 +241,7 @@ estimated cost**. The rest are one click away under "show all".
 | GPU driver age | > 180 days | "occasional title bugs" |
 | Background hogs | 5 s idle sample, any process > 5 % CPU or > 2 GB RAM | names the process |
 | Power limit headroom | `power.limit == power.max_limit` | "no headroom to raise — undervolt instead" (informational; this box) |
+| NVMe link width | PCIe current vs max link width/speed per NVMe controller (`DEVPKEY_PciDevice_*`, no admin) | "a drive on x2 halves its sequential speed — its M.2 slot shares lanes" (this box: the 980 PRO runs x2) |
 
 Ranking: `severity × costEstimate`. Ties broken by "fixable in BIOS in ten minutes" first.
 
@@ -251,6 +252,50 @@ component, plus the NVML group. Per sensor: current, min, max, mean over the ses
 Search box, "only changed" toggle, pin-to-main-bar, CSV export. Sensors at a limit
 (throttle bit set, at power cap, at temp target) are highlighted in the tree. 2 Hz, no
 animation, plain DOM.
+
+## 9a. Hardware sheet (Phase 2, user request 2026-09-16)
+
+Click a device name in the Monitor header strip and a sheet slides in with the full spec of
+that part, grouped the way hardware databases group them — for the GPU: **Graphics processor**
+(die, variant, architecture, foundry, process, transistors, die size), **Graphics card**
+(release, generation, launch price, bus interface, **your board** — the retail name from §10's
+shortlist, subsystem ids, length/slots/weight), **Clock speeds** (base / boost / memory, with
+the live clocks beside them), **Memory** (size, type, bus, bandwidth — spec and measured),
+**Render config** (shading units, TMUs, ROPs, SMs, tensor and RT cores, caches), **Theoretical
+performance** (pixel/texture rate, FP16/FP32/FP64 vector), **Matrix performance** (dense
+table + "sparse 2×", advertised AI TOPS), **Numeric formats** (vector and matrix lists per
+architecture), **Board design** (slot width, dimensions, TDP, suggested PSU, outputs, power
+connector). CPU: family/model/stepping, cores/threads, base/boost, cache, TDP/PPT, memory
+support, NPU; live: current clocks, the user's PPT. Board: chipset, BIOS + date, slots
+(DIMM map from §17a), super-IO chip, PCIe layout. RAM: per DIMM part, rated/configured speed,
+timings from SPD when LHM exposes them.
+
+Every value is tagged **spec** (from `gpus.json` / `cpus.json` / `boards.json`, each row citing
+its source page) or **read** (from the snapshot or live). Unknown rows are omitted, never
+shown as "—". **No third-party review data**: a "relative performance" ranking is review-derived
+and someone else's work; instead the sheet offers a *spec comparison* — bandwidth, dense FP16,
+VRAM, TDP — as bars against the other rows in our table, labelled "spec, not a benchmark".
+Same components later render the share card's hardware line (§14).
+
+## 9b. HWiNFO bridge — optional enrichment (user request 2026-09-16)
+
+HWiNFO reads things LibreHardwareMonitor cannot on this box: the Zen 5 SMU PM table (PPT /
+TDC / EDC limits *and* usage — the honest answer to the CPU power bar's reference), GPU hotspot
+and VRM temps on cards whose EC exposes them, and it names retail boards from its own
+subsystem-id database. It runs elevated with its own driver and is not ours to bundle.
+
+**Bridge rule:** when HWiNFO64 is running with *Shared Memory Support* enabled, the collector
+opens the documented read-only mapping (`Global\HWiNFO_SENS_SM2`, signature `HWiS`, sensor +
+reading arrays with label, unit, value, min/max/avg) and adds those readings to the stream
+as ids `/hwinfo/<sensor>/<reading>` tagged **source: HWiNFO**; rules that need them (§8 CPU
+package power vs the real PPT, §17a hotspot) use them when present and fall back to the
+setting / omission when not. Never a dependency: the app is complete without HWiNFO. The
+free edition disables shared memory 12 hours after launch — the bridge shows "HWiNFO bridge:
+off (restart HWiNFO to re-enable)" rather than stale values (readings carry a poll-time
+stamp; stale > 5 s = off). Command-line report generation is Pro-only, so hardware
+identification from HWiNFO is a **one-time manual report** the user can import (Report →
+Create → Text) to fill the §9a sheet's unknowns and to check our tables; the importer keeps
+the file local and redacts serials before anything is displayed or exported.
 
 ## 10. Local AI model advisor (Phase 3)
 
@@ -282,6 +327,66 @@ fast. Download size checked against free space.
 Measured bandwidth replaces the spec number in the tok/s formula once it exists; the card
 shows both so the gap (a throttled or shared card) is visible. Same measured/estimated
 tagging rule as §13.
+
+**Reference spec vs this card (user, 2026-09-16).** Every table number (TPU, vendor pages) is
+the *reference design*. A board-partner card runs above it by default (Astral LC OC: 2580 MHz
+boost vs 2407) and a tuned one further still (this box: memory 1979 MHz vs 1750 → ~31.7 Gbps →
+~2,026 GB/s vs the 1,792 spec; core held ~3.2 GHz under load). So: (1) ceilings for sanity
+checks come from **live clocks**, not tables — bandwidth ceiling = memory clock × data-rate
+factor × bus width, boost ceiling = the card's own `nvmlDeviceGetMaxClockInfo`; measured above
+reference spec is expected on an overclocked card, never treated as a measurement bug;
+(2) the stats card shows **spec (reference) · this card (rated) · measured**, three columns,
+so the gap reads as "your tune is worth +13 %" rather than "our number is wrong"; (3) OC
+detection (§8) and the score's expected values (§14) baseline on the card's own rated
+figures, and the offsets on top of them.
+
+**Lead with the advertised number, tag it, then the truth beneath (user, 2026-09-16).** People
+arrive knowing one figure from a search — "RTX 5090: 3,352 AI TOPS" — and a card that shows only
+dense numbers looks wrong to them. So the card's first line is the vendor's headline **AI TOPS
+exactly as advertised**, with its precision and sparsity as a tag ("3,352 AI TOPS · FP4 sparse";
+Ada quotes FP8 sparse, Ampere INT8 sparse, AMD RDNA 4 INT4/FP4 sparse, Intel Arc INT8), then the
+architecture line (die · VRAM · bandwidth), then compute rows as **dense / sparse pairs** (FP16
+419 / 838 TFLOPS, FP8 838 / 1,676, FP4 1,676 / 3,352, FP32 104.8) so the marketing figure and
+the number that predicts speed sit side by side. `gpus.json` therefore carries an explicit
+`advertisedAiTops: { value, precision, sparse, source }` per row — verified from the vendor's
+own spec page, never derived. The tok/s estimate still uses bandwidth, never TOPS.
+
+**GPU identity and spec tiles (user, 2026-09-16, TechPowerUp as the reference).** The GPU
+panel header and the advisor's stats card open with a **spec-tile row** in the style hardware
+databases use — die · shading units · TMUs · ROPs · VRAM size + type · bus width · base/boost ·
+memory clock (effective Gbps) · bandwidth · TDP — every value from `gpus.json`, each row citing
+its TechPowerUp GPU-database page (`https://www.techpowerup.com/gpu-specs/<slug>.c<id>`) or the
+vendor page. Our own rendering; no third-party photos — the card schematic (§17a) stays ours.
+`gpus.json` also carries `suggestedPsuW` (TPU lists it; 950 W for the 5090) for the §13 PSU
+verdict, and the matrix table as dense figures with the "sparse = 2×" rule, so the 5090 row
+reads FP4 1,676 / FP6 838 / FP8 838 / INT8 838 / FP16 419 / BF16 209.5 / TF32 104.8 TFLOPS,
+FP32 104.8, advertised 3,352 AI TOPS (= FP4 × 2, sparse).
+
+**Exact retail board.** TPU's per-GPU "retail boards" table (73 boards for the 5090, with each
+board's boost clock — e.g. ASUS ROG Astral LC RTX 5090 at 2437 MHz, its OC Edition at 2580)
+seeds `boards.json`. Identification: PCI subsystem vendor (0x1043 = ASUS) + the card's own rated
+boost from `nvmlDeviceGetMaxClockInfo` → a shortlist of that vendor's boards at that boost; one
+match names the card, several offer a pick, and the choice is remembered with the panel rename.
+Never guessed: an ambiguous card shows "ASUS · GeForce RTX 5090" until the user picks. The
+board's own boost is also the reference for OC-offset detection (§8), not the 2407 MHz
+reference-design figure; the board's power limit (600 W on the Astral) is the reference for
+efficiency, the reference TDP (575 W) only for cohort comparison.
+
+**No local model is the normal case (user, 2026-09-16).** Most people who open this page have
+never installed Ollama or any model. The page is designed for them first:
+
+- Everything renders from the snapshot + spec tables with **no Ollama, no model, no download**:
+  the stats card, every model row, the buckets, the estimated tok/s, best-model-for picks.
+  The calibrated factor shipped in `advisor.ts` comes from *our* measurements (Phase 3
+  integrate on the dev box), so estimates are already calibrated for everyone.
+- The Ollama-dependent parts (measured tok/s, "loaded now") are an optional extra that
+  appears only when Ollama answers on :11434 — never an empty table, a spinner, or an error
+  when it does not. One quiet line: "Install Ollama to measure real tokens/s on your models."
+- Each row carries a copyable `ollama pull <tag>` and the download size against free disk,
+  because for this audience the next step is a first download, not a model swap.
+- The audit's "AI model in video memory" check is omitted entirely when Ollama is not
+  running — it is an observation for AI users, not a finding for everyone.
+- Worker measurements (bandwidth, matmul) need no model and stay available to all.
 
 `models.json` seeds with what this family already uses: qwen3-vl:30b, qwen2.5-coder:32b,
 qwen3:4b, llama3.3:70b, gemma, deepseek-r1 sizes, plus the LTX-2.5 / Gemma 4 12B pair from
@@ -576,8 +681,10 @@ and scale with `max-width: 100%`.
 
 **Phase 1 ships** the CPU panel (chip diagram + bars), the GPU panel (bars, perf-limit pills,
 the full 12V-2x6 connector block with spread/max-mean analysis), rails and fans, and
-sparklines. The card schematic around that block, the storage panel and the DIMM map are
-Phase 2's first items, with the full sensor view. Same components later render inside the Tune live monitor (§16).
+sparklines. The card schematic around that block came in with Phase 1's polish pass
+(user feedback 2026-09-16, `.claude/workflows/phase1-polish.md`, with named and movable
+panels); the storage panel and the DIMM map are Phase 2's first items, with the full sensor
+view. Same components later render inside the Tune live monitor (§16).
 
 ## 18. Brand
 
@@ -695,8 +802,8 @@ Collector: handshake, token, ring buffer, LHM + NVML at 10 Hz, snapshot, SSE. UI
 page with the §8 rules, top five, "show all". Every check exercised on this box (EXPO on,
 ReBAR on, Gen5 x16, Balanced-on-Zen5 not flagged, D: at 73 % not flagged, C: fine).
 
-### Phase 2 — Full sensor view (day 4)
-§9. Presentation over Phase 1. Pins, min/max/mean, CSV export.
+### Phase 2 — Full sensor view + hardware sheet (days 4–5)
+§9 and §9a. Presentation over Phase 1. Pins, min/max/mean, CSV export; the spec sheet per device.
 
 ### Phase 3 — AI model advisor (days 4–5) — **v0.2, the shareable one**
 §10 with `models.json`, `gpus.json` TOPS/bandwidth rows, the AI stats card (spec + measured), best-model-for picks, context slider, and the Ollama calibration run.
@@ -773,6 +880,12 @@ trade in one sentence.
   the service install moves up to the first post-v0.1 item so the collector is already warm
   when the app opens.
 - **.NET 10 vs 8**: 10 unless a library lags.
+- **Code signing (found 2026-09-16)**: Smart App Control on the dev box (Windows 11 Home) blocks the
+  loose, unsigned collector DLLs from `bin/` (CodeIntegrity 3077/3118, HRESULT 0x800711C7) but
+  allows the self-contained single-file publish. Dev launches prefer the published bundle. Before
+  v0.1 ships publicly, the collector, worker and bench exes need an Authenticode signature
+  (an OV cert, or Azure Trusted Signing) or Smart App Control users get a silently blocked
+  collector; the client must also detect that exit and say so in the status pill.
 
 ---
 
@@ -785,6 +898,7 @@ trade in one sentence.
 | Windows power plan flagged when not High Performance | Not flagged on desktop Zen 4/5 | AMD recommends Balanced there; flagging it would be the first false positive a Ryzen owner sees |
 | Ryzen Master SDK for CPU detect | Not used | LHM already exposes PPT/TDC/EDC and clocks; no need for a flaky SDK even for detection |
 | "Admin is required" (whole app implied) | Only the collector is elevated; ETW can be unelevated via Performance Log Users | Chromium should not run as admin; this user is already in the group |
+| PresentMon hosted by the collector (§4 diagram) | PresentMon hosted by Electron main (`electron/presentmon.ts`), unelevated | Phase 4 was built while another workflow owned `collector/`; PresentMon needs no elevation for a Performance Log Users member and stamps its own QPC, so correlation with the collector's sensor window is unchanged. Elevated games show as `<unknown>` — revisit if that bites. |
 | Monitor window: "disable GPU acceleration for the monitor window" | Whole app has GPU acceleration off | Electron only supports the switch app-wide before `ready`; nothing here needs a GPU |
 | Stress worker unspecified | ComputeSharp (DX12) second .NET exe | Vendor-neutral, deterministic, no CUDA toolkit |
 | Rollback on next app launch | Plus a logon scheduled task | The user might never reopen the app after a bad hang |

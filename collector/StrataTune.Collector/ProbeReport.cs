@@ -143,6 +143,8 @@ internal static class ProbeReport
             w.WriteLine($"  Temperature   {g.TemperatureC} °C");
             w.WriteLine($"  Utilisation   GPU {g.Utilisation.Gpu} %, memory {g.Utilisation.Memory} %");
             w.WriteLine($"  Clocks event  0x{g.ClocksEventReasons.Raw:X} → {string.Join(", ", g.ClocksEventReasons.Names)}");
+            w.WriteLine($"  Subsystem     {(g.PciSubsystem is { } p ? $"vendor 0x{p.VendorId:X4} device 0x{p.DeviceId:X4}" : "not reported")}");
+            w.WriteLine($"  Offsets       {(g.ClockOffsets is { } o ? $"SM {Signed(o.SmMhz)} MHz, MEM {Signed(o.MemMhz)} MHz, driver max SM {Opt(o.MaxClockSmMhz ?? 0)} MHz, MEM {Opt(o.MaxClockMemMhz ?? 0)} MHz" : "no nvmlDeviceGetClockOffsets export")}");
         }
     }
 
@@ -165,5 +167,7 @@ internal static class ProbeReport
 
     // The wire shape carries 0 for a field this card or driver does not support; the probe
     // is where a human reads it, so it says so.
+    private static string Signed(int? mhz) => mhz is { } v ? (v >= 0 ? $"+{v}" : $"{v}") : "n/a";
+
     private static string Opt(ulong value) => value == 0 ? "not supported" : value.ToString(CultureInfo.InvariantCulture);
 }

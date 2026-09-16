@@ -24,6 +24,7 @@ internal static class Program
           strata-tune-worker --hash [--adapter LUID] [--elements N] [--rounds R] [--seed S] [--expect HEX] [--heartbeat PATH]
           strata-tune-worker --load light|heavy --seconds N [--adapter LUID] [--heartbeat PATH]
           strata-tune-worker --bench [--json] [--seconds N] [--adapter LUID] [--heartbeat PATH]
+          strata-tune-worker --cpu-load --seconds N [--threads T] [--heartbeat PATH]
         --adapter takes a luid from --devices; without it the DXGI high-performance adapter is used.
         --elements is at most 536870912 (2 GiB of uint).
         """;
@@ -42,6 +43,7 @@ internal static class Program
             {
                 "--devices" => ListDevices(),
                 "--load" => RunLoad(options),
+                "--cpu-load" => RunCpuLoad(options),
                 "--bench" => RunBench(options),
                 _ => Hash(options),
             };
@@ -178,6 +180,21 @@ internal static class Program
         Console.WriteLine($"dispatches {result.Dispatches}");
         Console.WriteLine($"elapsed {result.Elapsed.TotalMilliseconds:F0} ms");
         Console.WriteLine($"steps {result.Steps}");
+
+        ReportHeartbeat(heartbeat);
+        return ExitOk;
+    }
+
+    // No device: this verb must never wake the GPU, so the audit's CPU rules see the CPU alone.
+    private static int RunCpuLoad(Options options)
+    {
+        using Heartbeat? heartbeat = options.HeartbeatPath is null ? null : new Heartbeat(options.HeartbeatPath);
+
+        Console.WriteLine($"cpu-load threads {options.Threads} seconds {options.Seconds}");
+        CpuLoadResult result = CpuLoad.Run(options.Seconds, options.Threads);
+        Console.WriteLine($"elapsed {result.Elapsed.TotalMilliseconds:F0} ms");
+        Console.WriteLine($"steps {result.Steps}");
+        Console.WriteLine($"mix {result.Mix:x8}");
 
         ReportHeartbeat(heartbeat);
         return ExitOk;

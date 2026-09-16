@@ -41,4 +41,4 @@ public sealed record SensorWindow(
 
 /// <summary>One SSE "tick" event on GET /stream, 2 Hz: the latest value of every sensor and
 /// the live GPU facts.</summary>
-public sealed record Tick(long Qpc, Dictionary<string, float> Sensors, IReadOnlyList<GpuFacts> Gpu);
+public sealed record Tick(long Qpc, Dictionary<string, float> Sensors, IReadOnlyList<GpuFacts> Gpu, bool Warming);

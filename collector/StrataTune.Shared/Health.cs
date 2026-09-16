@@ -1,7 +1,10 @@
 namespace StrataTune.Shared;
 
 /// <summary>GET /health. <see cref="QpcFrequency"/> converts every qpc stamp in the other
-/// types; <see cref="StartedAt"/> is the one wall-clock value, for display only.</summary>
+/// types; <see cref="StartedAt"/> is the one wall-clock value, for display only.
+/// <see cref="Warming"/> is true while the sensor groups are still being opened in the
+/// background: the service answers and streams from the first moment, and the sensor list
+/// grows until this turns false (phase1-polish item 8).</summary>
 public sealed record Health(
     bool Ok,
     int Pid,
@@ -13,7 +16,8 @@ public sealed record Health(
     SourceHealth Pdh,
     long QpcFrequency,
     string StartedAt,
-    double Uptime);
+    double Uptime,
+    bool Warming);
 
 /// <summary><see cref="Installed"/> is whether the driver's device actually opened, not the
 /// registry entry: the entry answers true from a non-elevated shell while every CPU and

@@ -91,6 +91,14 @@ Plan section 5, made concrete:
   deletes it on a clean exit, but only if the file still carries its own pid: an instance
   exiting late must not take a newer collector's handshake with it. The token is 32 random
   bytes as hex, generated per launch, never logged.
+- **The handshake comes before the sensors** (phase1-polish item 8). Kestrel binds and the
+  file is written before NVML, LibreHardwareMonitor or PDH are opened; `/health` answers
+  `warming: true` meanwhile and every tick carries the same flag. The sources then open on a
+  background task, NVML first (it is quick and the GPU panel reads from it alone), then the
+  LibreHardwareMonitor driver with its hardware groups enabled live in stages, CPU, board,
+  GPU, memory, storage (SMART over every drive is the slow one), then PDH. `/sensors/meta`
+  grows as they arrive; a client re-reads it once `warming` turns false. The log stamps each
+  step `t+X ms` from process start, which is the measurement for the 1.5 s budget.
 - **One bad source is a gap, not a failure.** NVML, LibreHardwareMonitor and PDH each open
   inside their own try: a missing NVIDIA driver, a corrupt performance-counter registry (the
   `lodctr /R` condition) or a library that throws on this board is logged, reported as
@@ -140,7 +148,7 @@ Plan section 5, made concrete:
 | `GET /gpu` | `GpuFacts[]`, a fresh NVML read |
 | `GET /stream` | `text/event-stream`, one `event: tick` with a `Tick` every 500 ms, a `: keep-alive` comment every 10 s; one loop per client |
 | `GET /hogs?seconds=N&excludePid=P` (also `/procs/hogs`) | `HogsResult`, N in 2..15: every process's CPU time and working set at the start and end of the window; CPU is percent of all logical CPUs; the collector's tree (the worker is its child), P's tree (the UI) and the kernel-backed pseudo-processes (System, Memory Compression, Registry, Secure System) are excluded, because none of them is a program the user could close |
-| `POST /load` `{ kind, seconds }` | `LoadRun` with `state: running`; `409` while one runs, `400` for a bad request. Starts the worker with `--load <kind> --seconds N --heartbeat <temp file>` and samples GPU 0 at 2 Hz until it exits |
+| `POST /load` `{ kind, seconds }` | `LoadRun` with `state: running`; `409` while one runs, `400` for a bad request. Starts the worker with `--load <kind> --seconds N --heartbeat <temp file>` (`--cpu-load --seconds N` for kind `cpu`) and samples GPU 0 (or, for `cpu`, the library's CPU package power, Tctl, average effective and highest core clock into `cpuSamples`) at 2 Hz from just before the worker starts, so the first sample is the idle reference, until it exits |
 | `GET /load/{id}` | the `LoadRun`: `done` with exit 0, else `failed` with the worker's exit code (3 no hardware GPU, 10 device lost) and its stderr; the last eight runs are kept |
 | `POST /shutdown` | `202`, then a clean stop |
 
@@ -156,6 +164,8 @@ this box supports all of them, and the probe still prints "not supported" where 
 | `--devices` | Lists every DXGI adapter with LUID, hardware/WARP, dedicated memory, compute units, wavefront size. |
 | `--hash [--adapter LUID] [--elements N] [--rounds R] [--seed S] [--expect HEX] [--heartbeat PATH]` | Runs the uint-only lowbias32 kernel over N slots for R rounds, folds the result with FNV-1a 64 and prints `hash`, `dispatches`, `elapsed`, `throughput` and `mix`. Defaults: 16,777,216 elements, 256 rounds, seed `0x53545241`. Numbers accept decimal or `0x` hex so printed values paste back. |
 | `--load light\|heavy --seconds N [--adapter LUID] [--heartbeat PATH]` | The same kernel run for its heat, timing-only. `light` is one 64 K-slot dispatch every ~50 ms (a few percent of a discrete card); `heavy` is back-to-back full-width dispatches with no sleep, each sized from the one before it towards 40 ms and halved past 120 ms, so it stays far under the 2 s TDR budget on any adapter. Stops at N seconds, exit 0. |
+| `--cpu-load --seconds N [--threads T] [--heartbeat PATH]` | A vector FMA load on the CPU: the logistic map `x = r·x·(1 − x)` over eight independent float vectors per thread (AVX-512 where the box has it, else AVX2 FMA, else scalar), one thread per logical CPU (or T), below normal priority so the collector's sampling keeps its 2 Hz, no memory traffic and no GPU: the audit's CPU thermal, all-core clock and package-power rules read the sensors while it runs. A scalar integer chain drew 138 W on the 230 W dev box and told those rules nothing; this pulls the package to its limit the way a renderer would. Prints `elapsed`, `steps` (lane-iterations) and the folded `mix`; exit 0. |
+| `--bench [--json] [--seconds N] [--adapter LUID] [--heartbeat PATH]` | The measured rows of the advisor's AI stats card (plan §10; §16 stage 2 reuses the bandwidth half read-only), all timing-only. A uint4 stream copy between two 1 GiB buffers (512 MiB each when the pair does not fit; `bufferBytes` says which) filled with random bytes, run for N seconds (default 3) in ~20 ms passes of whole-buffer sweeps under one fence with a barrier between sweeps, read and write bytes both counted, reported as the best pass and the median in GB/s. Then a group-shared tiled fp32 matmul, C = A×B at 4096, the whole product repeated under one fence to ~100 ms runs and dispatches sized from a timed row block, median of 5 as TFLOPS = 2·N³/s, four cells checked against a CPU reference; and the same product with A and B stored as packed halves (`fp16storage`: 16-bit storage, float arithmetic — cs_6_0 has no 16-bit math, so it is not a tensor-core figure). `--json` prints exactly one line on stdout and nothing else: `{ device, luid, bufferBytes, bandwidthGBs, bandwidthMedianGBs, matmulN, matmulTflopsFp32, matmulTflopsFp16storage, elapsedMs }`. On this box the 5090 reads 1600–1620 GB/s best, ~1460 median (spec 1792), 53 TFLOPS fp32 and 59 fp16storage (half the peak 105: the kernel is bound by group-shared bandwidth, not FMA issue); the Radeon iGPU 75 GB/s and 0.42 TFLOPS. |
 
 Exit codes: `0` ok, `1` bad arguments or an unexpected failure (caught at top level so
 Windows Error Reporting never parks a dialog on a supervised process), `2` hash differs from

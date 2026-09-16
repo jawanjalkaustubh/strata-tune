@@ -30,7 +30,9 @@
       "clocks": { "smMhz": 1275, "memMhz": 7001 },
       "temperatureC": 29,
       "utilisation": { "gpu": 3, "memory": 3 },
-      "clocksEventReasons": { "raw": 1024, "names": [] }
+      "clocksEventReasons": { "raw": 1024, "names": [] },
+      "pciSubsystem": { "vendorId": 4163, "deviceId": 35266 },
+      "clockOffsets": { "smMhz": 150, "memMhz": 500, "maxClockSmMhz": 3090, "maxClockMemMhz": 14001 }
     }
   ],
   "gpuDriver": { "version": "616.92", "date": "2026-08-12" },

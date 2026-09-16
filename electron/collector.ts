@@ -32,11 +32,16 @@ const ROUTES = {
   shutdown: '/shutdown'
 };
 
-/** LHM opens the sensor tree before Kestrel binds: 4–8 s on this box, longer with more disks or a slow SMBus. */
+/**
+ * The collector writes the handshake before it opens a single sensor (phase1-polish item 8:
+ * under a second on this box), so this budget is for a machine where even that fails to
+ * happen, not for a slow sensor tree; the tree warms behind Health.warming.
+ */
 const HANDSHAKE_TIMEOUT_MS = 60_000;
 /** How long a UAC prompt may stay unanswered before the start is given up. */
 const UAC_TIMEOUT_MS = 10 * 60_000;
-const HANDSHAKE_POLL_MS = 250;
+/** Polled from the moment the launcher is spawned, so the first tick follows the handshake by at most this. */
+const HANDSHAKE_POLL_MS = 100;
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 5_000;
 /** Stream reconnects that fail in a row before the collector is taken as gone and Retry is offered. */
@@ -144,10 +149,25 @@ export class CollectorClient extends EventEmitter {
     this.emit('status', this.state);
   }
 
-  /** Dev: the Release build in the solution tree (the worker is copied beside it at build). Packaged: resources/collector. */
+  /**
+   * Packaged: resources/collector. Dev: the newer of the Release build in the solution tree
+   * (the worker is copied beside it at build) and the published bundle in resources/collector
+   * (scripts/build-collector.ps1). Smart App Control on the dev box started refusing to load
+   * the freshly built loose collector DLL on 2026-09-16 while it passes the single-file
+   * bundle, so a fresh publish is a way through; a stale one never shadows a newer build.
+   */
   private collectorExe(): string {
-    if (app.isPackaged) return path.join(process.resourcesPath, 'collector', COLLECTOR_IMAGE);
-    return path.join(app.getAppPath(), 'collector', 'StrataTune.Collector', 'bin', 'x64', 'Release', 'net10.0', 'win-x64', COLLECTOR_IMAGE);
+    const published = path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'collector', COLLECTOR_IMAGE);
+    if (app.isPackaged) return published;
+    const built = path.join(app.getAppPath(), 'collector', 'StrataTune.Collector', 'bin', 'x64', 'Release', 'net10.0', 'win-x64', COLLECTOR_IMAGE);
+    const mtime = (p: string) => {
+      try {
+        return fs.statSync(p).mtimeMs;
+      } catch {
+        return -1;
+      }
+    };
+    return mtime(published) > mtime(built) ? published : built;
   }
 
   /** Idempotent: a second call while one is in flight joins it; a connected client returns at once. */

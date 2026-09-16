@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && node -e \"require('fs').copyFileSync('electron/preload.cjs','dist-electron/preload.cjs')\"",
+    "build:report": "vite build --config vite.report.config.ts",
+    "postbuild": "npm run build:report",
     "start": "electron .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -33,6 +35,7 @@
     "vite": "^6.2.0",
     "vite-plugin-electron": "^0.29.0",
     "vite-plugin-electron-renderer": "^0.14.6",
+    "vite-plugin-singlefile": "2.3.3",
     "vitest": "^5.0.1"
   }
 }

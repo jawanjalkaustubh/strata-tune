@@ -41,5 +41,30 @@ contextBridge.exposeInMainWorld('strata', {
     benchGpu: (req) => ipcRenderer.invoke('bench:gpu', req),
     benchOllama: (model) => ipcRenderer.invoke('bench:ollama', model),
     ollamaList: () => ipcRenderer.invoke('ollama:list')
+  },
+
+  // Frame capture (electron/capture.ts): PresentMon in main, one folder per session on disk.
+  capture: {
+    state: () => ipcRenderer.invoke('capture:state'),
+    processes: () => ipcRenderer.invoke('capture:processes'),
+    start: (pid) => ipcRenderer.invoke('capture:start', pid),
+    stop: () => ipcRenderer.invoke('capture:stop'),
+    arm: (on) => ipcRenderer.invoke('capture:arm', on),
+    onState: on('capture:state'),
+    onFrames: on('capture:frames')
+  },
+  sessions: {
+    list: () => ipcRenderer.invoke('sessions:list'),
+    load: (id) => ipcRenderer.invoke('sessions:load', id),
+    delete: (id) => ipcRenderer.invoke('sessions:delete', id),
+    setVerdict: (id, verdict) => ipcRenderer.invoke('sessions:verdict', id, verdict),
+    reveal: (id) => ipcRenderer.invoke('sessions:reveal', id),
+    exportHtml: (data) => ipcRenderer.invoke('sessions:exportHtml', data)
+  },
+
+  // Fix verification (electron/history.ts): { what, before, after, date } entries in history.json.
+  history: {
+    list: () => ipcRenderer.invoke('history:list'),
+    add: (entry) => ipcRenderer.invoke('history:add', entry)
   }
 });

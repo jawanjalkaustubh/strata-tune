@@ -1,6 +1,7 @@
 /**
  * The system audit (master plan §8): pure rules over the collector's static
- * snapshot, its idle process sample and two optional GPU load runs. Nothing
+ * snapshot, its idle process sample, two optional GPU load runs and one
+ * all-core CPU run (phase1-polish item 6). Nothing
  * here touches hardware. The Audit page shows rankTop(runAudit(inputs), 5) and
  * keeps the rest under "show all".
  *
@@ -10,6 +11,7 @@
  * never opened a BIOS.
  */
 import type { HogsResult, LoadRun, StaticSnapshot } from '../collector-types';
+import { cpuSpec } from './cpuSpec';
 import { cleanPartNumber, ratedSpeedFor } from './kits';
 import { hasAny, hasBit, SW_POWER_CAP, THERMAL_OR_BRAKE } from './nvmlBits';
 
@@ -35,6 +37,10 @@ export interface AuditInputs {
   hogs: HogsResult | null;
   pcieUnderLoad: LoadRun | null;
   thermalRamp: LoadRun | null;
+  /** The 20 s all-core CPU run (kind 'cpu'); every CPU rule but SMT answers 'unknown' without it. */
+  cpuLoad: LoadRun | null;
+  /** Settings.cpuPptW: the socket power limit the user configured; null falls back to the stock value in cpus.json. */
+  cpuPptW: number | null;
   nowIso: string;
 }
 
@@ -78,6 +84,15 @@ const WARM_C = 75;
 const PCIE_GT_PER_LANE = [0, 2.5, 5, 8, 16, 32, 64];
 const laneRate = (gen: number) => PCIE_GT_PER_LANE[Math.min(gen, PCIE_GT_PER_LANE.length - 1)];
 
+/** Package power this far over the stock limit means PBO or a raised PPT; the sensors cannot read the limit itself (dependencies.md). */
+const PBO_OVER_STOCK = 1.05;
+const AT_LIMIT_FRACTION = 0.95;
+/** Sustained this close to Tjmax is worth a warning; pinned at Tjmax with sagging clocks is throttling. */
+const CPU_WARN_BELOW_TJMAX_C = 5;
+const CPU_PINNED_BELOW_TJMAX_C = 1;
+const CPU_SAG_BAD = 0.05;
+const BELOW_BASE = 0.9;
+
 const GIB = 1024 ** 3;
 const gib = (bytes: number) => Math.round(bytes / GIB);
 const pct = (fraction: number) => Math.round(fraction * 100);
@@ -85,6 +100,36 @@ const watts = (mw: number) => Math.round(mw / 1000);
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
 const list = (items: string[]) => items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 const doneSamples = (run: LoadRun | null) => run && run.state === 'done' && run.gpuSamples.length > 0 ? run.gpuSamples : null;
+const ghz = (mhz: number) => `${(mhz / 1000).toFixed(1)} GHz`;
+const signed = (mhz: number) => (mhz >= 0 ? `+${mhz}` : `${mhz}`);
+const finite = (xs: (number | null)[]) => xs.filter((x): x is number => x !== null && Number.isFinite(x));
+/** Mean of the first and last third of a series, for "did it sag" questions. */
+const endsOf = (xs: number[]) => {
+  const third = Math.max(1, Math.floor(xs.length / 3));
+  return { start: mean(xs.slice(0, third)), end: mean(xs.slice(-third)) };
+};
+
+/**
+ * Seconds into a finished run without needing the QPC frequency: the run's own span is its
+ * length. The steady window (t >= 3 s) leaves the worker's start-up and the boost governor's
+ * first seconds out of the verdict.
+ */
+function steadyWindow<T extends { qpc: number }>(run: LoadRun, samples: T[]): T[] {
+  if (run.qpcEnd === null || run.qpcEnd <= run.qpcStart) return [];
+  const span = run.qpcEnd - run.qpcStart;
+  return samples.filter(x => (x.qpc - run.qpcStart) / span * run.seconds >= STEADY_FROM_S);
+}
+
+type CpuSample = LoadRun['cpuSamples'][number];
+
+/** The finished CPU run's steady window, or null when there is no run to judge from. */
+function cpuSteady(run: LoadRun | null): CpuSample[] | null {
+  if (!run || run.kind !== 'cpu' || run.state !== 'done' || run.cpuSamples.length === 0) return null;
+  const steady = steadyWindow(run, run.cpuSamples);
+  return steady.length >= 4 ? steady : null;
+}
+
+const CPU_RUN_MISSING = unknown('Measured with a 20-second all-core CPU load.', 'Run the audit; the CPU load test is part of it.');
 /** Windows keeps WSL 2 and Hyper-V guest memory in these; they are not background programs to close. */
 const isVmHost = (name: string) => /^vmmem(WSL)?(\.exe)?$/i.test(name);
 
@@ -302,13 +347,10 @@ function checkThermal(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
   const gpu = s.gpus[0];
   if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
   const samples = doneSamples(run);
-  if (!samples || !run || run.qpcEnd === null || run.qpcEnd <= run.qpcStart) {
+  if (!samples || !run) {
     return finding(base, unknown('Measured with a 20-second heavy GPU load.', 'Run the audit; the load test is part of it.'));
   }
-  // Seconds into the run without needing the QPC frequency: the run's own span is its length.
-  const span = run.qpcEnd - run.qpcStart;
-  const at = (qpc: number) => (qpc - run.qpcStart) / span * run.seconds;
-  const steady = samples.filter(x => at(x.qpc) >= STEADY_FROM_S);
+  const steady = steadyWindow(run, samples);
   if (steady.length < 4) return finding(base, unknown('The load run was too short to judge: the steady window needs a few seconds.'));
   const load = run.kind === 'heavy' ? 'heavy load' : 'light load';
   if (!(gpu.powerLimitMw > 0)) return finding(base, unknown('The driver did not report a power limit, so whether the load engaged cannot be judged.'));
@@ -319,9 +361,9 @@ function checkThermal(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
       'Close anything else using the GPU and run the audit again.'
     ));
   }
-  const third = Math.max(1, Math.floor(steady.length / 3));
-  const startMhz = Math.round(mean(steady.slice(0, third).map(x => x.smMhz)));
-  const endMhz = Math.round(mean(steady.slice(-third).map(x => x.smMhz)));
+  const ends = endsOf(steady.map(x => x.smMhz));
+  const startMhz = Math.round(ends.start);
+  const endMhz = Math.round(ends.end);
   const sag = startMhz > 0 ? (startMhz - endMhz) / startMhz : 0;
   const peakC = Math.max(...samples.map(x => x.temperatureC));
   const throttled = steady.some(x => hasAny(x.clocksEventReasons, THERMAL_OR_BRAKE));
@@ -367,35 +409,47 @@ function checkDriverAge(s: StaticSnapshot, nowIso: string): AuditFinding {
   return finding(base, ok(`Driver ${version}, ${days} days old.`));
 }
 
-function checkHogs(hogs: HogsResult | null): AuditFinding {
-  const base: Base = { id: 'background-hogs', title: 'Background programs', costText: 'Whatever they take: a busy background program steals CPU time and memory from the game.', fixWhere: 'windows' };
+/** Ollama's runner: when a model is resident the AI-model finding already names it, so it is not a second card here. */
+const isOllamaRunner = (name: string) => /^(ollama|llama-server|ollama_llama_server)(\.exe)?$/i.test(name);
+const BUSY_CPU_PERCENT = 5;
+const HOG_MIB = 2048;
+
+function checkHogs(hogs: HogsResult | null, s: StaticSnapshot): AuditFinding {
+  const base: Base = { id: 'background-hogs', title: 'Background programs', costText: 'Whatever they take: a busy background program steals CPU time from the game, a large one its memory.', fixWhere: 'windows' };
   if (!hogs) return finding(base, unknown('Measured with a 5-second sample while the machine idles.', 'Run the audit with the machine idle.'));
-  const heavy = hogs.processes.filter(p => p.cpuPercent > 5 || (p.workingSetMiB > 2048 && !isVmHost(p.name)));
-  const vms = hogs.processes.filter(p => isVmHost(p.name) && p.workingSetMiB > 2048);
+  const modelResident = (s.ollama?.length ?? 0) > 0;
+  const heavy = hogs.processes.filter(p => (p.cpuPercent > BUSY_CPU_PERCENT || p.workingSetMiB > HOG_MIB) && !isVmHost(p.name) && !(modelResident && isOllamaRunner(p.name)));
+  const vms = hogs.processes.filter(p => isVmHost(p.name) && p.workingSetMiB > HOG_MIB);
   const vmNote = vms.length ? ` ${vms[0].name} holds ${(vms[0].workingSetMiB / 1024).toFixed(1)} GB for WSL or a virtual machine; wsl --shutdown (or stopping the VM) returns it.` : '';
   if (heavy.length === 0) {
     if (vms.length) return finding(base, { state: 'info', severity: 1, costEstimate: 0.05, detail: `Nothing busy in the background over ${hogs.seconds} s.${vmNote}`, fix: 'Shut the VM down before gaming if the game needs the memory.' });
     return finding(base, ok(`Nothing heavy in the background over ${hogs.seconds} s.`));
   }
-  const named = heavy.slice(0, 3).map(p => `${p.name} (${Math.round(p.cpuPercent)} % CPU, ${(p.workingSetMiB / 1024).toFixed(1)} GB)`);
-  const more = heavy.length > 3 ? ` and ${heavy.length - 3} more` : '';
+  // A process that qualified on its working set alone is holding memory, not stealing CPU time; the wording says which.
+  const gb = (p: HogsResult['processes'][number]) => `${(p.workingSetMiB / 1024).toFixed(1)} GB`;
+  const busy = heavy.filter(p => p.cpuPercent > BUSY_CPU_PERCENT);
+  const holding = heavy.filter(p => p.cpuPercent <= BUSY_CPU_PERCENT);
+  const busyText = busy.length ? `Busy while idle: ${list(busy.slice(0, 3).map(p => `${p.name} (${Math.round(p.cpuPercent)} % CPU, ${gb(p)})`))}${busy.length > 3 ? ` and ${busy.length - 3} more` : ''}.` : '';
+  const holdingText = holding.length ? `${list(holding.slice(0, 3).map(p => `${p.name} holds ${gb(p)}`))}${holding.length > 3 ? ` and ${holding.length - 3} more` : ''} while idle.` : '';
   return finding(base, {
     state: 'warn', severity: 2, costEstimate: 0.1,
-    detail: `Busy while idle: ${list(named)}${more}.${vmNote}`,
+    detail: `${[busyText, holdingText].filter(Boolean).join(' ')}${vmNote}`,
     fix: 'Close what you do not need before gaming, or stop it from starting with Windows (Settings > Apps > Startup).'
   });
 }
 
 function checkPowerLimit(s: StaticSnapshot): AuditFinding {
-  const base: Base = { id: 'power-limit-headroom', title: 'GPU power limit', costText: 'A few percent at most; heat and noise go up with it.', fixWhere: 'app' };
+  const base: Base = { id: 'gpu-power-limit', title: 'GPU power limit', costText: 'A few percent at most; heat and noise go up with it.', fixWhere: 'app' };
   const gpu = s.gpus[0];
   if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
   if (!(gpu.powerLimitMw > 0) || !(gpu.powerMaxLimitMw > 0)) return finding(base, unknown('The driver did not report the power limits.'));
   if (gpu.powerLimitMw >= gpu.powerMaxLimitMw) {
+    // The slider being at its stop says nothing about overclocking headroom: the user may
+    // well run raised clock and memory offsets on top of it (the GPU overclock finding).
     return finding(base, {
-      state: 'info', severity: 0, costEstimate: 0, costText: 'No headroom to raise; an undervolt is the lever.',
-      detail: `The power limit is already at the card's maximum (${watts(gpu.powerLimitMw)} W).`,
-      fix: 'Nothing to raise. Tune will look for an undervolt that keeps the clocks at less power and heat.'
+      state: 'info', severity: 0, costEstimate: 0, costText: 'Nothing to raise there; clock and memory offsets are a separate lever.',
+      detail: `Power limit slider is at its maximum (${watts(gpu.powerLimitMw)} W) — nothing to raise there. Clock and memory offsets are a separate lever.`,
+      fix: 'Nothing to change. Tune will look for an undervolt that keeps the clocks at less power and heat.'
     });
   }
   const headroom = watts(gpu.powerMaxLimitMw - gpu.powerLimitMw);
@@ -404,6 +458,178 @@ function checkPowerLimit(s: StaticSnapshot): AuditFinding {
     detail: `The power limit is ${watts(gpu.powerLimitMw)} W; the card allows up to ${watts(gpu.powerMaxLimitMw)} W.`,
     fix: 'Raising it trades heat and noise for a few percent; Tune tests that safely.'
   });
+}
+
+/**
+ * Item 7: the applied offsets are one route to an overclock and the driver reports them;
+ * a vendor tool or a VF curve is another and it does not (the dev box reads 0 / 0 offsets
+ * while holding 3226 / 16032 MHz against the driver's 3090 / 14001 MHz ceilings), so the
+ * clocks held under load are judged against the ceilings too. One boost step of slack
+ * keeps a card sitting exactly on its ceiling out of it.
+ */
+const BOOST_STEP_MHZ = 15;
+
+function checkGpuOffsets(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
+  const base: Base = { id: 'gpu-oc-offsets', title: 'GPU overclock', costText: 'Whatever the overclock gives: a few percent, at the cost of stability if pushed.', fixWhere: 'app' };
+  const gpu = s.gpus[0];
+  if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
+  const offsets = gpu.clockOffsets;
+  if (!offsets) return finding(base, unknown('This driver does not report clock offsets; NVML 12.5 or newer does.'));
+  if (offsets.smMhz === null && offsets.memMhz === null) return finding(base, unknown('The card did not report its clock offsets.'));
+  const samples = doneSamples(run);
+  const steady = samples && run ? steadyWindow(run, samples) : [];
+  const heldSm = steady.length >= 4 ? Math.round(mean(steady.map(x => x.smMhz))) : null;
+  const heldMem = steady.length >= 4 ? Math.round(mean(steady.map(x => x.memMhz))) : null;
+  const maxSm = offsets.maxClockSmMhz || null;
+  const maxMem = offsets.maxClockMemMhz || null;
+  const overSm = heldSm !== null && maxSm !== null && heldSm > maxSm + BOOST_STEP_MHZ;
+  const overMem = heldMem !== null && maxMem !== null && heldMem > maxMem + BOOST_STEP_MHZ;
+  const held = heldSm === null ? '' : `; held ${heldSm} MHz under load`;
+  const ceiling = maxSm ? ` (driver max ${maxSm})` : '';
+  const stableFix = 'Nothing to change while it is stable; if a game crashes or shows artifacts, lower the overclock first.';
+  if (!offsets.smMhz && !offsets.memMhz) {
+    if (overSm || overMem) {
+      const clocks = `${heldSm} MHz core / ${heldMem} MHz memory`;
+      const limits = `${maxSm ?? '?'} / ${maxMem ?? '?'} MHz maximums`;
+      return finding(base, info(
+        `The driver reports no clock offsets, yet the card held ${clocks} under load, above its ${limits}: an overclock is applied by another route (a vendor tool or a VF curve).`,
+        stableFix
+      ));
+    }
+    return finding(base, ok(`The driver reports no clock offsets${held}${ceiling}.`));
+  }
+  const parts = [offsets.smMhz !== null ? `Core ${signed(offsets.smMhz)} MHz` : '', offsets.memMhz !== null ? `memory ${signed(offsets.memMhz)} MHz` : ''].filter(Boolean);
+  return finding(base, info(`${parts.join(', ')} offsets applied${held}${ceiling}.`, stableFix));
+}
+
+function checkCpuThermal(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
+  const base: Base = { id: 'cpu-thermal', title: 'CPU thermal headroom', costText: 'Throttling: the CPU drops its clocks when it reaches its temperature limit.', fixWhere: 'hardware' };
+  const steady = cpuSteady(run);
+  if (!steady) return finding(base, CPU_RUN_MISSING);
+  const temps = finite(steady.map(x => x.tctlC));
+  if (temps.length === 0) return finding(base, unknown('The CPU temperature sensor was not readable during the load run.'));
+  const sustained = Math.round(mean(temps));
+  const peak = Math.round(Math.max(...temps));
+  const spec = cpuSpec(s.cpu.name);
+  if (!spec) return finding(base, info(`Peaked at ${peak} °C under the all-core load (sustained ${sustained} °C); this part's temperature limit is not in the table, so there is no verdict.`));
+  const tjmax = spec.tjmaxC;
+  const clocks = finite(steady.map(x => x.avgEffectiveMhz));
+  const ends = clocks.length >= 4 ? endsOf(clocks) : null;
+  const sag = ends && ends.start > 0 ? (ends.start - ends.end) / ends.start : 0;
+  const held = ends ? `${Math.round(ends.start)} to ${Math.round(ends.end)} MHz effective` : '';
+  if (peak >= tjmax - CPU_PINNED_BELOW_TJMAX_C && sag >= CPU_SAG_BAD) {
+    // The one branch where the cooler is the fault: the repaste advice belongs here alone.
+    return finding(base, {
+      state: 'bad', severity: 3, costEstimate: Number(sag.toFixed(2)),
+      detail: `The CPU sat at its ${tjmax} °C limit under the all-core load and its clocks fell ${pct(sag)} % (${held}): it is thermally throttling.`,
+      fix: 'Improve CPU cooling: reseat the cooler with fresh paste, check the pump and fans, raise the fan curve; on Ryzen a lower PPT or a Curve Optimizer undervolt cuts heat at little cost.'
+    });
+  }
+  if (sustained >= tjmax - CPU_WARN_BELOW_TJMAX_C) {
+    // Ryzen boosts until it meets Tjmax by design, so a pinned all-core load with steady
+    // clocks loses nothing today; what it lacks is headroom, and the card says exactly that
+    // rather than sending the owner of a working cooler to repaste it.
+    const ryzen = /ryzen/i.test(s.cpu.name);
+    const holding = held ? `, with clocks holding (${held})` : '';
+    if (ryzen) {
+      return finding(base, {
+        state: 'warn', severity: 1, costEstimate: 0.02,
+        costText: 'Nothing lost now: the clocks held, but there is no headroom left for a hotter room or a longer load.',
+        detail: `The CPU held ${sustained} °C under the all-core load, ${tjmax - sustained} °C from its ${tjmax} °C limit${holding}. Ryzen boosts until it meets its limit, so this is by design under an all-core load; games load it less.`,
+        fix: 'Nothing required; a lower PPT or a Curve Optimizer undervolt in the BIOS buys headroom at little cost.',
+        fixWhere: 'none'
+      });
+    }
+    return finding(base, {
+      state: 'warn', severity: 2, costEstimate: 0.05,
+      costText: 'Little headroom: a hotter room or a longer load will start throttling.',
+      detail: `The CPU held ${sustained} °C under the all-core load, ${tjmax - sustained} °C from its ${tjmax} °C limit${holding}. Games load it less, but there is little headroom for a hot day.`,
+      fix: 'Improve CPU cooling: check the pump and fans and raise the fan curve; fresh paste if the cooler has been on for years.'
+    });
+  }
+  return finding(base, ok(`Held ${sustained} °C under the all-core load (peak ${peak} °C), ${tjmax - sustained} °C below the ${tjmax} °C limit.`));
+}
+
+function checkCpuAllCoreClock(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
+  const base: Base = { id: 'cpu-allcore-clock', title: 'All-core clock under load', costText: 'What the CPU really runs at when every core is busy.', fixWhere: 'none' };
+  const steady = cpuSteady(run);
+  if (!steady) return finding(base, CPU_RUN_MISSING);
+  const clocks = finite(steady.map(x => x.avgEffectiveMhz));
+  if (clocks.length === 0) return finding(base, unknown('The effective clock sensor was not readable during the load run.'));
+  const eff = Math.round(mean(clocks));
+  const spec = cpuSpec(s.cpu.name);
+  if (!spec) return finding(base, info(`All cores ran at ${ghz(eff)} effective under the load.`));
+  if (eff < spec.baseMhz * BELOW_BASE) {
+    return finding(base, {
+      state: 'warn', severity: 2, costEstimate: 0.1, fixWhere: 'bios',
+      detail: `All-core ${ghz(eff)} effective under load, below the ${ghz(spec.baseMhz)} base clock: heat or a power limit is holding the CPU back.`,
+      fix: 'Check the CPU thermal and package-power findings; better cooling or a higher power limit in the BIOS lets it boost.'
+    });
+  }
+  return finding(base, info(`All-core ${ghz(eff)} effective under load (spec base ${ghz(spec.baseMhz)}, single-core boost ${ghz(spec.boostMhz)}).`));
+}
+
+function checkCpuPackagePower(s: StaticSnapshot, run: LoadRun | null, cpuPptW: number | null): AuditFinding {
+  const base: Base = { id: 'cpu-package-power', title: 'CPU package power', costText: 'At the limit the CPU cannot boost further; games rarely reach it.', fixWhere: 'app' };
+  const steady = cpuSteady(run);
+  if (!steady) return finding(base, CPU_RUN_MISSING);
+  const power = finite(steady.map(x => x.packageW));
+  if (power.length === 0) return finding(base, unknown('The package power sensor was not readable during the load run.'));
+  const measured = Math.round(mean(power));
+  const spec = cpuSpec(s.cpu.name);
+  const name = spec?.powerName ?? 'PPT';
+  const stock = spec?.stockPowerW;
+  const configured = cpuPptW !== null && cpuPptW > 0 ? Math.round(cpuPptW) : null;
+  // The control is the gear on the Monitor page (the button under this card opens it); there is no Settings page.
+  const setIt = `Enter the limit you set in the BIOS or Ryzen Master with the button below (Monitor page, gear > CPU power limit (${name})), so the Package bar and this check use it.`;
+  if (configured === null && stock === undefined) {
+    return finding(base, info(`Package power averaged ${measured} W under the all-core load; this part's stock limit is not in the table, so there is no verdict until the limit is set.`, setIt));
+  }
+  if (configured === null && stock !== undefined && measured > stock * PBO_OVER_STOCK) {
+    // Never claim to read the limit: the sensors cannot (dependencies.md); the measurement over stock is the inference.
+    return finding(base, info(`PBO / raised ${name} active — measured ${measured} W over the stock ${stock} W; set your ${name} limit here.`, setIt));
+  }
+  const limit = configured ?? stock!;
+  const label = configured === null ? ' (stock)' : '';
+  if (configured !== null && measured > configured * PBO_OVER_STOCK) {
+    return finding(base, info(`Measured ${measured} W over the configured ${configured} W limit: the limit set here looks lower than the one the BIOS applies.`, `Check the ${name} set on the Monitor page against the BIOS or Ryzen Master.`));
+  }
+  if (measured >= limit * AT_LIMIT_FRACTION) {
+    return finding(base, info(`At the ${limit} W ${name} limit${label} under the all-core load (${measured} W): normal, the limit is what stops the CPU boosting further.`, 'Nothing to change; raising the limit (PBO) trades heat for a little more all-core speed.'));
+  }
+  return finding(base, ok(`${measured} W under the all-core load, within the ${limit} W ${name} limit${label}.`));
+}
+
+function checkCpuSmt(s: StaticSnapshot): AuditFinding {
+  const base: Base = { id: 'cpu-smt', title: 'Simultaneous multithreading (SMT)', costText: 'Up to 20–30 % in multi-threaded work; a few percent either way in games.', fixWhere: 'bios' };
+  const { cores, logical } = s.cpu;
+  if (!(cores > 0) || !(logical > 0)) return finding(base, unknown('Windows did not report the core count.'));
+  if (logical > cores) return finding(base, ok(`${cores} cores, ${logical} threads: SMT on.`));
+  // Equal counts mean "off" only on a part that has SMT to turn off: every Core Ultra
+  // 200-series part ships without Hyper-Threading, and the table says which is which.
+  const spec = cpuSpec(s.cpu.name);
+  if (spec?.threads !== undefined && spec.cores !== undefined && spec.threads === spec.cores) {
+    return finding(base, ok(`${cores} cores, ${logical} threads: this part has no SMT.`));
+  }
+  const known = spec?.threads !== undefined && spec.cores !== undefined && spec.threads > spec.cores;
+  return finding(base, {
+    state: 'info', severity: 1, costEstimate: 0.05,
+    detail: known
+      ? `${cores} cores and ${logical} threads: SMT (Hyper-Threading) is off, so multi-threaded work runs slower; a few games gain a little from it being off.`
+      : `${cores} cores and ${logical} threads: SMT (Hyper-Threading) appears off, or this part has none; multi-threaded work runs slower with it off.`,
+    fix: known
+      ? 'In the BIOS turn SMT (AMD) or Hyper-Threading (Intel) on, under Advanced > CPU Configuration.'
+      : 'If the BIOS has an SMT (AMD) or Hyper-Threading (Intel) switch under Advanced > CPU Configuration, turn it on; a part without one has nothing to change.'
+  });
+}
+
+/** The first sample of the CPU run is taken before the worker starts (LoadRunner), so it is the idle reference. */
+function checkCpuIdleClock(run: LoadRun | null): AuditFinding {
+  const base: Base = { id: 'cpu-idle-clock', title: 'Idle clock', costText: 'Nothing at stake: how the CPU rests between frames.', fixWhere: 'none' };
+  const idle = run && run.kind === 'cpu' && run.state === 'done' ? run.cpuSamples[0] : undefined;
+  if (!idle) return finding(base, CPU_RUN_MISSING);
+  if (idle.avgEffectiveMhz === null || idle.maxCoreMhz === null) return finding(base, unknown('The clock sensors were not readable before the load run.'));
+  return finding(base, info(`Idle: ${Math.round(idle.avgEffectiveMhz)} MHz effective while the cores report up to ${Math.round(idle.maxCoreMhz)} MHz; the effective figure is the real rate, the other is the boost the cores stand ready to reach.`));
 }
 
 /** Family-aware: this box keeps an Ollama model resident for Strata Photo and Code. */
@@ -444,8 +670,14 @@ export function runAudit(inputs: AuditInputs): AuditFinding[] {
     checkHddPresent(s),
     checkThermal(s, inputs.thermalRamp),
     checkDriverAge(s, inputs.nowIso),
-    checkHogs(inputs.hogs),
+    checkHogs(inputs.hogs, s),
     checkPowerLimit(s),
+    checkGpuOffsets(s, inputs.thermalRamp),
+    checkCpuThermal(s, inputs.cpuLoad),
+    checkCpuAllCoreClock(s, inputs.cpuLoad),
+    checkCpuPackagePower(s, inputs.cpuLoad, inputs.cpuPptW),
+    checkCpuSmt(s),
+    checkCpuIdleClock(inputs.cpuLoad),
     checkAiModel(s)
   ];
   return rankFindings(findings.filter((f): f is AuditFinding => f !== null));

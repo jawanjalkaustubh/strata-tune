@@ -4,6 +4,9 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { CollectorClient } from './collector';
 import { registerAdvisorIpc } from './bench';
+import { registerHistoryIpc } from './history';
+import { CaptureController, registerCaptureIpc } from './capture';
+import { GameMode } from './game-mode';
 import type { CollectorState } from '../src/api';
 import type { LoadKind, Tick } from '../src/collector-types';
 
@@ -190,6 +193,18 @@ function registerCollectorIpc(c: CollectorClient) {
   });
 }
 
+// ----------------------------------------------------------------- capture
+
+let capture: CaptureController | null = null;
+
+/** PresentMon runs in main and Game Mode comes from Strata Video (plan section 11); state and frames are pushed to the window. */
+function registerCapture() {
+  capture = new CaptureController(() => collector, new GameMode());
+  registerCaptureIpc(ipcMain, capture, (channel, payload) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+  });
+}
+
 // --------------------------------------------------------------- self-test
 
 /**
@@ -309,6 +324,8 @@ async function runSelfTest(): Promise<void> {
  * Errors are swallowed: quitting wins.
  */
 async function shutdown(): Promise<void> {
+  // A capture in flight is saved first: its last sensor slice needs the collector still up.
+  await capture?.dispose().catch((err) => console.error('[quit] capture save failed:', err));
   const c = collector;
   if (!c) return;
   try {
@@ -348,6 +365,8 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       Menu.setApplicationMenu(null);
       registerIpc();
       registerAdvisorIpc(ipcMain);
+      registerCapture();
+      registerHistoryIpc(ipcMain);
       createWindow();
       // One UAC prompt per app start (plan section 5). A decline is a state the
       // Audit page shows with a Retry, not a failure of the app.

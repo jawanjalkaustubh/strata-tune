@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { parseSlot, rankFindings, rankTop, runAudit, type AuditFinding, type AuditInputs } from '../src/analysis/audit';
 import type { HogsResult, PhysicalDisk, StaticSnapshot, Volume } from '../src/collector-types';
-import { NOW, devbox, loadRun } from './fixtures';
+import { NOW, cpuRun, devbox, loadRun } from './fixtures';
 
 const inputs = (snapshot: StaticSnapshot, extra: Partial<AuditInputs> = {}): AuditInputs =>
-  ({ snapshot, hogs: null, pcieUnderLoad: null, thermalRamp: null, nowIso: NOW, ...extra });
+  ({ snapshot, hogs: null, pcieUnderLoad: null, thermalRamp: null, cpuLoad: null, cpuPptW: null, nowIso: NOW, ...extra });
 const byId = (findings: AuditFinding[]) => Object.fromEntries(findings.map(f => [f.id, f]));
 const audit = (snapshot: StaticSnapshot, extra: Partial<AuditInputs> = {}) => byId(runAudit(inputs(snapshot, extra)));
 const score = (f: AuditFinding) => f.severity * f.costEstimate;
@@ -14,14 +14,15 @@ const busyHogs: HogsResult = {
   seconds: 5, logicalCpus: 32,
   processes: [{ pid: 4321, name: 'OneDrive.exe', cpuPercent: 40, workingSetMiB: 900 }, ...quietHogs.processes]
 };
-const flatRuns = { pcieUnderLoad: loadRun('light', 2), thermalRamp: loadRun('heavy', 20) };
+const flatRuns = { pcieUnderLoad: loadRun('light', 2), thermalRamp: loadRun('heavy', 20), cpuLoad: cpuRun(20) };
 /** 15 % sag with HwThermalSlowdown from t = 15 s, the card at 84 °C: the true positive. */
 const throttlingRamp = loadRun('heavy', 20, t => ({ smMhz: t < 10 ? 2800 : 2380, temperatureC: t < 10 ? 70 : 84, clocksEventReasons: t >= 15 ? 0x40 : 0 }));
 const x8Link = loadRun('light', 2, () => ({ pcieWidth: 8 }));
 
 const ALL_IDS = [
   'expo', 'ram-channels', 'pcie-link', 'rebar', 'power-plan', 'boot-drive-space', 'game-on-hdd',
-  'thermal-headroom', 'gpu-driver-age', 'background-hogs', 'power-limit-headroom', 'ai-model-resident'
+  'thermal-headroom', 'gpu-driver-age', 'background-hogs', 'gpu-power-limit', 'gpu-oc-offsets',
+  'cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-smt', 'cpu-idle-clock', 'ai-model-resident'
 ];
 
 describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
@@ -36,8 +37,15 @@ describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
     expect(f['boot-drive-space'].state).toBe('ok');
     expect(f['boot-drive-space'].detail).toBe('C: has 720 GB free of 1081 GB (67 %).');
     expect(f['gpu-driver-age'].state).toBe('ok');
-    expect(f['power-limit-headroom'].state).toBe('info');
-    expect(f['power-limit-headroom'].costText).toMatch(/^No headroom to raise/);
+    expect(f['gpu-power-limit'].state).toBe('info');
+    expect(f['gpu-power-limit'].detail).toBe('Power limit slider is at its maximum (600 W) — nothing to raise there. Clock and memory offsets are a separate lever.');
+    expect(f['gpu-oc-offsets'].state).toBe('info');
+    expect(f['gpu-oc-offsets'].detail).toBe('Core +150 MHz, memory +500 MHz offsets applied (driver max 3090).');
+    expect(f['cpu-smt'].state).toBe('ok');
+    for (const id of ['cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-idle-clock']) {
+      expect(f[id].state).toBe('unknown');
+      expect(f[id].detail).toBe('Measured with a 20-second all-core CPU load.');
+    }
     expect(f['ai-model-resident'].state).toBe('info');
     expect(f['ai-model-resident'].detail).toBe('qwen3-vl:30b holds 24 GB of VRAM; fine for AI work, costs games headroom.');
     expect(f['ai-model-resident'].fix).toContain('ollama stop qwen3-vl:30b');
@@ -58,6 +66,10 @@ describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
     expect(f['thermal-headroom'].state).toBe('ok');
     expect(f['thermal-headroom'].detail).toContain('heavy load');
     expect(f['background-hogs'].state).toBe('ok');
+    expect(f['gpu-oc-offsets'].detail).toBe('Core +150 MHz, memory +500 MHz offsets applied; held 2800 MHz under load (driver max 3090).');
+    expect(f['cpu-allcore-clock'].detail).toBe('All-core 5.2 GHz effective under load (spec base 4.3 GHz, single-core boost 5.7 GHz).');
+    expect(f['cpu-package-power'].detail).toBe('PBO / raised PPT active — measured 245 W over the stock 230 W; set your PPT limit here.');
+    expect(f['cpu-idle-clock'].detail).toContain('Idle: 194 MHz effective');
     expect(findings.filter(x => x.state === 'bad' || x.state === 'warn')).toEqual([]);
     expect(findings.map(x => x.state).filter(s => s === 'unknown')).toEqual(['unknown']);
   });
@@ -464,6 +476,19 @@ describe('background hogs', () => {
     expect(f.detail).not.toContain('explorer.exe');
   });
 
+  it('a working set over 2 GB is "holds", not "busy"; the Ollama runner is not a second card when the AI-model finding already names it', () => {
+    const s = devbox();
+    const hogs: HogsResult = { seconds: 5, logicalCpus: 32, processes: [{ pid: 9, name: 'llama-server', cpuPercent: 0, workingSetMiB: 3700 }, ...quietHogs.processes] };
+    expect(audit(s, { hogs })['background-hogs'].state).toBe('ok');
+    s.ollama = [];
+    const f = audit(s, { hogs })['background-hogs'];
+    expect(f.state).toBe('warn');
+    expect(f.detail).toBe('llama-server holds 3.6 GB while idle.');
+    expect(f.detail).not.toContain('Busy');
+    const both = audit(s, { hogs: { ...hogs, processes: [...busyHogs.processes, hogs.processes[0]] } })['background-hogs'];
+    expect(both.detail).toBe('Busy while idle: OneDrive.exe (40 % CPU, 0.9 GB). llama-server holds 3.6 GB while idle.');
+  });
+
   it('names at most three and counts the rest; a 3 GB working set counts too', () => {
     const many: HogsResult = {
       seconds: 5, logicalCpus: 32,
@@ -474,7 +499,8 @@ describe('background hogs', () => {
     expect(f.detail).toContain('a.exe');
     expect(f.detail).toContain('c.exe');
     expect(f.detail).not.toContain('d.exe');
-    expect(f.detail).toContain('and 2 more');
+    expect(f.detail).toContain('and 1 more');
+    expect(f.detail).toContain('chrome.exe holds 3.0 GB while idle');
   });
 
   it('WSL or Hyper-V guest memory (vmmem) is information with its own wording, not a program to close', () => {
@@ -496,11 +522,11 @@ describe('power limit and AI model', () => {
   it('a limit below the maximum is info with the headroom in watts', () => {
     const s = devbox();
     s.gpus[0].powerLimitMw = 450000;
-    const f = audit(s)['power-limit-headroom'];
+    const f = audit(s)['gpu-power-limit'];
     expect(f.state).toBe('info');
     expect(f.costText).toBe('150 W of headroom.');
     s.gpus[0].powerMaxLimitMw = 0;
-    expect(audit(s)['power-limit-headroom'].state).toBe('unknown');
+    expect(audit(s)['gpu-power-limit'].state).toBe('unknown');
   });
 
   it('Ollama absent or empty is ok', () => {
@@ -525,7 +551,7 @@ describe('ranking', () => {
 
   it('orders by severity × cost, BIOS fixes first on a tie, check order after that', () => {
     const findings = brokenBox();
-    expect(findings).toHaveLength(12);
+    expect(findings).toHaveLength(18);
     expect(findings.slice(0, 9).map(f => f.id)).toEqual([
       'boot-drive-space',   // 3 × 0.30
       'ram-channels',       // 3 × 0.20
@@ -552,6 +578,198 @@ describe('ranking', () => {
   });
 });
 
+describe('GPU overclock (item 7)', () => {
+  it('offsets on this box are info, with the held clock once the ramp has run', () => {
+    const f = audit(devbox(), { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3210 })) })['gpu-oc-offsets'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe('Core +150 MHz, memory +500 MHz offsets applied; held 3210 MHz under load (driver max 3090).');
+    expect(f.fix).toContain('lower the overclock first');
+  });
+
+  it('zero offsets are "the driver reports none", never a fact; a memory-only or negative offset is still reported; absent data is unknown', () => {
+    const s = devbox();
+    s.gpus[0].clockOffsets = { smMhz: 0, memMhz: 0, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
+    expect(audit(s)['gpu-oc-offsets'].state).toBe('ok');
+    expect(audit(s)['gpu-oc-offsets'].detail).toBe('The driver reports no clock offsets (driver max 3090).');
+    const held = audit(s, { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3090, memMhz: 14001 })) })['gpu-oc-offsets'];
+    expect(held.state).toBe('ok');
+    expect(held.detail).toBe('The driver reports no clock offsets; held 3090 MHz under load (driver max 3090).');
+    s.gpus[0].clockOffsets = { smMhz: null, memMhz: 500, maxClockSmMhz: null, maxClockMemMhz: null };
+    expect(audit(s)['gpu-oc-offsets'].detail).toBe('memory +500 MHz offsets applied.');
+    s.gpus[0].clockOffsets = { smMhz: -100, memMhz: 0, maxClockSmMhz: null, maxClockMemMhz: null };
+    expect(audit(s)['gpu-oc-offsets'].detail).toBe('Core -100 MHz, memory +0 MHz offsets applied.');
+    s.gpus[0].clockOffsets = { smMhz: null, memMhz: null, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
+    expect(audit(s)['gpu-oc-offsets'].state).toBe('unknown');
+    s.gpus[0].clockOffsets = null;
+    const f = audit(s)['gpu-oc-offsets'];
+    expect(f.state).toBe('unknown');
+    expect(f.detail).toContain('NVML 12.5');
+  });
+
+  it('the dev box: offsets 0 / 0 yet 3226 / 16032 MHz held above the 3090 / 14001 MHz ceilings is an overclock by another route', () => {
+    const s = devbox();
+    s.gpus[0].clockOffsets = { smMhz: 0, memMhz: 0, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
+    const f = audit(s, { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3226, memMhz: 16032 })) })['gpu-oc-offsets'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe('The driver reports no clock offsets, yet the card held 3226 MHz core / 16032 MHz memory under load, above its 3090 / 14001 MHz maximums: an overclock is applied by another route (a vendor tool or a VF curve).');
+    expect(f.fix).toContain('lower the overclock first');
+    // Memory alone over its ceiling is enough; one boost step over is not.
+    const mem = audit(s, { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3000, memMhz: 16032 })) })['gpu-oc-offsets'];
+    expect(mem.state).toBe('info');
+    expect(mem.detail).toContain('above its 3090 / 14001 MHz maximums');
+    const step = audit(s, { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3105, memMhz: 14001 })) })['gpu-oc-offsets'];
+    expect(step.state).toBe('ok');
+  });
+});
+
+describe('CPU rules (item 6) and the PPT setting (item 2)', () => {
+  it('this box with PBO: 245 W over the 230 W stock PPT is the PBO inference, pointing at the setting', () => {
+    const f = audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-package-power'];
+    expect(f.state).toBe('info');
+    expect(f.severity).toBe(0);
+    expect(f.detail).toBe('PBO / raised PPT active — measured 245 W over the stock 230 W; set your PPT limit here.');
+    expect(f.fix).toContain('with the button below (Monitor page, gear > CPU power limit (PPT))');
+    expect(f.fixWhere).toBe('app');
+  });
+
+  it('with the PPT set to 300 W the same run is ok against the configured limit; at 95 % of it, info', () => {
+    const f = audit(devbox(), { cpuLoad: cpuRun(20), cpuPptW: 300 })['cpu-package-power'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toBe('245 W under the all-core load, within the 300 W PPT limit.');
+    const capped = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 298 })), cpuPptW: 300 })['cpu-package-power'];
+    expect(capped.state).toBe('info');
+    expect(capped.detail).toContain('At the 300 W PPT limit under the all-core load (298 W)');
+    const over = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 340 })), cpuPptW: 300 })['cpu-package-power'];
+    expect(over.detail).toContain('Measured 340 W over the configured 300 W limit');
+  });
+
+  it('stock-bound: 225 W on the 230 W stock PPT is at the limit, labelled stock; 150 W is ok', () => {
+    const at = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 225 })) })['cpu-package-power'];
+    expect(at.state).toBe('info');
+    expect(at.detail).toBe('At the 230 W PPT limit (stock) under the all-core load (225 W): normal, the limit is what stops the CPU boosting further.');
+    const under = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 150 })) })['cpu-package-power'];
+    expect(under.state).toBe('ok');
+    expect(under.detail).toBe('150 W under the all-core load, within the 230 W PPT limit (stock).');
+  });
+
+  it('an unknown part with no setting is info asking for the limit; with the setting it judges', () => {
+    const s = devbox();
+    s.cpu.name = 'AMD Ryzen 9 9999X 16-Core Processor';
+    expect(audit(s, { cpuLoad: cpuRun(20) })['cpu-package-power'].detail).toContain('not in the table');
+    expect(audit(s, { cpuLoad: cpuRun(20), cpuPptW: 250 })['cpu-package-power'].state).toBe('info');
+    expect(audit(s, { cpuLoad: cpuRun(20), cpuPptW: 250 })['cpu-package-power'].detail).toContain('At the 250 W PPT limit');
+  });
+
+  it('thermal: 88 °C on a 95 °C part is ok; 92 °C sustained on Ryzen is a mild warn by design; pinned with sagging clocks is bad', () => {
+    const ok = audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-thermal'];
+    expect(ok.state).toBe('ok');
+    expect(ok.detail).toBe('Held 88 °C under the all-core load (peak 88 °C), 7 °C below the 95 °C limit.');
+    const warm = audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 92 : 49 })) })['cpu-thermal'];
+    expect(warm.state).toBe('warn');
+    expect(warm.severity).toBe(1);
+    expect(warm.detail).toContain('92 °C under the all-core load, 3 °C from its 95 °C limit');
+    expect(warm.detail).toContain('by design');
+    const pinned = cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 49, avgEffectiveMhz: t < 10 ? 5200 : 4700 }));
+    const bad = audit(devbox(), { cpuLoad: pinned })['cpu-thermal'];
+    expect(bad.state).toBe('bad');
+    expect(bad.severity).toBe(3);
+    expect(bad.detail).toContain('sat at its 95 °C limit');
+    expect(bad.detail).toContain('clocks fell');
+    expect(bad.fix).toContain('fresh paste');
+    expect(bad.costText).toContain('Throttling');
+  });
+
+  it('this box: pinned at Tjmax with the clocks holding is one honest card, no repaste for a working cooler', () => {
+    const f = audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95.2 : 44, avgEffectiveMhz: t > 0 ? 5384 - t * 1.6 : 452 })) })['cpu-thermal'];
+    expect(f.state).toBe('warn');
+    expect(f.severity).toBe(1);
+    expect(f.detail).toBe('The CPU held 95 °C under the all-core load, 0 °C from its 95 °C limit, with clocks holding (5375 to 5357 MHz effective). Ryzen boosts until it meets its limit, so this is by design under an all-core load; games load it less.');
+    expect(f.costText).toBe('Nothing lost now: the clocks held, but there is no headroom left for a hotter room or a longer load.');
+    expect(f.fix).toBe('Nothing required; a lower PPT or a Curve Optimizer undervolt in the BIOS buys headroom at little cost.');
+    expect(f.fixWhere).toBe('none');
+    expect(f.fix).not.toContain('paste');
+  });
+
+  it('thermal on an Intel part warns harder near Tjmax, and an unknown part gets the numbers without a verdict', () => {
+    const s = devbox();
+    s.cpu.name = '13th Gen Intel(R) Core(TM) i9-13900K';
+    const f = audit(s, { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 97 : 40 })) })['cpu-thermal'];
+    expect(f.state).toBe('warn');
+    expect(f.severity).toBe(2);
+    expect(f.detail).toContain('from its 100 °C limit');
+    expect(f.detail).not.toContain('by design');
+    expect(f.costText).toContain('Little headroom');
+    expect(f.fix).toContain('cooling');
+    s.cpu.name = 'Some CPU';
+    const u = audit(s, { cpuLoad: cpuRun(20) })['cpu-thermal'];
+    expect(u.state).toBe('info');
+    expect(u.detail).toContain('Peaked at 88 °C');
+  });
+
+  it('all-core clock: info with the spec, warn below 90 % of base, plain info for an unknown part', () => {
+    expect(audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-allcore-clock'].state).toBe('info');
+    const slow = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ avgEffectiveMhz: 3700 })) })['cpu-allcore-clock'];
+    expect(slow.state).toBe('warn');
+    expect(slow.detail).toBe('All-core 3.7 GHz effective under load, below the 4.3 GHz base clock: heat or a power limit is holding the CPU back.');
+    expect(slow.fixWhere).toBe('bios');
+    const s = devbox();
+    s.cpu.name = 'Some CPU';
+    expect(audit(s, { cpuLoad: cpuRun(20) })['cpu-allcore-clock'].detail).toBe('All cores ran at 5.2 GHz effective under the load.');
+  });
+
+  it('SMT: 16 cores 32 threads is ok; 16 and 16 on a 32-thread part is info with a BIOS fix; no counts is unknown', () => {
+    expect(audit(devbox())['cpu-smt'].detail).toBe('16 cores, 32 threads: SMT on.');
+    const s = devbox();
+    s.cpu.logical = 16;
+    const f = audit(s)['cpu-smt'];
+    expect(f.state).toBe('info');
+    expect(f.fixWhere).toBe('bios');
+    expect(f.detail).toContain('SMT (Hyper-Threading) is off');
+    expect(f.fix).toContain('turn SMT (AMD) or Hyper-Threading (Intel) on');
+    s.cpu.logical = 0;
+    expect(audit(s)['cpu-smt'].state).toBe('unknown');
+  });
+
+  it('SMT: a Core Ultra 9 285K at 24/24 has none to turn on, so it is ok; a part the table does not count is hedged', () => {
+    const s = devbox();
+    s.cpu.name = 'Intel(R) Core(TM) Ultra 9 285K';
+    s.cpu.cores = 24;
+    s.cpu.logical = 24;
+    const f = audit(s)['cpu-smt'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toBe('24 cores, 24 threads: this part has no SMT.');
+    s.cpu.name = 'AMD Ryzen 5 9600X 6-Core Processor';
+    s.cpu.cores = 6;
+    s.cpu.logical = 6;
+    const hedged = audit(s)['cpu-smt'];
+    expect(hedged.state).toBe('info');
+    expect(hedged.detail).toContain('appears off, or this part has none');
+    expect(hedged.fix).toContain('If the BIOS has');
+  });
+
+  it('idle clock reads the pre-load sample; missing sensors are unknown, never zero', () => {
+    const f = audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-idle-clock'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe('Idle: 194 MHz effective while the cores report up to 5480 MHz; the effective figure is the real rate, the other is the boost the cores stand ready to reach.');
+    const blind = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ avgEffectiveMhz: null })) });
+    expect(blind['cpu-idle-clock'].state).toBe('unknown');
+    expect(blind['cpu-allcore-clock'].state).toBe('unknown');
+    expect(blind['cpu-thermal'].state).toBe('ok');
+  });
+
+  it('a failed or GPU-kind run leaves every CPU rule but SMT unknown; a short run keeps only the idle sample', () => {
+    const failed = { ...cpuRun(20), state: 'failed' as const };
+    for (const run of [failed, loadRun('heavy', 20)]) {
+      const f = audit(devbox(), { cpuLoad: run });
+      for (const id of ['cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-idle-clock']) expect(f[id].state).toBe('unknown');
+      expect(f['cpu-smt'].state).toBe('ok');
+    }
+    const short = audit(devbox(), { cpuLoad: cpuRun(2) });
+    for (const id of ['cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power']) expect(short[id].state).toBe('unknown');
+    expect(short['cpu-idle-clock'].state).toBe('info');
+  });
+});
+
 describe('missing inputs never flag', () => {
   it('an empty snapshot with no runs yields only ok and unknown at zero cost', () => {
     const empty: StaticSnapshot = {
@@ -569,7 +787,7 @@ describe('missing inputs never flag', () => {
       ollama: null
     };
     const findings = runAudit(inputs(empty));
-    expect(findings).toHaveLength(12);
+    expect(findings).toHaveLength(18);
     for (const f of findings) {
       expect(['ok', 'unknown']).toContain(f.state);
       expect(f.severity).toBe(0);

@@ -2,8 +2,9 @@ import React, { useMemo, useRef } from 'react';
 import type { StaticSnapshot, Tick } from '../../collector-types';
 import type { SensorIndex } from './sensors';
 import type { Ring } from './history';
-import { Panel } from './Panel';
+import { Panel, type PanelChrome } from './Panel';
 import { Bar, toneByLimit } from './Bar';
+import { useSettings } from '../useSettings';
 import { ChipDiagram, type CoreGroup } from './ChipDiagram';
 import { cpuLayout, groupCores } from './cpuLayout';
 import { cpuLimits } from './cpuLimits';
@@ -14,16 +15,34 @@ interface Props {
   tick: Tick;
   ring: Ring;
   snapshot: StaticSnapshot | null;
+  panel?: PanelChrome;
+  /** Opens the Monitor page's CPU power-limit setting; the "stock" tag on the Package bar is the way in. */
+  onOpenPowerLimit?: () => void;
 }
 
 const degrees = (x: number) => `${x.toFixed(1)} °C`;
 
-/** Chip diagram beside the bars (the panel is never narrower than 600 px above md), so the two halves read as one instrument (plan 17a). */
-export const CpuPanel: React.FC<Props> = ({ index, tick, ring, snapshot }) => {
+/** The LHM node the rename is keyed by ("/amdcpu/0", "/intelcpu/0"). */
+export const cpuKey = (index: SensorIndex) => index.hardware(/^cpu$/i)[0];
+
+/**
+ * The socket power ceiling the Package bar is judged against: the user's configured PPT/PL2
+ * when set, else the part's stock value, tagged so nobody reads a raised PBO limit off a
+ * stock tick (the sensors cannot read the BIOS limit; docs/dependencies.md).
+ */
+export function cpuPowerLimit(limits: { powerW?: number; powerName?: string }, cpuPptW: number | null | undefined) {
+  const set = typeof cpuPptW === 'number' && cpuPptW > 0;
+  return { watts: set ? cpuPptW : limits.powerW, stock: !set, name: limits.powerName ?? 'PPT' };
+}
+
+/** Chip diagram beside the bars once the panel is 560 px wide (index.css .split; the bars go compact under 360 px), under them in a narrower cell, so the two halves read as one instrument (plan 17a). */
+export const CpuPanel: React.FC<Props> = ({ index, tick, ring, snapshot, panel, onOpenPowerLimit }) => {
+  const settings = useSettings();
   const layout = useMemo(() => cpuLayout(index, snapshot?.cpu), [index, snapshot]);
   const limits = useMemo(() => cpuLimits(snapshot?.cpu.name), [snapshot]);
   const vendor = useMemo(() => vendorOf(snapshot?.cpu.name), [snapshot]);
   const groupIds = useMemo(() => groupCores(layout, limits.ccds), [layout, limits]);
+  const power = cpuPowerLimit(limits, settings.cpuPptW);
 
   const v = (id?: string) => (id === undefined ? undefined : tick.sensors[id]);
   const hist = (id?: string) => (id === undefined ? undefined : ring.series((t) => t.sensors[id]));
@@ -58,16 +77,27 @@ export const CpuPanel: React.FC<Props> = ({ index, tick, ring, snapshot }) => {
   const pkgHigh = layout.packageW ? ring.high((t) => t.sensors[layout.packageW!]) : 0;
   const tempMax = limits.tjmax ? limits.tjmax + 10 : 110;
   const clockMax = Math.max(boost.current, avgEff ?? 0, 1000);
+  // Until the user sets the limit they run, the tick is the part's stock value and says so; the tag opens the setting.
+  const pptSub = power.watts ? (
+    <>
+      of {power.watts} W
+      {power.stock && (
+        <button className="ml-1 underline decoration-dotted underline-offset-2 hover:text-studio-text" onClick={onOpenPowerLimit} title={`Stock ${power.name} from the parts table; set the limit you run (PBO) to judge against it`}>
+          stock
+        </button>
+      )}
+    </>
+  ) : undefined;
 
   return (
-    <Panel title="CPU" vendor={vendor}>
-      <div className="flex flex-col md:flex-row gap-x-4 gap-y-3">
+    <Panel kind="CPU" title={snapshot?.cpu.name ?? 'CPU'} nameKey={cpuKey(index)} vendor={vendor} {...panel}>
+      <div className="split">
         {layout.cores.length > 0 && (
-          <div className="md:shrink-0 md:w-[280px]">
-            <ChipDiagram groups={groups} tctl={tctl} packageW={pkg} tjmax={limits.tjmax} powerLimitW={limits.powerW} vendor={vendor} />
+          <div className="shrink-0 w-[40%] min-w-[min(100%,280px)] max-w-[min(100%,340px)]">
+            <ChipDiagram groups={groups} tctl={tctl} packageW={pkg} tjmax={limits.tjmax} powerLimitW={power.watts} vendor={vendor} />
           </div>
         )}
-        <div className="flex-1 min-w-0 space-y-1.5">
+        <div className="bars flex-1 min-w-0 space-y-1.5">
           <Bar
             label="Tctl"
             value={tctl}
@@ -82,11 +112,11 @@ export const CpuPanel: React.FC<Props> = ({ index, tick, ring, snapshot }) => {
             label="Package"
             value={pkg}
             format={(x) => `${x.toFixed(1)} W`}
-            max={limits.powerW ? limits.powerW * 1.15 : Math.max(pkgHigh * 1.2, 100)}
-            limit={limits.powerW}
-            limitLabel={limits.powerW ? `${limits.powerName} ${limits.powerW} W` : undefined}
-            sub={limits.powerW ? `of ${limits.powerW} W` : undefined}
-            tone={toneByLimit(pkg ?? 0, limits.powerW)}
+            max={power.watts ? Math.max(power.watts * 1.15, pkgHigh * 1.05) : Math.max(pkgHigh * 1.2, 100)}
+            limit={power.watts}
+            limitLabel={power.watts ? `${power.name} ${power.watts} W${power.stock ? ' (stock)' : ''}` : undefined}
+            sub={pptSub}
+            tone={toneByLimit(pkg ?? 0, power.watts)}
             history={hist(layout.packageW)}
           />
           <Bar

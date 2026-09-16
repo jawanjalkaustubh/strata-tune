@@ -9,12 +9,17 @@ export interface CpuLimits {
   ccds?: number;
 }
 
-interface CpuRow {
+/** One row of src/data/cpus.json; the audit's cpuSpec reads the clock and thread figures off the same row. */
+export interface CpuRow {
   models: string[];
   tjmax: number;
   ppt?: number;
   pl2?: number;
   ccds?: number;
+  baseMhz: number;
+  boostMhz: number;
+  cores?: number;
+  threads?: number;
 }
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -23,12 +28,16 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // "i9-13900K" must not match "i9-13900KF".
 const ROWS = (table as CpuRow[]).flatMap((row) => row.models.map((model) => ({ row, regex: new RegExp(`\\b${escape(model)}\\b`, 'i') })));
 
+/** The row for the part the WMI name string identifies, or null for a part not in the table. */
+export function cpuRow(name: string | undefined): CpuRow | null {
+  if (!name) return null;
+  return ROWS.find((r) => r.regex.test(name))?.row ?? null;
+}
+
 /** Limits for the part the WMI name string identifies; an unknown part gets no tick, never a guess (plan 17a, section 21). */
 export function cpuLimits(name: string | undefined): CpuLimits {
-  if (!name) return {};
-  const hit = ROWS.find((r) => r.regex.test(name));
-  if (!hit) return {};
-  const { row } = hit;
+  const row = cpuRow(name);
+  if (!row) return {};
   return {
     tjmax: row.tjmax,
     powerW: row.ppt ?? row.pl2,

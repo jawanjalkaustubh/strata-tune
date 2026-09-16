@@ -9,6 +9,8 @@ internal sealed class Options
     public const int MaxElements = 1 << 29;
 
     public const int MaxSeconds = 3600;
+    // Far past any logical CPU count; the flag exists to run fewer threads, not more.
+    public const int MaxThreads = 1024;
 
     public string Verb { get; private set; } = "";
     public int Elements { get; private set; } = 1 << 24;
@@ -20,6 +22,8 @@ internal sealed class Options
     public bool Json { get; private set; }
     public string Kind { get; private set; } = "";
     public int Seconds { get; private set; }
+    /// <summary>--cpu-load threads; every logical CPU unless --threads says otherwise.</summary>
+    public int Threads { get; private set; } = Environment.ProcessorCount;
 
     /// <exception cref="ArgumentException">An unknown flag, a missing value or a value out of range.</exception>
     public static Options Parse(string[] args)
@@ -35,7 +39,8 @@ internal sealed class Options
             {
                 case "--devices" or "--hash": options.Verb = args[i]; break;
                 case "--load": options.Verb = args[i]; options.Kind = LoadKind(Value("--load")); break;
-                case "--bench": options.Verb = args[i]; break;
+                case "--bench" or "--cpu-load": options.Verb = args[i]; break;
+                case "--threads": options.Threads = Positive("--threads", Value("--threads"), MaxThreads); break;
                 case "--seconds": options.Seconds = Positive("--seconds", Value("--seconds"), MaxSeconds); break;
                 case "--elements": options.Elements = Positive("--elements", Value("--elements"), MaxElements); break;
                 case "--rounds": options.Rounds = Positive("--rounds", Value("--rounds")); break;
@@ -50,12 +55,12 @@ internal sealed class Options
 
         if (options.Verb.Length == 0)
         {
-            throw new ArgumentException("expected --devices, --hash, --load or --bench");
+            throw new ArgumentException("expected --devices, --hash, --load, --cpu-load or --bench");
         }
 
-        if (options.Verb == "--load" && options.Seconds == 0)
+        if (options.Verb is "--load" or "--cpu-load" && options.Seconds == 0)
         {
-            throw new ArgumentException("--load needs --seconds N");
+            throw new ArgumentException($"{options.Verb} needs --seconds N");
         }
 
         return options;

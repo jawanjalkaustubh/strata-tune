@@ -37,7 +37,10 @@ internal static class Nvml
     private const int Success = 0;
     // NVML_ERROR_NOT_SUPPORTED: this card does not have the field, which is not a failure.
     private const int NotSupported = 3;
-    private const uint ClockSm = 1, ClockMem = 2, TemperatureGpu = 0;
+    // NVML_ERROR_INVALID_ARGUMENT: what the clock-offset call answers for a clock type the card has no offset for.
+    private const int InvalidArgument = 2;
+    private const uint ClockGraphics = 0, ClockSm = 1, ClockMem = 2, TemperatureGpu = 0;
+    private const uint PstateP0 = 0;
     private const ulong MiB = 1024 * 1024;
 
     // Public header bits; anything above 0x100 is newer than the header and printed as hex.
@@ -57,8 +60,36 @@ internal static class Nvml
     [StructLayout(LayoutKind.Sequential)]
     private struct Utilization { public uint Gpu, Memory; }
 
+    // nvmlPciInfo_t: busIdLegacy[16], domain, bus, device, pciDeviceId, pciSubSystemId,
+    // busId[32]. Only the two ids are read, so the char arrays are left as padding and the
+    // struct stays blittable.
+    [StructLayout(LayoutKind.Explicit, Size = 68)]
+    private struct PciInfo
+    {
+        [FieldOffset(28)] public uint PciDeviceId;
+        [FieldOffset(32)] public uint PciSubSystemId;
+    }
+
+    // nvmlClockOffset_v1_t, versioned the NVML way: (1 << 24) | sizeof. The caller fills
+    // version, type and pstate; the driver fills the three offsets.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ClockOffset
+    {
+        public uint Version;
+        public uint Type;
+        public uint Pstate;
+        public int ClockOffsetMHz;
+        public int MinClockOffsetMHz;
+        public int MaxClockOffsetMHz;
+
+        public static ClockOffset For(uint type) => new() { Version = (1u << 24) | (uint)Marshal.SizeOf<ClockOffset>(), Type = type, Pstate = PstateP0 };
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate int ReasonsFn(IntPtr device, out ulong reasons);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate int ClockOffsetsFn(IntPtr device, ref ClockOffset info);
 
     private delegate int Query<T>(IntPtr device, out T value) where T : struct;
 
@@ -82,6 +113,8 @@ internal static class Nvml
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetTemperature(IntPtr device, uint sensor, out uint celsius);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetMemoryInfo(IntPtr device, out Memory memory);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetUtilizationRates(IntPtr device, out Utilization utilization);
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetPciInfo_v3(IntPtr device, out PciInfo pci);
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetMaxClockInfo(IntPtr device, uint type, out uint mhz);
 
     private static IntPtr _handle;
 
@@ -124,7 +157,7 @@ internal static class Nvml
             var driver = new byte[80];
             Check(nvmlSystemGetDriverVersion(driver, (uint)driver.Length), nameof(nvmlSystemGetDriverVersion));
             Check(nvmlDeviceGetCount_v2(out var count), nameof(nvmlDeviceGetCount_v2));
-            return new Session(AsciiZ(driver), count, ResolveReasons());
+            return new Session(AsciiZ(driver), count, ResolveReasons(), ResolveClockOffsets());
         }
         catch
         {
@@ -133,7 +166,7 @@ internal static class Nvml
         }
     }
 
-    internal sealed class Session(string driver, uint count, ReasonsFn? reasons) : IDisposable
+    internal sealed class Session(string driver, uint count, ReasonsFn? reasons, ClockOffsetsFn? clockOffsets) : IDisposable
     {
         private readonly Lock _gate = new();
 
@@ -152,7 +185,7 @@ internal static class Nvml
                 {
                     try
                     {
-                        list.Add(ReadOne(i, Driver, reasons));
+                        list.Add(ReadOne(i, Driver, reasons, clockOffsets));
                     }
                     catch (InvalidOperationException e)
                     {
@@ -186,7 +219,14 @@ internal static class Nvml
         return null;
     }
 
-    private static GpuFacts ReadOne(uint index, string driver, ReasonsFn? reasons)
+    // nvmlDeviceGetClockOffsets arrived with NVML 12.5; an older driver simply has no
+    // overclock report, and the audit says so rather than reading zero offsets.
+    private static ClockOffsetsFn? ResolveClockOffsets() =>
+        NativeLibrary.TryGetExport(_handle, "nvmlDeviceGetClockOffsets", out var fn)
+            ? Marshal.GetDelegateForFunctionPointer<ClockOffsetsFn>(fn)
+            : null;
+
+    private static GpuFacts ReadOne(uint index, string driver, ReasonsFn? reasons, ClockOffsetsFn? clockOffsets)
     {
         Check(nvmlDeviceGetHandleByIndex_v2(index, out var dev), nameof(nvmlDeviceGetHandleByIndex_v2));
         var name = new byte[96];
@@ -212,6 +252,7 @@ internal static class Nvml
         var maxLimit = OptionalMaxLimit(dev);
         var util = Optional<Utilization>(nvmlDeviceGetUtilizationRates, dev);
         var bits = reasons is null ? null : Optional<ulong>(reasons.Invoke, dev, "clocks event reasons");
+        var pci = Optional<PciInfo>(nvmlDeviceGetPciInfo_v3, dev);
 
         return new GpuFacts(
             (int)index, AsciiZ(name), driver,
@@ -222,7 +263,44 @@ internal static class Nvml
             new GpuClocks(sm, memClock),
             temp,
             new GpuUtilisation(util?.Gpu ?? 0, util?.Memory ?? 0),
-            new ClocksEventReasons(bits ?? 0, DecodeReasons(bits ?? 0)));
+            new ClocksEventReasons(bits ?? 0, DecodeReasons(bits ?? 0)),
+            // pciSubSystemId packs the subsystem device id in the high half and the vendor id in the low half.
+            pci is { } p ? new GpuPciSubsystem(p.PciSubSystemId & 0xFFFF, p.PciSubSystemId >> 16) : null,
+            clockOffsets is null ? null : ReadClockOffsets(clockOffsets, dev));
+    }
+
+    /// <summary>Where an offsets call that answers something other than success, INVALID_ARGUMENT
+    /// or NOT_SUPPORTED is reported, once per process: the field is optional, so the code is a
+    /// log line, never a lost card.</summary>
+    public static Action<string>? ReportOffsetsFailure { get; set; }
+    private static int _offsetsFailureReported;
+
+    /// <summary>The P0 offsets for the core and memory clocks. The core offset lives under
+    /// the GRAPHICS type (measured on the RTX 5090 with driver 616.92: GRAPHICS answers with
+    /// a −1000…+1000 range, SM answers INVALID_ARGUMENT), the same field nvidia-settings calls
+    /// GPUGraphicsClockOffset; SM is tried second for a driver that files it there instead.
+    /// A clock type the card has no offset for answers INVALID_ARGUMENT or NOT_SUPPORTED;
+    /// any other code (a driver that moved the struct to v2, NO_PERMISSION) is null for the
+    /// field too, because an optional field never costs the mandatory ones.</summary>
+    private static GpuClockOffsets ReadClockOffsets(ClockOffsetsFn fn, IntPtr dev)
+    {
+        int? Offset(uint type)
+        {
+            var info = ClockOffset.For(type);
+            var rc = fn(dev, ref info);
+            if (rc == Success)
+                return info.ClockOffsetMHz;
+            if (rc is not (InvalidArgument or NotSupported) && Interlocked.Exchange(ref _offsetsFailureReported, 1) == 0)
+                ReportOffsetsFailure?.Invoke($"nvml: clock offsets unreadable, left out: {Failure(rc, "nvmlDeviceGetClockOffsets").Message}");
+            return null;
+        }
+
+        uint? MaxClock(uint type, string name) =>
+            Optional<uint>((IntPtr d, out uint mhz) => nvmlDeviceGetMaxClockInfo(d, type, out mhz), dev, $"nvmlDeviceGetMaxClockInfo({name})");
+
+        var sm = Offset(ClockGraphics) ?? Offset(ClockSm);
+        var mem = Offset(ClockMem);
+        return new GpuClockOffsets(sm, mem, MaxClock(ClockSm, "SM"), MaxClock(ClockMem, "MEM"));
     }
 
     private static uint OptionalMaxLimit(IntPtr dev)

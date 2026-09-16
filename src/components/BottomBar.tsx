@@ -23,7 +23,7 @@ interface Props {
   onSelect: (p: Page) => void;
   /** Tune writes to hardware; it is not offered until the settings flag is on. */
   enableTune: boolean;
-  /** Collector state today ("Collector: Connected"); a capture's own state joins it in Phase 4. */
+  /** Collector state and, while one runs or is armed, the capture's ("Collector: Connected · Capturing game.exe"). */
   status: string;
 }
 

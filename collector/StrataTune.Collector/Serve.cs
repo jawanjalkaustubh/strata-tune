@@ -8,8 +8,9 @@ namespace StrataTune.Collector;
 
 /// <summary>The --serve verb: the UI's mode. Refuses to run non-elevated (exit 2) because
 /// the alternative is serving zeros; binds Kestrel to a dynamic loopback port; writes the
-/// handshake; samples until the parent is gone, Ctrl+C or SIGTERM; then removes the
-/// handshake and exits 0, within a few seconds whatever a driver is doing.</summary>
+/// handshake; opens the sources behind it; samples until the parent is gone, Ctrl+C or
+/// SIGTERM; then removes the handshake and exits 0, within a few seconds whatever a driver
+/// is doing.</summary>
 internal static class Serve
 {
     private const int ExitOk = 0, ExitFailure = 1, ExitNotElevated = 2;
@@ -127,22 +128,19 @@ internal static class Serve
         var version = typeof(Serve).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0";
         var startedAt = DateTimeOffset.UtcNow.ToString("O");
         var startedQpc = Stopwatch.GetTimestamp();
-        log.Write($"start pid {Environment.ProcessId} version {version} parent {parentPid}");
+        // Every start-up line carries its offset from this moment (phase1-polish item 8: the
+        // budget is 1.5 s from the UAC click to the first tick, and the log is the measure).
+        string T() => $"t+{Stopwatch.GetElapsedTime(startedQpc).TotalMilliseconds:0} ms";
+        log.Write($"{T()} start pid {Environment.ProcessId} version {version} parent {parentPid}");
 
         var pawnIo = PawnIoDevice.Check();
         if (!pawnIo.Usable)
             log.Write($"PawnIO unusable, CPU and board sensors disabled: {pawnIo.Detail}");
 
-        // Each source opens on its own: one that cannot (no NVIDIA driver, a corrupt
-        // performance-counter registry, a library that throws on this board) is a gap
-        // reported in /health, not a collector that never answers.
         var buffer = new RingBuffer();
+        var sources = new Sources();
         Lhm.ReportNodeFailure = log.Write;
-        var nvml = Open("NVML", () => Nvml.Open(), log);
-        var lhm = Open("LibreHardwareMonitor", () => new LhmSampler(pawnIo.Usable, buffer), log);
-        var pdh = Open("PDH", () => new PdhSampler(buffer, log), log);
-        var nvmlSampler = nvml is null ? null : new NvmlSampler(nvml, buffer);
-        var loads = new LoadRunner(nvml, workerPath, log);
+        Nvml.ReportOffsetsFailure = log.Write;
 
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory });
         builder.Logging.ClearProviders();
@@ -154,11 +152,8 @@ internal static class Serve
         {
             Log = log,
             Buffer = buffer,
-            Nvml = nvml,
-            NvmlSampler = nvmlSampler,
-            Lhm = lhm,
-            Pdh = pdh,
-            Loads = loads,
+            Sources = sources,
+            Loads = new LoadRunner(sources, workerPath, log),
             PawnIoUsable = pawnIo.Usable,
             Version = version,
             StartedAt = startedAt,
@@ -179,21 +174,73 @@ internal static class Serve
         await app.StartAsync();
         var port = new Uri(app.Urls.First()).Port;
         HandshakeFile.Write(new Handshake(port, token, Environment.ProcessId, startedAt));
-        log.Write($"listening on 127.0.0.1:{port}, handshake written");
+        log.Write($"{T()} listening on 127.0.0.1:{port}, handshake written");
 
+        // The sources open after the handshake, so the UI connects while they warm and
+        // /health says so. Each opens on its own: one that cannot (no NVIDIA driver, a
+        // corrupt performance-counter registry, a library that throws on this board) is a
+        // gap reported in /health, not a collector that never answers. NVML first, because
+        // it is quick and the GPU panel reads from it alone.
         var stopping = app.Lifetime.ApplicationStopping;
         var loops = new List<Task>();
-        if (lhm is not null)
-            loops.Add(lhm.RunAsync(log, stopping));
-        if (pdh is not null)
-            loops.Add(pdh.RunAsync(log, stopping));
-        if (nvmlSampler is not null)
-            loops.Add(nvmlSampler.RunAsync(log, stopping));
+        // Warming always ends, and a source that fails anywhere in here is a logged gap: the
+        // task is unobserved, so a throw that escaped it would leave /health saying warming
+        // forever with nothing in the log.
+        var warming = Task.Run(() =>
+        {
+            try
+            {
+                var nvml = Open("NVML", () => Nvml.Open(), log);
+                sources.Nvml = nvml;
+                // The sampler's constructor takes its first read, which fails the same way a
+                // driver reset or a mobile part fails Open(): without the GPU, not the service.
+                var sampler = nvml is null ? null : Open("NVML sampler", () => new NvmlSampler(nvml, buffer), log);
+                sources.NvmlSampler = sampler;
+                if (sampler is not null)
+                    lock (loops)
+                        loops.Add(sampler.RunAsync(log, stopping));
+                log.Write($"{T()} NVML {(nvml is null ? "absent" : $"open, driver {nvml.Driver}{(sampler is null ? ", not streaming" : "")}")}");
+
+                var lhm = Open("LibreHardwareMonitor", () => new LhmSampler(buffer), log);
+                sources.Lhm = lhm;
+                long settledAt = 0;
+                if (lhm is not null)
+                {
+                    lock (loops)
+                        loops.Add(lhm.RunAsync(log, stopping));
+                    log.Write($"{T()} lhm driver open, sampling; groups follow");
+                    lhm.OpenGroups(pawnIo.Usable, log, T, stopping);
+                    settledAt = lhm.SettledAt;
+                }
+
+                var pdh = Open("PDH", () => new PdhSampler(buffer, log), log);
+                sources.Pdh = pdh;
+                if (pdh is not null)
+                    lock (loops)
+                        loops.Add(pdh.RunAsync(log, stopping));
+                log.Write($"{T()} PDH {(pdh is null ? "absent" : "open")}");
+
+                // The last group's sensors join the list on the sampler's next update, which
+                // on a box where PDH opens quickly has not happened yet; the client fetches
+                // the list once more at the tick that ends warming, so that tick must follow
+                // it (on this box PDH takes 4.5 s and the wait is already over).
+                lhm?.WaitForSamples(settledAt, stopping);
+            }
+            catch (Exception e)
+            {
+                log.Write($"{T()} warming failed part way, serving what opened: {e.GetType().Name}: {e.Message}");
+            }
+            finally
+            {
+                sources.Warming = false;
+                log.Write($"{T()} warm: every source has had its turn");
+            }
+        });
         _ = WatchParentAsync();
 
         await app.WaitForShutdownAsync();
         log.Write("stopping: sampling halted");
-        loads.Abort();
+        state.Loads.Abort();
         HandshakeFile.Delete();
         // From here the OS reclaims everything anyway; closing the sensor tree is a courtesy
         // that must not outlive the deadline if a driver call has hung inside a sampler.
@@ -202,10 +249,14 @@ internal static class Serve
             log.Write("exit 0 (a sampler did not stop in time; leaving it to the OS)");
             Environment.Exit(ExitOk);
         });
-        await Task.WhenAny(Task.WhenAll(loops), Task.Delay(LoopDrain));
-        lhm?.Dispose();
-        pdh?.Dispose();
-        nvml?.Dispose();
+        await Task.WhenAny(warming, Task.Delay(LoopDrain));
+        Task[] running;
+        lock (loops)
+            running = loops.ToArray();
+        await Task.WhenAny(Task.WhenAll(running), Task.Delay(LoopDrain));
+        sources.Lhm?.Dispose();
+        sources.Pdh?.Dispose();
+        sources.Nvml?.Dispose();
         log.Write("exit 0");
         return ExitOk;
 

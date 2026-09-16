@@ -1,5 +1,6 @@
 // Copied unchanged from Strata Video (master plan section 20). The section and
-// phase numbers below refer to that app's plan, not this one's. Not imported yet.
+// phase numbers below refer to that app's plan, not this one's. Wired by
+// electron/capture.ts: an armed capture starts on 'enter'.
 // Game Mode (master plan section 9). Hotkey first, process allowlist second,
 // exclusive-fullscreen detection third. Never relies on detection alone,
 // because most modern games run borderless-windowed and never trip the

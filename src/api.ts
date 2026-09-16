@@ -1,8 +1,13 @@
 import type { SupportLinks } from './support';
 import type { GpuFacts, HogsResult, LoadKind, LoadRun, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, Tick } from './collector-types';
 import type { BenchError, BenchGpuRequest, GpuBench, OllamaBench, OllamaList } from '../electron/bench';
+import type { CaptureFrames, CaptureState, ProcessInfo, SessionListItem } from '../electron/capture';
+import type { CaptureSession } from './analysis/session-types';
+import type { Report } from './report/report-types';
+import type { HistoryEntry } from './analysis/history';
 
 export type { BenchError, BenchGpuRequest, GpuBench, OllamaBench, OllamaInstalled, OllamaList } from '../electron/bench';
+export type { CaptureFrames, CaptureState, CaptureStatus, ProcessInfo, SessionListItem } from '../electron/capture';
 
 /** Measurements for the AI stats card (electron/bench.ts); every call answers { error } rather than throwing. */
 export interface AdvisorApi {
@@ -39,6 +44,33 @@ export interface CollectorApi {
   onStatus(cb: (state: CollectorState) => void): () => void;
 }
 
+/** Frame capture (electron/capture.ts): PresentMon on one pid, Game Mode when armed; state and live frames are pushed. */
+export interface CaptureApi {
+  state(): Promise<CaptureState>;
+  processes(): Promise<ProcessInfo[]>;
+  start(pid: number): Promise<CaptureState>;
+  stop(): Promise<CaptureState>;
+  arm(on: boolean): Promise<CaptureState>;
+  onState(cb: (state: CaptureState) => void): () => void;
+  onFrames(cb: (frames: CaptureFrames) => void): () => void;
+}
+
+/** Saved sessions (electron/sessions.ts). delete moves to .trash; exportHtml fills the built report template and asks where to save it. */
+export interface SessionsApi {
+  list(): Promise<SessionListItem[]>;
+  load(id: string): Promise<CaptureSession>;
+  delete(id: string): Promise<void>;
+  setVerdict(id: string, verdict: string): Promise<void>;
+  reveal(id: string): Promise<void>;
+  exportHtml(data: Report): Promise<string | null>;
+}
+
+/** Fix verification (electron/history.ts, plan section 15): add appends and answers the whole list. */
+export interface HistoryApi {
+  list(): Promise<HistoryEntry[]>;
+  add(entry: HistoryEntry): Promise<HistoryEntry[]>;
+}
+
 /** What electron/preload.cjs exposes as window.strata. Keep the two in step. */
 export interface StrataApi {
   version(): Promise<string>;
@@ -50,6 +82,9 @@ export interface StrataApi {
 
   collector: CollectorApi;
   advisor: AdvisorApi;
+  capture: CaptureApi;
+  sessions: SessionsApi;
+  history: HistoryApi;
 }
 
 declare global {

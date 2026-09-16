@@ -25,6 +25,16 @@ export function cachedSensorMeta(): Promise<SensorMeta[]> {
   return meta;
 }
 
+/**
+ * The collector answers from its first moment and opens the sensor groups behind
+ * Tick.warming (phase1-polish item 8), so the list fetched at connect is the CPU group
+ * and little else; this takes the complete list once warming has ended.
+ */
+export function refreshSensorMeta(): Promise<SensorMeta[]> {
+  meta = null;
+  return cachedSensorMeta();
+}
+
 /** A restarted collector may number its sensors differently. */
 export function clearStaticCache() {
   snapshot = null;

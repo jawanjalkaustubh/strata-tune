@@ -12,9 +12,20 @@ export interface Settings {
   enableTune: boolean;
   /** Advisor tok/s factor set from Ollama measurements on this box; null keeps the analysis default (plan section 10). */
   calibrationFactor: number | null;
+  /**
+   * The CPU's socket power limit (AMD PPT / Intel PL2) in watts as the user configured it in
+   * the BIOS; the sensors cannot read a raised PBO limit (docs/dependencies.md). null means
+   * "not set", and the Monitor bar and the audit fall back to the stock value from
+   * src/data/cpus.json, labelled stock.
+   */
+  cpuPptW: number | null;
+  /** Monitor panel titles the user typed over the detected names, keyed by the hardware id (e.g. "/amdcpu/0", "/nvml/0", "/motherboard"). */
+  panelNames: Record<string, string>;
+  /** Monitor panel order and sizes, owned entirely by the Monitor page; null is the default layout. */
+  monitorLayout: unknown;
 }
 
-export const DEFAULT_SETTINGS: Settings = { enableTune: false, calibrationFactor: null };
+export const DEFAULT_SETTINGS: Settings = { enableTune: false, calibrationFactor: null, cpuPptW: null, panelNames: {}, monitorLayout: null };
 
 const KEY = 'strata-tune.settings';
 

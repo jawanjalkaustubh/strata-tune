@@ -152,3 +152,37 @@ Ryzen 9 9950X (32 logical CPUs), MSI MAG X870E TOMAHAWK WIFI (MS-7E59) BIOS 2.A6
 | System.Diagnostics.PerformanceCounter 10.0.12 | MIT | NuGet |
 | .NET runtime (self-contained) | MIT + Microsoft .NET Library License for coreclr | embedded in the published exe |
 | nvml.h prototypes | NVIDIA notice (royalty-free; reproduce disclaimer) | transcribed into Nvml.cs |
+
+## HWiNFO64 8.26 summary of the dev box (read off the GUI, 2026-09-16)
+
+- **GPU is the ASUS ROG Astral GeForce RTX 5090 LC OC** (HWiNFO names it from its subsystem-id
+  database; TPU lists the OC Edition at 2580 MHz boost). GB202-300, PCIe 5.0 x16 @ x16, 31.82 GB
+  GDDR7 512-bit, 176 ROPs / 680 TMUs, 21760 SH / 170 RT / 680 TC. Current clocks at the time:
+  GPU 2910 MHz, **memory 1979 MHz** (stock 1750 → the user's memory offset is +229 MHz ≈ 31.7 Gbps
+  effective), video 2287. So on this box §8's OC-offset row must report both core and memory offsets.
+- **CPU**: 9950X Granite Ridge stepping GNR-B0, TDP 170 W, base 4300 / boost max 5750 / min 600,
+  16×32 KB L1I + 16×48 KB L1D, 16×1 MB L2, 2×32 MB L3. HWiNFO's per-core window showed CCD0
+  cores at 5725 MHz (×57.25) and CCD1 cores parked at 2725 — the same effective-vs-nominal split
+  the Monitor's chip grid shows.
+- **Board**: MSI MAG X870E TOMAHAWK WIFI (MS-7E59), chipset AMD X870E (Promontory PROM21L.7),
+  BIOS **2.AC4 dated 2026-09-02** (the plan's 2.A60 line is stale — the user updated), UEFI,
+  Secure Boot, TPM, HVCI all on.
+- **Memory**: 32 GB DDR5 at **3100 MHz = 6200 MT/s**, FCLK 31.00 × 100, dual channel, CR 1T,
+  28-36-36-96, tRC 132, tRFC 884. Module G.Skill F5-6000J2836G16G in P0 CHANNEL A / DIMMA2 rated
+  DDR5-6000 / PC5-48000 UDIMM, no ECC. SPD profiles: EXPO 3000 MHz 28-36-36-96 1.40 V; EXPO 2200
+  22-36-27-71 1.40 V; JEDEC 2400 40-40-40-77 1.10 V, 1800 30-30-30-58, 1600 28-27-27-52. So the
+  kit's rated speed (6000) comes straight from SPD when HWiNFO or an SPD read is available — the
+  part-number parse is the fallback — and "running 6200 above the 6000 EXPO profile" is a manual
+  tune, consistent with Ryzen Master showing EXPO Mode OFF.
+- **Drives**: Samsung SSD 9100 PRO 2 TB on NVMe x4 32 GT/s (PCIe 5.0); CT2000P3PSSD8 on x4 16 GT/s;
+  **Samsung SSD 980 PRO 2 TB on NVMe x2 16 GT/s — half its lanes**. That is a real audit finding
+  ("an NVMe drive is linked at x2: its M.2 slot shares lanes; sequential reads halve") and a new §8
+  rule: **NVMe link width vs the drive's maximum**. Windows exposes PCIe link state without
+  admin through device properties `DEVPKEY_PciDevice_CurrentLinkWidth` / `MaxLinkWidth` /
+  `CurrentLinkSpeed` / `MaxLinkSpeed` (SetupAPI / `CM_Get_DevNode_PropertyW` on the NVMe
+  controller node) — verify the keys on this box before relying on them.
+- OS: Windows 11 Home x64 build 26200.9457.
+- **This card runs above every reference number** (user's custom OC on the Astral LC OC): memory
+  1979 MHz (stock 1750) → ~31.7 Gbps → ~2,026 GB/s theoretical vs the 1,792 GB/s spec; core held
+  3,204–3,225 MHz under heavy load vs 2,580 rated / 2,407 reference. Any "measured exceeds spec"
+  check must use live clocks as the ceiling, not the table.

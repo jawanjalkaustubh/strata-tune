@@ -19,9 +19,14 @@ export interface BarProps {
   band?: [number, number];
   tone: Tone;
   history?: (number | undefined)[];
-  /** Small text after the value, e.g. "of 230 W". */
-  sub?: string;
+  /** Small text after the value, e.g. "of 230 W"; a node when part of it is a control (the Package bar's stock tag). */
+  sub?: React.ReactNode;
+  /** Something to say about the value ("no tacho at 100 %"): its own muted line under the figure, wrapping, never widening the column past the note width. */
+  note?: string;
 }
+
+/** Label · track · figure columns shared by every bar-shaped row (index.css .bar-row: a fixed figure column so tracks in a column line up, compact under 360 px). */
+export const BAR_GRID = 'bar-row';
 
 /** Near the limit amber, at it red; nothing to compare against stays as given. */
 export function toneByLimit(value: number, limit: number | undefined, warnAt = 0.9, fallback: Tone = 'ok'): Tone {
@@ -51,7 +56,7 @@ export const Bar: React.FC<BarProps> = (p) => {
   const pct = (v: number) => `${(span > 0 ? Math.min(Math.max((v - min) / span, 0), 1) * 100 : 0).toFixed(2)}%`;
   const t = TONE[p.tone];
   return (
-    <div className="grid grid-cols-[7.5rem_1fr_6.5rem] items-center gap-x-3 min-w-0">
+    <div className={BAR_GRID}>
       <span className="label truncate" title={p.label}>
         {p.label}
       </span>
@@ -66,7 +71,8 @@ export const Bar: React.FC<BarProps> = (p) => {
       </div>
       <span className={`figure text-right text-[12px] whitespace-nowrap ${t.text}`}>
         {p.format(p.value)}
-        {p.sub && <span className="text-studio-subtle text-[10px] ml-1">{p.sub}</span>}
+        {p.sub && <span className="bar-sub text-studio-subtle text-[10px]">{p.sub}</span>}
+        {p.note && <span className="block max-w-[9rem] ml-auto whitespace-normal leading-tight text-studio-subtle text-[10px]">{p.note}</span>}
       </span>
     </div>
   );

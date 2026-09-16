@@ -40,8 +40,19 @@ internal static class Lhm
 
     public static Version? PawnIoVersion => PawnIo.IsInstalled ? PawnIo.Version : null;
 
-    /// <summary>Opens the whole tree. The CPU and board readers go through PawnIO; when its
-    /// device will not open they are left out rather than left to report zeros.</summary>
+    /// <summary>Opens the driver and SMBIOS with no hardware group: the sampler adds the
+    /// groups in stages afterwards (the library adds a group live once it is open), so the
+    /// service answers before the slowest group is in.</summary>
+    public static Computer OpenEmpty()
+    {
+        var computer = new Computer();
+        computer.Open();
+        return computer;
+    }
+
+    /// <summary>Opens the whole tree at once, for the probe. The CPU and board readers go
+    /// through PawnIO; when its device will not open they are left out rather than left to
+    /// report zeros.</summary>
     public static Computer Open(bool pawnIoUsable)
     {
         var computer = new Computer

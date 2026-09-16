@@ -6,6 +6,8 @@ import { TitleBar } from './components/TitleBar';
 import { BottomBar, Page } from './components/BottomBar';
 import { AboutModal } from './components/AboutModal';
 import { useCollectorStatus, statusLabel } from './components/useCollectorStatus';
+import { captureStatusLabel, useCaptureState } from './components/capture/useCapture';
+import { onNavigate } from './components/navigate';
 import { Audit } from './pages/Audit';
 import { Monitor } from './pages/Monitor';
 import { Capture } from './pages/Capture';
@@ -21,6 +23,10 @@ export const App: React.FC = () => {
   const [version, setVersion] = useState('');
   const [showAbout, setShowAbout] = useState(false);
   const collector = useCollectorStatus();
+  const capture = useCaptureState();
+
+  // Cross-page links (the audit's PBO hint into the Monitor page's setting); the page picks up the rest.
+  useEffect(() => onNavigate((t) => setPage(t.page)), []);
 
   // Each startup probe advances the splash; the last one dismisses it. The
   // collector handshake is deliberately not on this list: it waits on a UAC
@@ -68,7 +74,7 @@ export const App: React.FC = () => {
       <main className="flex-1 flex flex-col min-h-0 overflow-auto">
         <Current />
       </main>
-      <BottomBar page={current} onSelect={setPage} enableTune={settings.enableTune} status={`Collector: ${statusLabel(collector)}`} />
+      <BottomBar page={current} onSelect={setPage} enableTune={settings.enableTune} status={[`Collector: ${statusLabel(collector)}`, captureStatusLabel(capture)].filter(Boolean).join(' · ')} />
       <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} version={version} support={support} />
     </div>
   );

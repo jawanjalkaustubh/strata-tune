@@ -4,12 +4,12 @@ using StrataTune.Shared;
 namespace StrataTune.Collector;
 
 /// <summary>POST /load and GET /load/{id}: one worker at a time under the collector's watch,
-/// with GPU 0 sampled at 2 Hz from the moment it starts until it exits, so the audit's
-/// thermal-headroom check can judge the steady window (t ≥ 3 s) against the start. The
-/// worker is the one beside this exe (<see cref="Serve"/> resolves it), inherits this
-/// process's token (plan section 5), and its exit code is reported as is: 0 ok, 3 no
-/// hardware GPU, 10 device lost.</summary>
-internal sealed class LoadRunner(Nvml.Session? nvml, string workerPath, Log log)
+/// with GPU 0 (the GPU kinds) or the CPU (the cpu kind) sampled at 2 Hz from just before it
+/// starts until it exits, so the audit can judge the steady window (t ≥ 3 s) against the
+/// start and the first sample is the idle reference. The worker is the one beside this exe
+/// (<see cref="Serve"/> resolves it), inherits this process's token (plan section 5), and
+/// its exit code is reported as is: 0 ok, 3 no hardware GPU, 10 device lost.</summary>
+internal sealed class LoadRunner(Sources sources, string workerPath, Log log)
 {
     public enum Start { Started, Busy, Rejected }
 
@@ -35,8 +35,9 @@ internal sealed class LoadRunner(Nvml.Session? nvml, string workerPath, Log log)
         public string? Error { get; set; }
         public Process? Process { get; set; }
         public List<GpuSample> Samples { get; } = [];
+        public List<CpuSample> CpuSamples { get; } = [];
 
-        public LoadRun Snapshot() => new(Id, Kind, Seconds, State, ExitCode, QpcStart, QpcEnd, Samples.ToList(), Error);
+        public LoadRun Snapshot() => new(Id, Kind, Seconds, State, ExitCode, QpcStart, QpcEnd, Samples.ToList(), CpuSamples.ToList(), Error);
     }
 
     public Start TryStart(LoadRunRequest request, out LoadRun? run, out string refusal)
@@ -106,7 +107,7 @@ internal sealed class LoadRunner(Nvml.Session? nvml, string workerPath, Log log)
     private async Task RunAsync(ActiveRun run)
     {
         var heartbeat = Path.Combine(Path.GetTempPath(), $"strata-tune-load-{run.Id}.heartbeat");
-        var kind = run.Kind == LoadKind.Light ? "light" : "heavy";
+        var kind = run.Kind switch { LoadKind.Light => "light", LoadKind.Heavy => "heavy", _ => "cpu" };
         var info = new ProcessStartInfo(workerPath)
         {
             UseShellExecute = false,
@@ -114,8 +115,15 @@ internal sealed class LoadRunner(Nvml.Session? nvml, string workerPath, Log log)
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        info.ArgumentList.Add("--load");
-        info.ArgumentList.Add(kind);
+        if (run.Kind == LoadKind.Cpu)
+        {
+            info.ArgumentList.Add("--cpu-load");
+        }
+        else
+        {
+            info.ArgumentList.Add("--load");
+            info.ArgumentList.Add(kind);
+        }
         info.ArgumentList.Add("--seconds");
         info.ArgumentList.Add(run.Seconds.ToString());
         info.ArgumentList.Add("--heartbeat");
@@ -124,6 +132,8 @@ internal sealed class LoadRunner(Nvml.Session? nvml, string workerPath, Log log)
 
         try
         {
+            // Sampled before the worker exists, so the first sample is what idle looks like.
+            Sample(run);
             using var process = Process.Start(info) ?? throw new InvalidOperationException("the worker did not start");
             lock (_gate)
                 run.Process = process;
@@ -154,7 +164,8 @@ internal sealed class LoadRunner(Nvml.Session? nvml, string workerPath, Log log)
                 run.State = process.ExitCode == 0 ? LoadRunState.Done : LoadRunState.Failed;
                 run.Error = process.ExitCode == 0 ? null : $"worker exited {process.ExitCode}: {error}";
             }
-            log.Write($"load {run.Id}: exit {process.ExitCode}, {run.Samples.Count} GPU samples{(error.Length > 0 ? $", stderr: {error}" : "")}");
+            var count = run.Kind == LoadKind.Cpu ? $"{run.CpuSamples.Count} CPU samples" : $"{run.Samples.Count} GPU samples";
+            log.Write($"load {run.Id}: exit {process.ExitCode}, {count}{(error.Length > 0 ? $", stderr: {error}" : "")}");
         }
         catch (Exception e)
         {
@@ -182,7 +193,16 @@ internal sealed class LoadRunner(Nvml.Session? nvml, string workerPath, Log log)
 
     private void Sample(ActiveRun run)
     {
-        if (nvml is null)
+        if (run.Kind == LoadKind.Cpu)
+        {
+            // The library's last 2 Hz reading (at most half a second old, restamped to now so
+            // the run's timeline is its own); a CPU group not yet open gives nulls, not zeros.
+            var cpu = (sources.Lhm?.LatestCpu ?? new CpuSample(0, null, null, null, null)) with { Qpc = Stopwatch.GetTimestamp() };
+            lock (_gate)
+                run.CpuSamples.Add(cpu);
+            return;
+        }
+        if (sources.Nvml is not { } nvml)
             return;
         try
         {

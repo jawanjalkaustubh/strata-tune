@@ -42,6 +42,8 @@ const COLS = 4;
 const TEXT = '#f1f5f9';
 const MUTED = '#94a3b8';
 const OUTLINE = '#323b4e';
+/** The load fill tops out as a tint (0.36 with the 0.06 floor): an AMD chip at full load must stay a red tint, not the solid red that the bars keep for "at a limit" (plan 17a). */
+const LOAD_TINT = 0.3;
 
 const ghz = (mhz?: number) => (mhz === undefined ? '—' : (mhz / 1000).toFixed(2));
 const num = (v: number | undefined, digits: number, unit: string) => (v === undefined ? '—' : `${v.toFixed(digits)} ${unit}`);
@@ -49,8 +51,9 @@ const figureFill = (tone: Tone) => (tone === 'ok' ? TEXT : TONE[tone].hex);
 
 /**
  * The package as an SVG: one cell per physical core, grouped by die, with the
- * IOD between the dies. Fill follows load in the vendor's colour (the one
- * gradient the panel allows); the big figure is the effective clock because a
+ * IOD between the dies. Fill follows load as a tint of the vendor's colour (the
+ * one gradient the panel allows, capped so a loaded AMD chip never matches the
+ * state red beside it); the big figure is the effective clock because a
  * parked core reports its nominal 5.7 GHz and ~0 effective (plan 17), and the
  * nominal clock stands in where the library has no effective reading. Heat
  * reads before digits: a die's temperature and the package figures take the
@@ -84,7 +87,7 @@ export const ChipDiagram: React.FC<Props> = ({ groups, tctl, packageW, tjmax, po
   const packageTip: Tip = { title: 'Package', lines: [`Tctl ${num(tctl, 0, '°C')}${tjmax ? ` of ${tjmax} °C` : ''}`, `${num(packageW, 1, 'W')}${powerLimitW ? ` of ${powerLimitW} W` : ''}`] };
 
   return (
-    <div ref={host} className="relative" style={{ maxWidth: width * 1.15 }}>
+    <div ref={host} className="relative" style={{ maxWidth: width * 1.25 }}>
       <svg viewBox={`0 0 ${width} ${height}`} className="block w-full h-auto max-w-full" role="img" aria-label="CPU cores by die">
         <rect x={1} y={1} width={width - 2} height={height - 2} rx={6} fill="#121620" stroke={vendor.colour} strokeOpacity={0.7} />
         {groups.map((g, gi) => {
@@ -116,7 +119,7 @@ export const ChipDiagram: React.FC<Props> = ({ groups, tctl, packageW, tjmax, po
                 };
                 return (
                   <g key={c.n} transform={`translate(${cx} ${cy})`} {...bind(cellTip)}>
-                    <rect width={CELL_W} height={CELL_H} rx={3} fill={vendor.colour} fillOpacity={0.06 + 0.7 * Math.min(load, 100) / 100} stroke={dieTone === 'ok' ? OUTLINE : TONE[dieTone].hex} />
+                    <rect width={CELL_W} height={CELL_H} rx={3} fill={vendor.colour} fillOpacity={0.06 + LOAD_TINT * Math.min(load, 100) / 100} stroke={dieTone === 'ok' ? OUTLINE : TONE[dieTone].hex} strokeWidth={dieTone === 'ok' ? 1 : 1.5} />
                     <text x={CELL_W / 2} y={16} textAnchor="middle" className="chip-figure" fill={TEXT}>
                       {ghz(big)}
                     </text>
