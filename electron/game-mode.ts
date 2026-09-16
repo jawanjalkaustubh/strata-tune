@@ -20,9 +20,12 @@ const DEFAULT_ALLOWLIST = [
   'hogwartslegacy', 'monsterhunterwilds', 'blackmythwukong', 'palworld-win64-shipping'
 ];
 
-// Cheap probes. The process list comes from tasklist (a few ms); the fullscreen
-// query only runs when no allowlisted game is found, and uses PowerShell's
-// built-in P/Invoke cache so nothing is compiled per call.
+// Probes. The process list comes from tasklist (a few ms). The fullscreen query
+// is NOT cheap: every call is a fresh powershell.exe, so the `'Q' -as [type]`
+// cache never hits and Add-Type runs csc.exe on every probe (measured ~1 s
+// wall, 250-312 ms CPU per probe). It therefore runs only when no allowlisted
+// game is found AND a capture is armed (lifecycle audit 2026-09-15, item 33);
+// an idle app never spawns PowerShell on a timer.
 const FULLSCREEN_PRELUDE = `if(-not ('Q' -as [type])){Add-Type -Name Q -Namespace W -MemberDefinition '[DllImport("shell32.dll")]public static extern int SHQueryUserNotificationState(out int s);' | Out-Null};$s=0;[void][W.Q]::SHQueryUserNotificationState([ref]$s);$s`;
 
 export interface GameModeState {
@@ -38,6 +41,9 @@ export class GameMode extends EventEmitter {
   private manual = false;
   private clearSince: number | null = null;
   private busyProvider: () => boolean = () => false;
+  private captureArmedProvider: () => boolean = () => false;
+  /** Between start() and stop(). A poll in flight during stop() must not re-arm the timer. */
+  private running = false;
 
   get active() {
     return this.state.active;
@@ -48,11 +54,18 @@ export class GameMode extends EventEmitter {
     this.busyProvider = fn;
   }
 
+  /** Tell Game Mode whether a capture is armed; the PowerShell fullscreen probe runs only then. */
+  setCaptureArmedProvider(fn: () => boolean) {
+    this.captureArmedProvider = fn;
+  }
+
   setAllowlist(names: string[]) {
     this.allowlist = new Set(names.map((n) => n.toLowerCase().replace(/\.exe$/, '')));
   }
 
   start() {
+    if (this.running) return;
+    this.running = true;
     try {
       globalShortcut.register(GAME_MODE_HOTKEY, () => this.toggleManual());
     } catch {
@@ -62,6 +75,7 @@ export class GameMode extends EventEmitter {
   }
 
   stop() {
+    this.running = false;
     try {
       globalShortcut.unregister(GAME_MODE_HOTKEY);
     } catch {
@@ -78,6 +92,9 @@ export class GameMode extends EventEmitter {
   }
 
   private schedule() {
+    // Checked first: poll().finally() lands here after stop() cleared the
+    // timer, and without this the chain re-arms itself forever.
+    if (!this.running) return;
     if (this.timer) clearTimeout(this.timer);
     const interval = this.busyProvider() ? 10_000 : 30_000;
     this.timer = setTimeout(() => this.poll().finally(() => this.schedule()), interval);
@@ -98,7 +115,7 @@ export class GameMode extends EventEmitter {
     });
   }
 
-  /** QUNS_RUNNING_D3D_FULL_SCREEN. Only called when the process list found nothing. */
+  /** QUNS_RUNNING_D3D_FULL_SCREEN. Only called when the process list found nothing and a capture is armed. */
   private fullscreenApp(): Promise<boolean> {
     return new Promise((resolve) => {
       execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', FULLSCREEN_PRELUDE], { encoding: 'utf-8', windowsHide: true, timeout: 8000 }, (err, stdout) => {
@@ -112,12 +129,14 @@ export class GameMode extends EventEmitter {
     const procs = await this.listProcesses();
     const game = procs.find((p) => this.allowlist.has(p)) || null;
     if (game) return { fullscreen: false, game };
+    if (!this.captureArmedProvider()) return { fullscreen: false, game: null };
     return { fullscreen: await this.fullscreenApp(), game: null };
   }
 
   private async poll() {
-    if (process.platform !== 'win32' || this.manual) return;
+    if (process.platform !== 'win32' || this.manual || !this.running) return;
     const { fullscreen, game } = await this.probe();
+    if (!this.running) return; // stop() ran while the probe was out; do not act on a stale result
     const detected = game ? `process:${game}` : fullscreen ? 'fullscreen' : null;
     if (detected) {
       this.clearSince = null;

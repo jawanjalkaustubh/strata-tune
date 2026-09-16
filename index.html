@@ -30,6 +30,14 @@
       .splash-row { margin-top: 12px; width: 300px; display: flex; justify-content: space-between; font-size: 11px; color: #64748b; font-family: Consolas, monospace; }
       .splash-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px; }
       .splash-pct { font-weight: 700; color: #6ee7b7; margin-left: 8px; }
+      /* Failure state: the splash holds with the error and two controls instead of fading out. */
+      .splash-error { display: none; margin-top: 14px; width: 420px; max-height: 120px; overflow: auto; padding: 8px 10px; font-size: 11px; line-height: 1.4; color: #fca5a5; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 6px; font-family: Consolas, monospace; white-space: pre-wrap; user-select: text; -webkit-app-region: no-drag; }
+      .splash-actions { display: none; margin-top: 12px; gap: 8px; -webkit-app-region: no-drag; }
+      .splash-actions button { font: inherit; font-size: 12px; padding: 5px 14px; border-radius: 6px; cursor: pointer; color: #f1f5f9; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); }
+      .splash-actions button:hover { background: rgba(255,255,255,0.14); }
+      .splash.failed .splash-error, .splash.failed .splash-actions { display: flex; }
+      .splash.failed .splash-fill { background: #ef4444; }
+      .splash.failed .splash-pct { color: #fca5a5; }
     </style>
   </head>
   <body class="bg-studio-bg text-studio-text overflow-hidden select-none font-sans">
@@ -44,32 +52,82 @@
           <span class="splash-status" id="splash-status">Starting…</span>
           <span class="splash-pct" id="splash-pct">0%</span>
         </div>
+        <pre class="splash-error" id="splash-error"></pre>
+        <div class="splash-actions" id="splash-actions">
+          <button type="button" id="splash-retry">Retry</button>
+          <button type="button" id="splash-continue">Continue anyway</button>
+        </div>
     </div>
     <script>
       // Real progress: the app reports each startup step through window.__splash.
       // No continuous animation on the logo or the bar, only two short transitions
       // (the bar's width, the final fade-out): the app runs without GPU
       // acceleration (master plan A6), so every repaint is CPU work.
+      //
+      // Failure state (lifecycle audit 2026-09-15, item 31): a startup error
+      // HOLDS the splash with the message, Retry (reload) and Continue, instead
+      // of fading out after it; otherwise the text is visible for under 0.5 s.
+      // The error listener is registered in the capture phase so a failed
+      // <script> fetch (an error event that does not bubble) is caught too. A
+      // 10 s watchdog says "Still starting…" so a silent hang is not mistaken
+      // for a slow machine.
       (function () {
         var fill = document.getElementById('splash-fill');
         var status = document.getElementById('splash-status');
         var pct = document.getElementById('splash-pct');
         var shown = 0;
+        var done = false;
+        var failed = false;
         window.__splash = function (p, text) {
-          if (!fill) return;
+          if (!fill || failed) return;
           shown = Math.max(shown, Math.min(100, p));
           fill.style.width = shown + '%';
           pct.textContent = shown + '%';
           if (text) status.textContent = text;
         };
         window.__splash(8, 'Loading interface…');
+        var watchdog = setTimeout(function () {
+          if (!done && !failed) status.textContent = 'Still starting… (' + shown + '%)';
+        }, 10000);
         window.__splashDone = function () {
           var el = document.getElementById('splash');
+          done = true;
+          clearTimeout(watchdog);
           if (!el) return;
           el.style.opacity = '0';
           el.style.pointerEvents = 'none';
           setTimeout(function () { el.remove(); }, 260);
         };
+        window.__splashFail = function (text) {
+          var el = document.getElementById('splash');
+          if (done || !el) return; // the app is up; a later error is the app's to show
+          clearTimeout(watchdog);
+          var msg = String(text || 'Unknown error');
+          if (!failed) {
+            failed = true;
+            el.classList.add('failed');
+            status.textContent = 'Could not start';
+            pct.textContent = shown + '%';
+            document.getElementById('splash-error').textContent = msg;
+          } else {
+            var box = document.getElementById('splash-error');
+            if (box.textContent.indexOf(msg) < 0) box.textContent += '\n' + msg;
+          }
+        };
+        document.getElementById('splash-retry').addEventListener('click', function () { location.reload(); });
+        document.getElementById('splash-continue').addEventListener('click', function () { window.__splashDone(); });
+        window.addEventListener('error', function (e) {
+          var t = e.target;
+          var text;
+          if (e.message) text = 'Error: ' + e.message + (e.filename ? ' (' + e.filename.replace(/^.*[\\/]/, '') + ':' + e.lineno + ')' : '');
+          else if (t && t !== window && (t.src || t.href)) text = 'Error: failed to load ' + (t.src || t.href);
+          else text = 'Error: ' + String(e.error || e.type);
+          window.__splashFail(text);
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason;
+          window.__splashFail('Error: ' + (r && r.message ? r.message : String(r)));
+        });
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>

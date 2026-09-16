@@ -1,7 +1,10 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
+import { CollectorClient } from './collector';
+import type { CollectorState } from '../src/api';
+import type { LoadKind, Tick } from '../src/collector-types';
 
 // Strata Tune is a dashboard; nothing on screen needs a GPU. Rendering on the
 // CPU is the only way to be sure the monitor never perturbs a stress test or a
@@ -17,7 +20,34 @@ const SELFTEST = (process.env.STRATA_SELFTEST || '').trim() === '1';
 
 let mainWindow: BrowserWindow | null = null;
 
+/** Set in before-quit; consulted before every late spawn and every reload. */
+let quitting = false;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// ------------------------------------------------------------------- boot
+
+/**
+ * A boot failure must be visible and must end the process: an unhandled
+ * rejection in main is one stderr line nobody sees under the .vbs launcher,
+ * and electron.exe would then live on with no window and no exit path
+ * (lifecycle audit 2026-09-15, item 20). showErrorBox is safe before ready.
+ */
+function fatal(stage: string, err: unknown): void {
+  const detail = err instanceof Error ? err.stack || err.message : String(err);
+  console.error(`[boot] ${stage}:`, detail);
+  try {
+    dialog.showErrorBox('Strata Tune could not start', `${stage}\n\n${detail}`);
+  } catch {
+    /* no display: the exit code is the message */
+  }
+  app.exit(1);
+}
+
 // ------------------------------------------------------------------ window
+
+/** Renderer reloads after render-process-gone; past this the app gives up loudly instead of looping. */
+const MAX_RENDERER_RESTARTS = 3;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -35,23 +65,67 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
-      backgroundThrottling: false,
+      // Chromium's default (throttle timers while hidden or occluded, intensively
+      // after 5 min) is right for an idle dashboard; setLiveSession(true) lifts
+      // it only while a session runs.
       sandbox: true
     }
   });
-  mainWindow.setMenuBarVisibility(false);
+  const win = mainWindow;
+  win.setMenuBarVisibility(false);
   // Links from the renderer (donate, project page) open in the default browser,
   // never in a second Electron window. Only https leaves the app.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\/\S+$/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
-  mainWindow.on('closed', () => (mainWindow = null));
+
+  // A renderer crash would otherwise leave a frameless window with nothing in
+  // it and no title bar to close it with. Every reason reloads, 'killed' (End
+  // Task on the renderer in Task Manager) included: the dead window is the
+  // worse outcome, and the cap is what stops a crash loop.
+  let rendererRestarts = 0;
+  win.webContents.on('render-process-gone', (_e, details) => {
+    if (quitting || win.isDestroyed()) return;
+    rendererRestarts += 1;
+    console.error(`[renderer] gone (${details.reason}, exit ${details.exitCode}); restart ${rendererRestarts}/${MAX_RENDERER_RESTARTS}`);
+    if (rendererRestarts > MAX_RENDERER_RESTARTS) {
+      fatal(`The interface crashed ${rendererRestarts} times (${details.reason})`, 'Giving up; run npm start from a terminal to see the console.');
+      return;
+    }
+    win.webContents.reload();
+  });
+
+  // The initial load owns its own failure (the promise rejects with the same
+  // error did-fail-load reports); did-fail-load handles only later navigations
+  // (a Retry reload, a crash reload), main frame only, and not -3 ERR_ABORTED,
+  // which is a navigation superseded by another and no error at all.
+  let initialLoadSettled = false;
+  win.webContents.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
+    if (!isMainFrame || code === -3 || !initialLoadSettled || quitting) return;
+    fatal('The interface failed to load', `${description} (${code}) ${url}`);
+  });
+
+  const load = process.env.VITE_DEV_SERVER_URL
+    ? win.loadURL(process.env.VITE_DEV_SERVER_URL)
+    : win.loadFile(path.join(__dirname, '../dist/index.html'));
+  load.finally(() => (initialLoadSettled = true)).catch((e) => fatal('The interface failed to load', e));
+
+  // Windows logoff / shutdown: before-quit is not emitted (Electron documents
+  // it); this is the one place to flush state and tell the collector.
+  win.on('session-end', () => void shutdown());
+  win.on('closed', () => (mainWindow = null));
+}
+
+/**
+ * Background throttling is Chromium's default and stays on while the app is a
+ * dashboard; a live session (Monitor page at 2 Hz, a capture) must keep its
+ * cadence while the game is in front, so it is lifted only then and restored
+ * after (lifecycle audit item 34). Not called yet: the first live session
+ * arrives with the Monitor page.
+ */
+function setLiveSession(on: boolean): void {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(!on);
 }
 
 // ------------------------------------------------------------------- IPC
@@ -73,6 +147,47 @@ function registerIpc() {
   ipcMain.handle('app:support', () => readSupport());
 }
 
+// ------------------------------------------------------------- collector
+
+let collector: CollectorClient | null = null;
+
+// 2 Hz ticks cross the IPC bridge only while a page asks for them, so the
+// Audit page and an idle app cost nothing. Single window, so a flag suffices;
+// a reload of the renderer starts it over unsubscribed.
+let ticksWanted = false;
+
+function sendToRenderer(channel: string, payload: CollectorState | Tick) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+function registerCollectorIpc(c: CollectorClient) {
+  ipcMain.handle('collector:status', () => c.state);
+  ipcMain.handle('collector:start', () => c.start());
+  ipcMain.handle('collector:snapshot', () => c.snapshot());
+  ipcMain.handle('collector:sensorsMeta', () => c.sensorsMeta());
+  ipcMain.handle('collector:sensorsLatest', () => c.sensorsLatest());
+  ipcMain.handle('collector:gpu', () => c.gpu());
+  ipcMain.handle('collector:hogs', (_e, seconds: number) => c.hogs(seconds));
+  ipcMain.handle('collector:load', (_e, kind: LoadKind, seconds: number) => c.load(kind, seconds));
+  // A tick subscriber is a live session: the Monitor must keep its 2 Hz while a game is in front.
+  ipcMain.on('collector:subscribe', () => {
+    ticksWanted = true;
+    setLiveSession(true);
+  });
+  ipcMain.on('collector:unsubscribe', () => {
+    ticksWanted = false;
+    setLiveSession(false);
+  });
+  mainWindow?.webContents.on('did-start-loading', () => {
+    ticksWanted = false;
+    setLiveSession(false);
+  });
+  c.on('status', (s: CollectorState) => sendToRenderer('collector:status', s));
+  c.on('tick', (t: Tick) => {
+    if (ticksWanted) sendToRenderer('collector:tick', t);
+  });
+}
+
 // --------------------------------------------------------------- self-test
 
 /**
@@ -84,10 +199,20 @@ const gpuInfoUpdated: Promise<void> | null = SELFTEST
   ? new Promise((resolve) => app.once('gpu-info-update', () => resolve()))
   : null;
 
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** The "never hang CI" deadline; cleared on the first finish so it cannot print a second line. */
+let selfTestDeadline: NodeJS.Timeout | null = null;
+let selfTestFinished = false;
 
-/** One JSON line to stdout, flushed, then exit with the given code. */
+/**
+ * One JSON line to stdout, flushed, then exit with the given code. First call
+ * wins: when the deadline fires, a test that completes in the gap before
+ * app.exit lands (the write callback) must not print a second line.
+ */
 function finishSelfTest(report: Record<string, unknown>, code: number): void {
+  if (selfTestFinished) return;
+  selfTestFinished = true;
+  if (selfTestDeadline) clearTimeout(selfTestDeadline);
+  selfTestDeadline = null;
   process.stdout.write(JSON.stringify(report) + '\n', () => app.exit(code));
 }
 
@@ -171,19 +296,71 @@ async function runSelfTest(): Promise<void> {
 
 // --------------------------------------------------------------- lifecycle
 
-app.whenReady().then(async () => {
-  if (SELFTEST) {
-    // Never hang CI: a stuck test reports itself and exits 1.
-    setTimeout(() => finishSelfTest({ ok: false, reason: 'self-test timed out' }, 1), 15000);
-    try {
-      await runSelfTest();
-    } catch (e) {
-      finishSelfTest({ ok: false, reason: String(e) }, 1);
-    }
-    return;
+/**
+ * Bounded shutdown (lifecycle audit 2026-09-15, section 2.4 and item 32), in
+ * order, every step time-bounded, nothing synchronous that blocks the loop:
+ *   1. `quitting` is already set, so nothing spawns after this point;
+ *   2. renderer state: nothing to flush yet (settings live in localStorage);
+ *   3. the collector: POST /shutdown with the token, 2 s cap. Its own
+ *      SYNCHRONIZE watchdog on our pid is what really ends it (an elevated
+ *      child cannot be killed from here); this only makes that earlier.
+ * Errors are swallowed: quitting wins.
+ */
+async function shutdown(): Promise<void> {
+  const c = collector;
+  if (!c) return;
+  try {
+    await Promise.race([c.shutdown(2000), delay(2000)]);
+  } catch (err) {
+    console.error('[quit] collector shutdown failed:', err);
   }
-  registerIpc();
-  createWindow();
-});
+}
 
-app.on('window-all-closed', () => app.quit());
+// One instance (item 19): a second launch focuses the first window instead of
+// racing it for the handshake file and the elevated collector. The self-test
+// takes no lock so CI can run it beside an open app.
+if (!SELFTEST && !app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  });
+
+  app
+    .whenReady()
+    .then(async () => {
+      if (SELFTEST) {
+        // Never hang CI: a stuck test reports itself and exits 1.
+        selfTestDeadline = setTimeout(() => finishSelfTest({ ok: false, reason: 'self-test timed out' }, 1), 15000);
+        try {
+          await runSelfTest();
+        } catch (e) {
+          finishSelfTest({ ok: false, reason: String(e) }, 1);
+        }
+        return;
+      }
+      // Frameless window: without this the default menu's accelerators still
+      // work (Ctrl+W closes, Ctrl+R reloads mid-session, F11, Ctrl+Shift+I).
+      Menu.setApplicationMenu(null);
+      registerIpc();
+      createWindow();
+      // One UAC prompt per app start (plan section 5). A decline is a state the
+      // Audit page shows with a Retry, not a failure of the app.
+      collector = new CollectorClient();
+      registerCollectorIpc(collector);
+      collector.start().catch((e) => console.error('[collector] start failed:', e));
+    })
+    .catch((e) => fatal('Startup failed', e));
+
+  app.on('before-quit', (e) => {
+    if (quitting) return;
+    quitting = true;
+    e.preventDefault();
+    Promise.race([shutdown(), delay(5000)]).finally(() => app.quit());
+  });
+
+  app.on('will-quit', () => collector?.armOrphanCheck());
+  app.on('window-all-closed', () => app.quit());
+}

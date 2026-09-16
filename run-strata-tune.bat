@@ -4,16 +4,20 @@ cd /d "%~dp0"
 
 :: First run after a clone: install dependencies, then build. Each step is checked
 :: because the .vbs launcher runs this window hidden and a silent failure looks like
-:: the app just did not open.
+:: the app just did not open. The steps themselves run in a NEW, visible console
+:: (start /wait opens one even when this window is hidden): a first-run npm ci can
+:: take minutes and has no timeout, so the user must be able to see it working
+:: rather than wonder whether the app hung (lifecycle audit 2026-09-15, item 34).
+:: start /wait hands the child's exit code back as errorlevel.
 set "STRATA_STEP="
 if not exist "node_modules\electron\dist\electron.exe" (
     set "STRATA_STEP=npm ci"
-    call npm ci --no-audit --no-fund
+    start "Strata Tune - first run: installing dependencies" /wait cmd /c "npm ci --no-audit --no-fund"
     if errorlevel 1 goto :fail
 )
 if not exist "dist-electron\main.js" (
     set "STRATA_STEP=npm run build"
-    call npm run build
+    start "Strata Tune - first run: building" /wait cmd /c "npm run build"
     if errorlevel 1 goto :fail
 )
 
