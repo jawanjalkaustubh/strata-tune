@@ -129,7 +129,7 @@ export function siblingsHolding(model: string): Presence[] {
  * own Set or - with no sibling alive at all - M is one of the models this app
  * is configured to load (`configured`), the same rule Photo, Code and Video
  * apply. A model this app never loaded and no slot names (a user's own
- * `ollama run`) is never touched; the explicit "Evict" button is the only
+ * `ollama run`) is never touched; the explicit "Free GPU" button is the only
  * evict-all and does not go through here.
  */
 export function mayUnload(model: string, own: ReadonlySet<string>, atQuit: boolean, configured: Iterable<string> = []): boolean {
@@ -233,7 +233,7 @@ export class PresenceFile {
 /**
  * Before loading anything big: is the VRAM held by a live sibling? Returns the
  * "GPU held by <app> (<model>)" text for the UI, or null when nothing is held.
- * The caller offers an explicit Evict; nothing evicts automatically.
+ * The caller offers an explicit Free GPU; nothing evicts automatically.
  */
 export async function heldBySibling(base: string = OLLAMA_URL): Promise<string | null> {
   const siblings = readSiblings();
