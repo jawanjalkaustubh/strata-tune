@@ -126,15 +126,17 @@ export function siblingsHolding(model: string): Presence[] {
 /**
  * The unload rule (quit, idle, before-load, Free RAM): keep_alive:0 for M iff
  * no live sibling presence lists M. At quit additionally only if M is in the
- * own Set or no sibling is alive at all. Off the quit path a model this app
- * never loaded (a user's own `ollama run`) is never touched; the explicit
- * "Evict" button is the only evict-all and does not go through here.
+ * own Set or - with no sibling alive at all - M is one of the models this app
+ * is configured to load (`configured`), the same rule Photo, Code and Video
+ * apply. A model this app never loaded and no slot names (a user's own
+ * `ollama run`) is never touched; the explicit "Evict" button is the only
+ * evict-all and does not go through here.
  */
-export function mayUnload(model: string, own: ReadonlySet<string>, atQuit: boolean): boolean {
+export function mayUnload(model: string, own: ReadonlySet<string>, atQuit: boolean, configured: Iterable<string> = []): boolean {
   const siblings = readSiblings();
   if (siblings.some((s) => s.models.some((m) => sameModel(m, model)))) return false;
   const owned = [...own].some((m) => sameModel(m, model));
-  if (atQuit) return owned || siblings.length === 0;
+  if (atQuit) return owned || (siblings.length === 0 && [...configured].some((m) => sameModel(m, model)));
   return owned;
 }
 
@@ -193,8 +195,8 @@ export class PresenceFile {
   }
 
   /** Unload rule for this process; see `mayUnload`. */
-  mayUnload(model: string, atQuit: boolean): boolean {
-    return mayUnload(model, this.models, atQuit);
+  mayUnload(model: string, atQuit: boolean, configured: Iterable<string> = []): boolean {
+    return mayUnload(model, this.models, atQuit, configured);
   }
 
   /** Graceful quit: the file goes away so siblings stop counting us. Sync so it lands before app.quit. */
