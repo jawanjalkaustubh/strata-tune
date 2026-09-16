@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: #2a3142;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: #3d465c; background-clip: content-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+
+  ::selection { background: #059669; color: #f8fafc; }
+
+  :where(button, [role="button"], a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px #0c0e14, 0 0 0 4px #10b981;
+    border-radius: inherit;
+  }
+  :where(button, [role="button"]):focus:not(:focus-visible) { outline: none; }
+}
+
+.custom-titlebar { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+
+.btn {
+  @apply inline-flex items-center gap-1.5 px-2.5 h-7 rounded-control text-mini font-medium
+         text-studio-muted hover:text-studio-text hover:bg-studio-panel-hi transition-colors
+         disabled:opacity-40 disabled:pointer-events-none;
+}
+.btn-accent {
+  @apply bg-studio-accent text-white hover:bg-studio-accent-hover hover:text-white;
+}
+.btn-icon {
+  @apply inline-flex items-center justify-center w-7 h-7 rounded-control text-studio-muted
+         hover:text-studio-text hover:bg-studio-panel-hi transition-colors;
+}

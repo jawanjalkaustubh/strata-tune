@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>strata-tune-worker</AssemblyName>
+    <RootNamespace>StrataTune.Worker</RootNamespace>
+    <!-- The ComputeSharp generator emits unsafe code into the shader descriptor (CMPS0052 otherwise). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The worker prints ASCII key/value lines only; no ICU keeps the self-contained publish small. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ComputeSharp" Version="3.2.0" />
+  </ItemGroup>
+</Project>

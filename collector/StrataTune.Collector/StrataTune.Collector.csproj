@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Plan section 4 names the process strata-tune-collector.exe, and the worker is already kebab. -->
+    <AssemblyName>strata-tune-collector</AssemblyName>
+    <RootNamespace>StrataTune.Collector</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- PawnIO, PDH and nvml.dll exist nowhere else; declaring it answers CA1416 rather than muting it. -->
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>windows</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.12" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\StrataTune.Shared\StrataTune.Shared.csproj" />
+  </ItemGroup>
+</Project>
