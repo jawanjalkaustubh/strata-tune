@@ -15,6 +15,9 @@ export interface Health {
   elevated: boolean;
   pawnIo: { installed: boolean; version: string | null };
   nvml: { available: boolean; driver: string | null };
+  /** A source that failed to open at start is reported here and left out of the stream, never served as zeros. */
+  lhm: { available: boolean };
+  pdh: { available: boolean };
   qpcFrequency: number;
   startedAt: string;
   /** Seconds since the collector started. */
@@ -60,6 +63,14 @@ export interface SensorSummaryRow {
   min: Record<string, number>;
   max: Record<string, number>;
   mean: Record<string, number>;
+}
+
+/** GET /sensors/window?seconds=N: full-rate `rows` for N ≤ 600, `summaries` beyond; the other list is empty. */
+export interface SensorWindow {
+  seconds: number;
+  qpcNow: number;
+  rows: SensorRow[];
+  summaries: SensorSummaryRow[];
 }
 
 export interface GpuFacts {
@@ -113,6 +124,14 @@ export interface OllamaModel {
   sizeVramBytes: number;
 }
 
+/** The active scheme, and on Windows 10/11 the power-mode overlay (Best performance …) the Settings slider sets on top of it. */
+export interface PowerPlanInfo {
+  guid: string;
+  name: string;
+  /** Overlay scheme GUID, lowercase; null when the API is absent or no overlay is active (the Balanced slider position). */
+  overlayGuid: string | null;
+}
+
 /** Captured once per session (plan §6 `snapshot`, inputs for the §8 audit). */
 export interface StaticSnapshot {
   capturedAt: string;
@@ -123,7 +142,7 @@ export interface StaticSnapshot {
   ram: { totalMiB: number; modules: RamModule[] };
   gpus: GpuFacts[];
   gpuDriver: { version: string; date: string | null };
-  powerPlan: { guid: string; name: string };
+  powerPlan: PowerPlanInfo;
   disks: PhysicalDisk[];
   volumes: Volume[];
   /** Models Ollama currently holds in memory (http://127.0.0.1:11434/api/ps), or null if Ollama is not running. */
@@ -160,7 +179,7 @@ export interface LoadRun {
   exitCode: number | null;
   qpcStart: number;
   qpcEnd: number | null;
-  /** GPU facts sampled at 2 Hz for the duration, so the caller can compare t=2 s against t=20 s. */
+  /** GPU facts sampled at 2 Hz for the duration, so the caller can judge the steady window (t ≥ 3 s) against the start. */
   gpuSamples: { qpc: number; smMhz: number; memMhz: number; powerMw: number; temperatureC: number; clocksEventReasons: number; pcieGen: number; pcieWidth: number }[];
   error: string | null;
 }

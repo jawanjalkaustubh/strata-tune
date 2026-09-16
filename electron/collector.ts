@@ -1,19 +1,21 @@
 /**
  * Client for the elevated collector (master plan section 5). The UI cannot
  * read an elevated child's stdout, so the rendezvous is a file: the collector
- * writes %LOCALAPPDATA%\Strata Tune\collector.json { port, token, pid } once it
- * listens, and every call here carries that token. The collector exits on its
- * own when our pid disappears; nothing here ever kills it.
+ * writes collector.json { port, token, pid, startedAt } under this user's
+ * %LOCALAPPDATA%\Strata Tune once it listens (the path is passed to it, so an
+ * over-the-shoulder elevation under another account still lands here), and
+ * every call carries that token. The collector exits on its own when our pid
+ * disappears; nothing here ever kills it.
  */
 import { EventEmitter } from 'events';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { app } from 'electron';
 import type { CollectorState, CollectorStatus } from '../src/api';
-import type { GpuFacts, Handshake, Health, HogsResult, LoadKind, LoadRun, LoadRunRequest, SensorMeta, SensorRow, StaticSnapshot, Tick } from '../src/collector-types';
+import type { GpuFacts, Handshake, Health, HogsResult, LoadKind, LoadRun, LoadRunRequest, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, Tick } from '../src/collector-types';
 
 /** Every route in one place, so a rename on the server side is a one-line change. */
 const ROUTES = {
@@ -21,6 +23,7 @@ const ROUTES = {
   snapshot: '/snapshot',
   sensorsMeta: '/sensors/meta',
   sensorsLatest: '/sensors/latest',
+  sensorsWindow: (seconds: number) => `/sensors/window?seconds=${seconds}`,
   gpu: '/gpu',
   hogs: (seconds: number, excludePid: number) => `/procs/hogs?seconds=${seconds}&excludePid=${excludePid}`,
   load: '/load',
@@ -29,15 +32,22 @@ const ROUTES = {
   shutdown: '/shutdown'
 };
 
-const HANDSHAKE_TIMEOUT_MS = 20_000;
+/** LHM opens the sensor tree before Kestrel binds: 4–8 s on this box, longer with more disks or a slow SMBus. */
+const HANDSHAKE_TIMEOUT_MS = 60_000;
 /** How long a UAC prompt may stay unanswered before the start is given up. */
 const UAC_TIMEOUT_MS = 10 * 60_000;
 const HANDSHAKE_POLL_MS = 250;
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 5_000;
+/** Stream reconnects that fail in a row before the collector is taken as gone and Retry is offered. */
+const MAX_STREAM_FAILURES = 6;
+const COLLECTOR_IMAGE = 'strata-tune-collector.exe';
+/** Win32 ERROR_CANCELLED: the UAC prompt was declined, in any language. */
+const ERROR_CANCELLED = 1223;
 
 const dataDir = () => path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune');
 const handshakePath = () => path.join(dataDir(), 'collector.json');
+const logPath = () => path.join(dataDir(), 'logs', 'collector.log');
 const orphanLogPath = () => path.join(dataDir(), 'orphan.log');
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -52,6 +62,17 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** The image name behind a pid, from tasklist (it lists elevated processes without elevation); null when the pid is gone. */
+function imageName(pid: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 5000 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const m = /^"([^"]+)"/.exec(String(stdout).trim());
+      resolve(m ? m[1] : null);
+    });
+  });
+}
+
 function readHandshake(): Handshake | null {
   try {
     const h = JSON.parse(fs.readFileSync(handshakePath(), 'utf-8')) as Partial<Handshake>;
@@ -60,6 +81,14 @@ function readHandshake(): Handshake | null {
     /* absent, or half-written by the collector this instant */
   }
   return null;
+}
+
+function unlinkHandshake() {
+  try {
+    fs.unlinkSync(handshakePath());
+  } catch {
+    /* nothing stale to remove */
+  }
 }
 
 /** PowerShell single-quoted literal. */
@@ -74,11 +103,17 @@ interface Launch {
  * ShellExecute("runas") from Node goes through PowerShell's Start-Process. The
  * exe path is quoted by Start-Process itself; -ArgumentList is joined into one
  * raw command line without quoting, so an argument that may contain spaces
- * (the worker path under Program Files) must carry its own double quotes.
- * A declined UAC prompt makes Start-Process throw and PowerShell exit 1.
+ * (the paths under "Strata Tune") must carry its own double quotes. The
+ * collector is a console exe, so without -WindowStyle Hidden a console window
+ * would open beside the app. A declined prompt makes Start-Process throw a
+ * Win32Exception whose code, not its localised message, says so.
  */
 function launchElevated(exe: string, args: string[]): Launch {
-  const command = `Start-Process -FilePath ${psq(exe)} -ArgumentList @(${args.map(psq).join(',')}) -Verb RunAs`;
+  const command =
+    `try { Start-Process -FilePath ${psq(exe)} -ArgumentList @(${args.map(psq).join(',')}) -Verb RunAs -WindowStyle Hidden -ErrorAction Stop } ` +
+    'catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; ' +
+    '$code = if ($e -is [System.ComponentModel.Win32Exception]) { $e.NativeErrorCode } else { -1 }; ' +
+    '[Console]::Error.WriteLine("launch failed code=$code " + $e.Message); exit 1 }';
   const launch: Launch = { exit: null, stderr: '' };
   const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
     windowsHide: true,
@@ -94,11 +129,14 @@ function launchElevated(exe: string, args: string[]): Launch {
   return launch;
 }
 
+type Probe = 'ok' | 'refused' | 'failed';
+
 export class CollectorClient extends EventEmitter {
   state: CollectorState = { status: 'idle', message: 'Collector not started' };
   private handshake: Handshake | null = null;
   private stream: http.ClientRequest | null = null;
   private reconnectDelay = RECONNECT_MIN_MS;
+  private streamFailures = 0;
   private starting: Promise<CollectorState> | null = null;
 
   private set(status: CollectorStatus, message: string) {
@@ -106,18 +144,10 @@ export class CollectorClient extends EventEmitter {
     this.emit('status', this.state);
   }
 
-  /** Dev: the Release build in the solution tree. Packaged: resources/collector next to the app. */
-  private exePaths(): { collector: string; worker: string } {
-    if (app.isPackaged) {
-      const dir = path.join(process.resourcesPath, 'collector');
-      return { collector: path.join(dir, 'strata-tune-collector.exe'), worker: path.join(dir, 'strata-tune-worker.exe') };
-    }
-    const bin = (project: string) => path.join(app.getAppPath(), 'collector', project, 'bin', 'x64', 'Release', 'net10.0', 'win-x64');
-    const first = (dir: string, names: string[]) => names.map((n) => path.join(dir, n)).find((p) => fs.existsSync(p)) ?? path.join(dir, names[0]);
-    return {
-      collector: first(bin('StrataTune.Collector'), ['strata-tune-collector.exe', 'StrataTune.Collector.exe']),
-      worker: first(bin('StrataTune.Worker'), ['strata-tune-worker.exe', 'StrataTune.Worker.exe'])
-    };
+  /** Dev: the Release build in the solution tree (the worker is copied beside it at build). Packaged: resources/collector. */
+  private collectorExe(): string {
+    if (app.isPackaged) return path.join(process.resourcesPath, 'collector', COLLECTOR_IMAGE);
+    return path.join(app.getAppPath(), 'collector', 'StrataTune.Collector', 'bin', 'x64', 'Release', 'net10.0', 'win-x64', COLLECTOR_IMAGE);
   }
 
   /** Idempotent: a second call while one is in flight joins it; a connected client returns at once. */
@@ -134,43 +164,54 @@ export class CollectorClient extends EventEmitter {
     if (existing && pidAlive(existing.pid)) {
       // A live collector is never doubled and its handshake never deleted: the
       // file is the only copy of its token, and a second elevated process is a
-      // second UAC prompt. A health miss gets retries, then an error naming it.
+      // second UAC prompt. But the file survives a crash, End Task or a reboot,
+      // and low pids are reused, so "alive" is trusted only once the pid's
+      // image name says it really is a collector.
+      let probe: Probe = 'failed';
       for (let attempt = 0; attempt < 3; attempt++) {
-        if (await this.healthOk(existing)) {
+        probe = await this.probe(existing);
+        if (probe === 'ok') {
           this.adopt(existing, 'Connected (reusing a running collector)');
           return this.state;
         }
         await delay(1000);
       }
-      this.set('error', `A collector (pid ${existing.pid}) is running but does not answer on port ${existing.port}. Close it, then Retry.`);
-      return this.state;
+      const image = await imageName(existing.pid);
+      if (image && image.toLowerCase() === COLLECTOR_IMAGE) {
+        const why = probe === 'refused' ? `nothing is listening on port ${existing.port}, so it is probably shutting down` : `it does not answer on port ${existing.port}`;
+        this.set('error', `A collector (pid ${existing.pid}) is running but ${why}. Retry in a moment, or end ${COLLECTOR_IMAGE} in Task Manager.`);
+        return this.state;
+      }
+      console.warn(`[collector] stale handshake: pid ${existing.pid} is ${image ?? 'gone'}, not a collector; removing it`);
     }
-    try {
-      fs.unlinkSync(handshakePath());
-    } catch {
-      /* nothing stale to remove */
-    }
+    unlinkHandshake();
 
-    const { collector, worker } = this.exePaths();
+    const collector = this.collectorExe();
     if (!fs.existsSync(collector)) {
       this.set('error', `Collector not built: ${collector}. Run dotnet build collector\\StrataTune.sln -c Release.`);
       return this.state;
     }
     this.set('elevating', 'Waiting for permission (UAC)…');
-    const launch = launchElevated(collector, ['--serve', '--parent-pid', String(process.pid), '--worker', `"${worker}"`]);
+    // Our start time goes with the pid so a prompt answered after this app has gone,
+    // and its pid handed to something else, cannot bind a collector to a stranger.
+    const startedMs = Math.round(performance.timeOrigin);
+    const launch = launchElevated(collector, [
+      '--serve', '--parent-pid', String(process.pid), '--parent-start', String(startedMs),
+      '--handshake', `"${handshakePath()}"`, '--log', `"${logPath()}"`
+    ]);
 
-    // PowerShell returns only once the prompt is answered, so the 20 s budget
+    // PowerShell returns only once the prompt is answered, so the handshake budget
     // starts then: a prompt the user has not reached yet is not a slow collector.
     let deadline = Date.now() + UAC_TIMEOUT_MS;
     let accepted = false;
     for (;;) {
       const h = readHandshake();
-      if (h && pidAlive(h.pid) && (await this.healthOk(h))) {
+      if (h && pidAlive(h.pid) && (await this.probe(h)) === 'ok') {
         this.adopt(h, 'Connected');
         return this.state;
       }
       if (launch.exit !== null && launch.exit !== 0) {
-        if (/cancel/i.test(launch.stderr)) this.set('declined', 'Permission declined');
+        if (new RegExp(`code=${ERROR_CANCELLED}\\b|cancell?ed by the user`, 'i').test(launch.stderr)) this.set('declined', 'Permission declined');
         else this.set('error', `Could not launch the collector: ${launch.stderr.trim() || `exit ${launch.exit}`}`);
         return this.state;
       }
@@ -185,26 +226,29 @@ export class CollectorClient extends EventEmitter {
     this.set(
       'error',
       accepted
-        ? 'The collector did not answer within 20 s of the UAC prompt. Run it with --probe to see whether PawnIO and elevation are in order.'
+        ? `The collector did not answer within ${HANDSHAKE_TIMEOUT_MS / 1000} s of the UAC prompt. Run it with --probe to see whether PawnIO and elevation are in order.`
         : 'The UAC prompt was not answered.'
     );
     return this.state;
   }
 
-  private async healthOk(h: Handshake): Promise<boolean> {
+  /** 'refused' is nothing listening on the port (ECONNREFUSED); 'failed' is a timeout, a bad status or another pid answering. */
+  private async probe(h: Handshake): Promise<Probe> {
     try {
       const res = await fetch(`http://127.0.0.1:${h.port}${ROUTES.health}`, { headers: { Authorization: `Bearer ${h.token}` }, signal: AbortSignal.timeout(2000) });
-      if (!res.ok) return false;
+      if (!res.ok) return 'failed';
       const health = (await res.json()) as Health;
-      return health.ok === true && health.pid === h.pid;
-    } catch {
-      return false;
+      return health.ok === true && health.pid === h.pid ? 'ok' : 'failed';
+    } catch (e) {
+      const cause = (e as { cause?: NodeJS.ErrnoException }).cause;
+      return cause?.code === 'ECONNREFUSED' ? 'refused' : 'failed';
     }
   }
 
   private adopt(h: Handshake, message: string) {
     this.handshake = h;
     this.reconnectDelay = RECONNECT_MIN_MS;
+    this.streamFailures = 0;
     this.set('connected', message);
     this.openStream();
   }
@@ -251,6 +295,11 @@ export class CollectorClient extends EventEmitter {
     return this.get<SensorRow>(ROUTES.sensorsLatest);
   }
 
+  /** Up to ten minutes at full rate, summaries beyond; the payload is thinned server-side to about 2.5 MB. */
+  sensorsWindow(seconds: number): Promise<SensorWindow> {
+    return this.get<SensorWindow>(ROUTES.sensorsWindow(seconds), 30_000);
+  }
+
   gpu(): Promise<GpuFacts[]> {
     return this.get<GpuFacts[]>(ROUTES.gpu);
   }
@@ -287,6 +336,7 @@ export class CollectorClient extends EventEmitter {
           return;
         }
         this.reconnectDelay = RECONNECT_MIN_MS;
+        this.streamFailures = 0;
         let buffer = '';
         res.setEncoding('utf-8');
         res.on('data', (chunk: string) => {
@@ -298,10 +348,10 @@ export class CollectorClient extends EventEmitter {
           }
         });
         res.on('end', () => this.streamClosed('stream ended'));
-        res.on('error', (e) => this.streamClosed(e.message));
+        res.on('error', (e) => this.streamClosed(e.message, (e as NodeJS.ErrnoException).code));
       }
     );
-    req.on('error', (e) => this.streamClosed(e.message));
+    req.on('error', (e) => this.streamClosed(e.message, (e as NodeJS.ErrnoException).code));
     req.end();
     this.stream = req;
   }
@@ -321,11 +371,17 @@ export class CollectorClient extends EventEmitter {
     }
   }
 
-  /** Reconnects with backoff while we believe the collector is up; a dead pid ends the session instead. */
-  private streamClosed(reason: string) {
+  /**
+   * Reconnects with backoff while the collector is believed up. A dead pid, a
+   * port nobody listens on, or a run of failures means it is gone (or its pid
+   * has been reused): the status drops to stopped so the pill offers Retry
+   * instead of reporting Connected over a stream that never comes back.
+   */
+  private streamClosed(reason: string, code?: string) {
     this.stream = null;
     if (this.state.status !== 'connected' || !this.handshake) return;
-    if (!pidAlive(this.handshake.pid)) {
+    this.streamFailures += 1;
+    if (!pidAlive(this.handshake.pid) || code === 'ECONNREFUSED' || this.streamFailures >= MAX_STREAM_FAILURES) {
       this.set('stopped', 'The collector exited');
       return;
     }

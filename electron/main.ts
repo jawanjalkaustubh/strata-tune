@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { CollectorClient } from './collector';
+import { registerAdvisorIpc } from './bench';
 import type { CollectorState } from '../src/api';
 import type { LoadKind, Tick } from '../src/collector-types';
 
@@ -121,8 +122,8 @@ function createWindow() {
  * Background throttling is Chromium's default and stays on while the app is a
  * dashboard; a live session (Monitor page at 2 Hz, a capture) must keep its
  * cadence while the game is in front, so it is lifted only then and restored
- * after (lifecycle audit item 34). Not called yet: the first live session
- * arrives with the Monitor page.
+ * after (lifecycle audit item 34). A tick subscription (the Monitor page) is
+ * what turns it on and off, in registerCollectorIpc.
  */
 function setLiveSession(on: boolean): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(!on);
@@ -166,6 +167,7 @@ function registerCollectorIpc(c: CollectorClient) {
   ipcMain.handle('collector:snapshot', () => c.snapshot());
   ipcMain.handle('collector:sensorsMeta', () => c.sensorsMeta());
   ipcMain.handle('collector:sensorsLatest', () => c.sensorsLatest());
+  ipcMain.handle('collector:sensorsWindow', (_e, seconds: number) => c.sensorsWindow(seconds));
   ipcMain.handle('collector:gpu', () => c.gpu());
   ipcMain.handle('collector:hogs', (_e, seconds: number) => c.hogs(seconds));
   ipcMain.handle('collector:load', (_e, kind: LoadKind, seconds: number) => c.load(kind, seconds));
@@ -345,6 +347,7 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       // work (Ctrl+W closes, Ctrl+R reloads mid-session, F11, Ctrl+Shift+I).
       Menu.setApplicationMenu(null);
       registerIpc();
+      registerAdvisorIpc(ipcMain);
       createWindow();
       // One UAC prompt per app start (plan section 5). A decline is a state the
       // Audit page shows with a Retry, not a failure of the app.

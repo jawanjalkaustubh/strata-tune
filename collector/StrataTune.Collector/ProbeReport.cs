@@ -87,7 +87,7 @@ internal static class ProbeReport
         if (cpu is null)
             return "LibreHardwareMonitor found no CPU node";
 
-        var temperatures = cpu.Sensors.Where(s => s.Meta.SensorType == "Temperature").ToList();
+        var temperatures = cpu.Sensors.Where(s => s.Meta.SensorType == SensorType.Temperature).ToList();
         if (temperatures.Count == 0)
             return "the CPU node reports no temperature at all";
 
@@ -110,6 +110,7 @@ internal static class ProbeReport
 
     private static void WriteTree(TextWriter w, LhmProbe probe)
     {
+        var sensors = 0;
         foreach (var hw in probe.Hardware)
         {
             var indent = new string(' ', hw.Depth * 2);
@@ -119,13 +120,13 @@ internal static class ProbeReport
                     $"{indent}  {meta.Id,-34} {meta.SensorType,-12} {meta.Name,-26} " +
                     $"{Num(first),10} → {Num(second),-10} {meta.Unit,-5} " +
                     $"min {Num(min),10}  max {Num(max),10}");
+            sensors += hw.Sensors.Count;
         }
         w.WriteLine();
-        w.WriteLine($"{probe.Hardware.Count} hardware nodes, {probe.FirstPass.Count} sensors ({probe.Meta.Count} distinct ids), " +
-                    $"QPC {probe.FirstPass[0].Qpc} → {probe.SecondPass[0].Qpc} " +
-                    $"({(probe.SecondPass[0].Qpc - probe.FirstPass[0].Qpc) * 1000.0 / Stopwatch.Frequency:0} ms apart)");
-        if (probe.DuplicateIds.Count > 0)
-            w.WriteLine($"DUPLICATE identifiers (the stream layer must disambiguate): {string.Join(", ", probe.DuplicateIds)}");
+        w.WriteLine($"{probe.Hardware.Count} hardware nodes, {sensors} sensors, " +
+                    $"QPC {probe.Qpc1} → {probe.Qpc2} ({(probe.Qpc2 - probe.Qpc1) * 1000.0 / Stopwatch.Frequency:0} ms apart)");
+        if (probe.SuffixedIds.Count > 0)
+            w.WriteLine($"Repeated identifiers, suffixed by the stream layer: {string.Join(", ", probe.SuffixedIds)}");
     }
 
     private static void WriteGpus(TextWriter w, IReadOnlyList<GpuFacts> gpus)
@@ -134,14 +135,14 @@ internal static class ProbeReport
         {
             w.WriteLine($"GPU {g.Index}         {g.Name}");
             w.WriteLine($"  Driver        {g.Driver}");
-            w.WriteLine($"  PCIe          gen {g.PcieCurrentGen} x{g.PcieCurrentWidth} of gen {g.PcieMaxGen} x{g.PcieMaxWidth} (GPU supports gen {Opt(g.GpuMaxPcieGen)})");
+            w.WriteLine($"  PCIe          gen {g.Pcie.CurrentGen} x{g.Pcie.CurrentWidth} of gen {g.Pcie.MaxGen} x{g.Pcie.MaxWidth} (GPU supports gen {Opt(g.Pcie.GpuMaxGen)})");
             w.WriteLine($"  BAR1          {Opt(g.Bar1TotalMiB)} MiB");
-            w.WriteLine($"  VRAM          {g.VramUsedMiB} of {g.VramTotalMiB} MiB used");
-            w.WriteLine($"  Power         {Opt(g.PowerMilliwatts)} mW, limit {Opt(g.PowerLimitMilliwatts)} mW");
-            w.WriteLine($"  Clocks        SM {g.SmClockMHz} MHz, MEM {g.MemClockMHz} MHz");
+            w.WriteLine($"  VRAM          {g.Vram.UsedMiB} of {g.Vram.TotalMiB} MiB used");
+            w.WriteLine($"  Power         {Opt(g.PowerMw)} mW, limit {Opt(g.PowerLimitMw)} mW, max limit {Opt(g.PowerMaxLimitMw)} mW");
+            w.WriteLine($"  Clocks        SM {g.Clocks.SmMhz} MHz, MEM {g.Clocks.MemMhz} MHz");
             w.WriteLine($"  Temperature   {g.TemperatureC} °C");
-            w.WriteLine($"  Utilisation   GPU {Opt(g.GpuUtilPercent)} %, memory {Opt(g.MemUtilPercent)} %");
-            w.WriteLine($"  Clocks event  {(g.ClocksEventReasons is ulong bits ? $"0x{bits:X} → {string.Join(", ", g.ClocksEventReasonNames)}" : Opt(g.ClocksEventReasons))}");
+            w.WriteLine($"  Utilisation   GPU {g.Utilisation.Gpu} %, memory {g.Utilisation.Memory} %");
+            w.WriteLine($"  Clocks event  0x{g.ClocksEventReasons.Raw:X} → {string.Join(", ", g.ClocksEventReasons.Names)}");
         }
     }
 
@@ -162,7 +163,7 @@ internal static class ProbeReport
     private static string Num(float? value) =>
         value is null || float.IsNaN(value.Value) ? "—" : value.Value.ToString("0.###", CultureInfo.InvariantCulture);
 
-    // A field this card or driver does not support prints as such, never as 0.
-    private static string Opt<T>(T? value) where T : struct =>
-        value is null ? "not supported" : value.Value.ToString() ?? "";
+    // The wire shape carries 0 for a field this card or driver does not support; the probe
+    // is where a human reads it, so it says so.
+    private static string Opt(ulong value) => value == 0 ? "not supported" : value.ToString(CultureInfo.InvariantCulture);
 }

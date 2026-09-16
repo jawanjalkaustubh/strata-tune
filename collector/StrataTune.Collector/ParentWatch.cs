@@ -21,6 +21,38 @@ namespace StrataTune.Collector;
 /// </summary>
 internal static class ParentWatch
 {
+    /// <summary>Whether the pid names a running process right now. A pid now owned by a
+    /// protected process refuses the handle (Win32Exception): not ours, so not running.</summary>
+    public static bool IsRunning(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Whether the process behind the pid was created within <paramref name="tolerance"/>
+    /// of the epoch-millisecond time the UI says it started. The UI's pid can be recycled
+    /// while a UAC prompt waits; the start time tells a stranger from the launcher.</summary>
+    public static bool StartedAround(int pid, long epochMs, TimeSpan tolerance)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            var started = new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
+            return Math.Abs(started - epochMs) <= tolerance.TotalMilliseconds;
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Completes when the parent has exited, at once when the pid is not running, and
     /// quietly when <paramref name="stopping"/> fires first (the wait thread is a background

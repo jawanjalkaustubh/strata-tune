@@ -1,0 +1,73 @@
+import React, { useMemo } from 'react';
+import type { StaticSnapshot, Tick } from '../../collector-types';
+import type { SensorIndex } from './sensors';
+import type { Ring } from './history';
+import { Panel } from './Panel';
+import { Sparkline } from './Sparkline';
+import { TONE } from './Pill';
+import { systemPower, type SystemPower as Estimate } from '../../analysis/power';
+
+interface Props {
+  index: SensorIndex;
+  tick: Tick;
+  ring: Ring;
+  snapshot: StaticSnapshot | null;
+}
+
+/**
+ * The SYSTEM POWER row (plan §13, shipped in Phase 1): package and board power
+ * measured, the rest flat estimates, one bar with the split visible and every
+ * part tagged. No PSU yet, so the scale is the session's own high-water mark.
+ */
+export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot }) => {
+  const ids = useMemo(() => {
+    const cpu = index.hardware(/^cpu$/i);
+    const io = index.hardware(/^(SuperIO|EmbeddedController)$/i);
+    const gpuFans = index.findAll(index.hardware(/^Gpu/i), 'Fan', /./).map((f) => f.meta.id);
+    return {
+      packageW: index.find(cpu, 'Power', /^(?:CPU )?Package$/)?.id,
+      fans: [...index.findAll(io, 'Fan', /./).map((f) => f.meta.id), ...gpuFans],
+      queues: index.findAll(undefined, 'Factor', /^Disk queue length$/).map((f) => f.meta.id)
+    };
+  }, [index]);
+  const dimmCount = snapshot?.ram.modules.length ?? 0;
+
+  const estimate = (t: Tick): Estimate =>
+    systemPower({
+      cpuPackageW: ids.packageW === undefined ? undefined : t.sensors[ids.packageW],
+      gpuBoardW: t.gpu[0] ? t.gpu[0].powerMw / 1000 : undefined,
+      dimmCount,
+      diskQueues: ids.queues.map((id) => t.sensors[id] ?? 0),
+      spinningFans: ids.fans.filter((id) => (t.sensors[id] ?? 0) > 0).length
+    });
+
+  const now = estimate(tick);
+  if (now.measuredW === 0) return null;
+  const high = Math.max(ring.high((t) => estimate(t).totalW), now.totalW);
+  const max = Math.max(high * 1.2, 400);
+  const pct = (w: number) => `${((Math.min(w, max) / max) * 100).toFixed(2)}%`;
+  const measured = now.parts.filter((p) => p.tag === 'measured');
+  const estimated = now.parts.filter((p) => p.tag === 'estimated');
+  const part = (p: { label: string; watts: number }) => `${p.label} ${p.watts.toFixed(0)} W`;
+
+  return (
+    <Panel title="System power" aside={<span className="label text-studio-subtle">wall-side efficiency arrives with the PSU model (Phase 6)</span>}>
+      <div className="grid grid-cols-[7.5rem_1fr_6.5rem] items-center gap-x-3 min-w-0">
+        <span className="label truncate">Total</span>
+        <div className="min-w-0 py-1">
+          <div className="relative h-1.5 rounded-full bg-studio-border">
+            <div className={`absolute inset-y-0 left-0 rounded-full ${TONE.ok.fill} transition-[width] duration-200 ease-linear`} style={{ width: pct(now.measuredW) }} title={`Measured ${now.measuredW.toFixed(0)} W`} />
+            <div className={`absolute inset-y-0 rounded-r-full ${TONE.idle.fill} transition-[width] duration-200 ease-linear`} style={{ left: pct(now.measuredW), width: `calc(${pct(now.totalW)} - ${pct(now.measuredW)})` }} title={`Estimated ${now.estimatedW.toFixed(0)} W`} />
+            <div className="absolute -top-1 h-3.5 w-px bg-slate-300/60" style={{ left: pct(high) }} title={`Highest this session ${high.toFixed(0)} W`} />
+          </div>
+          <Sparkline className={`${TONE.ok.text} mt-1`} points={ring.series((t) => estimate(t).totalW)} min={0} max={max} />
+        </div>
+        <span className={`figure text-right text-[12px] whitespace-nowrap ${TONE.ok.text}`}>{now.totalW.toFixed(0)} W</span>
+      </div>
+      <p className="text-micro text-studio-subtle pl-0.5">
+        <span className={TONE.ok.text}>measured</span> {measured.map(part).join(' · ')} <span className="mx-1 text-studio-border-light">|</span>
+        <span className="text-slate-400">estimated</span> {estimated.map(part).join(' · ')}
+      </p>
+    </Panel>
+  );
+};

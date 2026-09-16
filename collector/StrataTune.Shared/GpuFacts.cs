@@ -1,28 +1,32 @@
 namespace StrataTune.Shared;
 
-/// <summary>Everything NVML tells us about one GPU in a single read. Units are NVML's own
-/// (milliwatts, MHz, MiB) so nothing is lost before the UI decides how to show it. The
-/// nullable fields are the ones NVML answers NVML_ERROR_NOT_SUPPORTED for on some cards
-/// (laptop GPUs mostly) or that older drivers do not export at all: null means "this card
-/// does not tell us", which is not the same number as 0.</summary>
+/// <summary>Everything NVML tells us about one GPU in a single read, in NVML's own units
+/// (milliwatts, MHz, MiB). The one GPU shape: the snapshot's gpus[] is the state at capture
+/// time and the live stream carries the changing fields. A field this card answers
+/// NOT_SUPPORTED for reads 0, because the wire contract has no null there.</summary>
 public sealed record GpuFacts(
     int Index,
     string Name,
     string Driver,
-    uint PcieCurrentGen,
-    uint PcieCurrentWidth,
-    uint PcieMaxGen,
-    uint PcieMaxWidth,
-    uint? GpuMaxPcieGen,
-    ulong? Bar1TotalMiB,
-    ulong VramTotalMiB,
-    ulong VramUsedMiB,
-    uint? PowerMilliwatts,
-    uint? PowerLimitMilliwatts,
-    uint SmClockMHz,
-    uint MemClockMHz,
+    GpuPcie Pcie,
+    ulong Bar1TotalMiB,
+    GpuVram Vram,
+    uint PowerMw,
+    uint PowerLimitMw,
+    uint PowerMaxLimitMw,
+    GpuClocks Clocks,
     uint TemperatureC,
-    uint? GpuUtilPercent,
-    uint? MemUtilPercent,
-    ulong? ClocksEventReasons,
-    IReadOnlyList<string> ClocksEventReasonNames);
+    GpuUtilisation Utilisation,
+    ClocksEventReasons ClocksEventReasons);
+
+public sealed record GpuPcie(uint CurrentGen, uint CurrentWidth, uint MaxGen, uint MaxWidth, uint GpuMaxGen);
+
+public sealed record GpuVram(ulong TotalMiB, ulong UsedMiB);
+
+public sealed record GpuClocks(uint SmMhz, uint MemMhz);
+
+public sealed record GpuUtilisation(uint Gpu, uint Memory);
+
+/// <summary>The raw NVML bitmask plus the decoded known bits; bits newer than the public
+/// header stay in <see cref="Raw"/> and appear as "Unknown(0x…)" in <see cref="Names"/>.</summary>
+public sealed record ClocksEventReasons(ulong Raw, IReadOnlyList<string> Names);

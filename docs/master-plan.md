@@ -237,7 +237,7 @@ estimated cost**. The rest are one click away under "show all".
 | Power plan | laptop: not High Performance; **desktop Zen 4/5: Balanced is AMD's recommended plan, do not flag** | "large on laptops" |
 | Boot drive space | > 90 % full | "severe" |
 | Game on HDD | `MediaType == HDD` for a launched game's path | "traversal stutter" |
-| Thermal headroom | 20 s load ramp (worker, light kernel): clock at t=20 vs t=2, throttle bits set | "throttling" |
+| Thermal headroom | 20 s **heavy** worker load (a light load lets the boost governor idle the clocks — measured 2812→1717 MHz at 28 °C on the dev box, pure noise). Verdict from the NVML reason bits over the steady window (t ≥ 3 s): thermal/brake bits → bad; power cap with steady clocks → ok ("power-limited at N W, normal"); clock sag ≥ 8 % with peak ≥ 75 °C → warn; sag with no bits and cool → info, never hardware advice. 'unknown' unless the load engaged (power ≥ 50 % of limit) | "throttling" |
 | GPU driver age | > 180 days | "occasional title bugs" |
 | Background hogs | 5 s idle sample, any process > 5 % CPU or > 2 GB RAM | names the process |
 | Power limit headroom | `power.limit == power.max_limit` | "no headroom to raise — undervolt instead" (informational; this box) |
@@ -368,7 +368,9 @@ Every number carries `measured` or `estimated`, visibly.
 | Fans, RGB, chipset, USB | device counts × flat model, board chipset table | estimated |
 
 `wall = (measured + estimated) / efficiency(load_fraction, psu_rating)` with an 80 PLUS
-curve table in `psu.json`. PSU model and 80 PLUS rating asked once. Unlocks: "do I need a
+curve table in `psu.json`. **The headline number ships early**: the Monitor page's SYSTEM POWER
+row (Phase 1, user request 2026-09-15) computes it in the renderer from the existing CPU/GPU
+sensors with the rest estimated; Phase 6 adds the PSU prompt UI, cost and performance-per-watt. PSU model and 80 PLUS rating asked once. Unlocks: "do I need a
 bigger PSU" (peak sustained vs rated, from their own sessions), electricity cost, and
 performance-per-watt — the number that sells undervolting in §16.
 
@@ -513,11 +515,28 @@ while a test runs (A6).
      Package power vs PPT (or vs the 9950X's 230 W stock PPT when the SMU value is not
      readable); average effective clock vs max boost; per-CCD temps.
 3. **GPU panel** (right half)
-   - *Board diagram*: an SVG outline of the card with the GPU die (core temp), memory
-     (VRAM used/total as a fill), the 12VHPWR connector drawn as six pins each showing its
-     amps as a bar (LHM exposes per-pin voltage and current on the 5090 — imbalance is the
-     thing that melts connectors, so colour any pin > 1.3× the mean amber), and the fan
-     positions with RPM.
+   - *Card schematic* (user direction 2026-09-15: the bar is ASUS GPU Tweak III's thermal
+     map / power detector, and ours must be clearly better — same glance, more analysis, with
+     history). A schematic SVG of a card, not vendor art, outlined in the vendor colour:
+     - **Top edge — 12V-2x6 connector block.** Six pins as vertical bars on a 0–9.5 A scale
+       (the per-pin continuous rating), each labelled with A and W and its 12 V reading in a
+       small row beneath (LHM on the ROG Astral LC 5090 exposes per-pin voltage, current and
+       power, plus connector totals). Under the pins: total A / W against the connector's
+       600 W rating with a limit tick, and the two numbers GPU Tweak never computes —
+       **spread** (max − min) and **max/mean** — coloured emerald ≤ 10 % spread, amber
+       10–20 %, red > 20 % or any pin above 8 A. Hover a pin → its 60 s sparkline. Cards
+       without per-pin sensing show one total bar from NVML board power, labelled so.
+     - **Centre — die block**: core temp large, core voltage and SM clock small; hotspot
+       only when the driver exposes it (NVML thermal sensors), otherwise omitted, never "—".
+     - **Around the die — memory blocks**: VRAM used/total as a fill, memory-junction temp,
+       memory clock.
+     - **Flanks — engine loads** as micro-bars (3D, copy, video decode/encode, optical flow,
+       JPEG): rows at 0 collapse, so an idle card shows two rows and a rendering card six.
+     - **Bottom edge — PCIe edge connector** with gen × width and an Rx/Tx throughput
+       sparkline (the link check made visible).
+     - **Fans** as circles with RPM and duty (on a liquid-cooled card these are the radiator
+       fans; label them Fan 1/2, not "GPU Fan").
+     - Perf-limit pills directly beneath the card. Everything has a 60 s sparkline on hover.
    - *Bars*: core temp vs target, hotspot and memory junction when present, board power vs
      limit (with the max limit marked), SM clock requested vs effective (the gap *is*
      throttling — draw both on one bar), memory clock, GPU/memory-controller/bus load.
@@ -536,7 +555,17 @@ while a test runs (A6).
    happened is still visible.
 
 **Visual rules:** one accent (emerald) for "good/active", amber for "near a limit", red for
-"at a limit / throttling", slate for idle or absent. Bars are thin (6–8 px), rounded, with
+"at a limit / throttling", slate for idle or absent.
+
+**Vendor identity (user direction 2026-09-15).** Each device panel carries its vendor's colour
+as an *identity* accent — the panel header text, the 1 px left border, the chip/board outline
+and the load tint in the chip cells: NVIDIA `#76B900`, AMD `#ED1C24`, Intel `#0071C5`,
+Qualcomm/Snapdragon `#3253DC`; board panels by board vendor when known (MSI `#C8102E` (a deeper crimson than AMD's red so an AMD CPU panel and an MSI board panel stay distinct side by side — user confirmed MSI = red shade, 2026-09-15),
+ASUS `#00539B`, Gigabyte `#F58220`, ASRock `#00A651`), else slate. **State colours are never
+vendor colours**: bars, ticks and pills keep emerald / amber / red / slate for good / near /
+at-limit / idle, so an AMD panel's red header never reads as "throttling". Vendor is
+detected from the snapshot (`cpu.name`, `gpus[].name`, `motherboard.manufacturer`), one map
+in `src/data/vendors.json`, unknown → slate. Bars are thin (6–8 px), rounded, with
 the limit drawn as a tick, not a second bar. Numbers in a tabular monospace figure font;
 labels in the UI font at 11 px, uppercase, tracked. Panels have a 1 px border and a
 slightly lighter surface; no shadows, no gradients except the load fill on the chip cells.
@@ -546,9 +575,9 @@ Nothing blinks. Absent sensors collapse their row rather than showing "—" wall
 and scale with `max-width: 100%`.
 
 **Phase 1 ships** the CPU panel (chip diagram + bars), the GPU panel (bars, perf-limit pills,
-12VHPWR pins, without the board outline art if time is short), rails and fans, and
-sparklines. The GPU board diagram, storage panel and DIMM map follow in Phase 2 with the
-full sensor view. Same components later render inside the Tune live monitor (§16).
+the full 12V-2x6 connector block with spread/max-mean analysis), rails and fans, and
+sparklines. The card schematic around that block, the storage panel and the DIMM map are
+Phase 2's first items, with the full sensor view. Same components later render inside the Tune live monitor (§16).
 
 ## 18. Brand
 
@@ -562,7 +591,8 @@ full sensor view. Same components later render inside the Tune live monitor (§1
 - `support.json` with the same shape as Strata Code; donate button hidden while the URL is
   empty.
 - Title bar: `St` monogram · STRATA TUNE · Help · window controls.
-- Bottom bar: `St` monogram · STRATA TUNE · session/capture state · page switcher.
+- Bottom bar: collector/capture state · page switcher. No monogram or wordmark — the title bar
+  already carries them (user, 2026-09-15).
 
 ## 19. The HTML report
 
@@ -737,7 +767,11 @@ trade in one sentence.
   ComputeSharp MIT, PawnIO is a separately installed driver (check its licence for
   redistribution of the installer vs linking to it).
 - **Elevation UX**: one UAC prompt per launch (v1) vs installing the collector as a Windows
-  service once (later). v1 is the prompt.
+  service once (later). v1 is the prompt. The user finds the per-launch collector start slow (2026-09-15):
+  Phase 1's fix pass adds a startup budget (handshake before LHM `Open()`, staged sensor
+  groups, one NVML session, timing lines; target first tick < 1.5 s after the UAC click), and
+  the service install moves up to the first post-v0.1 item so the collector is already warm
+  when the app opens.
 - **.NET 10 vs 8**: 10 unless a library lags.
 
 ---

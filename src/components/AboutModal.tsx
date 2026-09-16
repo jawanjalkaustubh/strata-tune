@@ -32,7 +32,7 @@ export const AboutModal: React.FC<Props> = ({ isOpen, onClose, version, support 
           <div className="flex flex-col items-center">
             <Monogram size={56} className="mb-1.5 drop-shadow-[0_0_16px_rgba(16,185,129,0.55)]" glow={false} />
             <h2 className="text-lg font-extrabold tracking-wider bg-gradient-to-r from-emerald-200 via-teal-200 to-white bg-clip-text text-transparent">STRATA TUNE</h2>
-            <span className="text-micro text-emerald-300/80 font-mono tracking-wide">v{version || '0.0.1'} • PC tuning and diagnostics</span>
+            <span className="text-micro text-emerald-300/80 font-mono tracking-wide">v{version || '0.1.0'} • PC tuning and diagnostics</span>
           </div>
         </div>
 

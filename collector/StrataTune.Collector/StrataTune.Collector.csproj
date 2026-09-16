@@ -1,12 +1,23 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <!-- Plan section 4 names the process strata-tune-collector.exe, and the worker is already kebab. -->
     <AssemblyName>strata-tune-collector</AssemblyName>
     <RootNamespace>StrataTune.Collector</RootNamespace>
+    <!-- The Web SDK defaults to server GC, which reserves far more memory than a sensor
+         service with one client needs; the ring buffer is the only thing that grows. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <!-- Everything this process writes is JSON, identifiers and hardware strings; no ICU
+         keeps the self-contained publish small. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- No wwwroot, no static files: the Web SDK's asset manifest would only be an empty file beside the exe. -->
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+    <!-- Nothing hosts this in IIS: no web.config and no ANCM module beside an elevated exe. -->
+    <IsTransformWebConfigDisabled>true</IsTransformWebConfigDisabled>
+    <PublishIISAssets>false</PublishIISAssets>
   </PropertyGroup>
   <ItemGroup>
-    <!-- PawnIO, PDH and nvml.dll exist nowhere else; declaring it answers CA1416 rather than muting it. -->
+    <!-- PawnIO, PDH, WMI and nvml.dll exist nowhere else; declaring it answers CA1416 rather than muting it. -->
     <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
       <_Parameter1>windows</_Parameter1>
     </AssemblyAttribute>
@@ -14,8 +25,21 @@
   <ItemGroup>
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
     <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.12" />
+    <!-- Already pulled in by LibreHardwareMonitorLib; pinned here because Snapshot.cs uses it directly. -->
+    <PackageReference Include="System.Management" Version="10.0.2" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\StrataTune.Shared\StrataTune.Shared.csproj" />
+    <!-- Build order only: the worker's output is copied beside this exe below, never referenced. -->
+    <ProjectReference Include="..\StrataTune.Worker\StrataTune.Worker.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
+  <!-- The worker lives beside the collector in both layouts: publish puts both exes in one
+       folder, and the dev build copies the worker's output here, so the elevated collector
+       starts only the worker installed next to it and never one named on its command line. -->
+  <Target Name="CopyWorkerBesideCollector" AfterTargets="Build">
+    <ItemGroup>
+      <WorkerFiles Include="$(MSBuildThisFileDirectory)..\StrataTune.Worker\bin\x64\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WorkerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

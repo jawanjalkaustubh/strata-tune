@@ -1,7 +1,7 @@
 /**
  * User settings. Tune (Phase 8) writes to hardware, so its page stays hidden
  * until the user turns it on here, and even then a warning modal stands in
- * front of it (master plan section 17). Nothing else is settable yet.
+ * front of it (master plan section 17). The advisor's calibration factor is the only other setting.
  *
  * TODO(Phase 8): Phase 0 ships only the flag. There is no settings UI that
  * flips it (saveSettings has no caller; the only way in is localStorage
@@ -10,9 +10,11 @@
  */
 export interface Settings {
   enableTune: boolean;
+  /** Advisor tok/s factor set from Ollama measurements on this box; null keeps the analysis default (plan section 10). */
+  calibrationFactor: number | null;
 }
 
-export const DEFAULT_SETTINGS: Settings = { enableTune: false };
+export const DEFAULT_SETTINGS: Settings = { enableTune: false, calibrationFactor: null };
 
 const KEY = 'strata-tune.settings';
 

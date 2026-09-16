@@ -1,0 +1,72 @@
+[
+  {
+    "vendor": "G.Skill",
+    "pattern": "^F[45]-(\\d{4,5})[A-Z]",
+    "speedFrom": "capture",
+    "profile": "xmp",
+    "note": "F5-6000J2836G16GX2-TZ5NR: F5 is DDR5 (F4 DDR4), then the MT/s, then a letter and the timings."
+  },
+  {
+    "vendor": "Corsair",
+    "pattern": "^CM[A-Z]{1,2}\\d+GX[45]M\\d[A-Z]?(\\d{4,5})[CZ]\\d+",
+    "speedFrom": "capture",
+    "profile": "xmp",
+    "note": "CMK32GX5M2B6000C30: family (CMK Vengeance, CMH Vengeance RGB, CMT Dominator, CMSX SODIMM, CMW/CMD DDR4), kit capacity, GX5 = DDR5, M2 = two modules, revision letter, MT/s, then C for the CAS or Z on the AMD EXPO kits."
+  },
+  {
+    "vendor": "Kingston FURY",
+    "pattern": "^KF5(\\d{2})C\\d+",
+    "speedFrom": "captureX100",
+    "profile": "xmp",
+    "note": "KF560C36BBEK2-32: KF5 is DDR5, 60 = 6000 MT/s, C36 = CAS. DDR4 (KF4) is left out because 26 means 2666 there, not 2600."
+  },
+  {
+    "vendor": "Kingston ValueRAM",
+    "pattern": "^KVR(\\d{2})U\\d{2}",
+    "speedFrom": "captureX100",
+    "profile": "jedec",
+    "note": "KVR48U40BS8-16: 48 = 4800 MT/s, U = unbuffered DDR5, 40 = CAS. JEDEC parts with no profile to enable: the rated speed is the JEDEC speed."
+  },
+  {
+    "vendor": "Crucial Pro",
+    "pattern": "^CP(?:\\d+K)?\\d+G(\\d{2})C\\d+[US]5",
+    "speedFrom": "captureX100",
+    "profile": "xmp",
+    "note": "CP2K16G60C36U5B: Crucial Pro carries XMP/EXPO profiles; kit capacity, 60 = 6000 MT/s, CAS, U5 = DDR5 UDIMM (S5 SODIMM)."
+  },
+  {
+    "vendor": "Crucial",
+    "pattern": "^CT(?:\\d+K)?\\d+G(\\d{2})C\\d+[US]5",
+    "speedFrom": "captureX100",
+    "profile": "jedec",
+    "note": "CT16G56C46U5: plain Crucial DDR5 is a JEDEC part (56 = 5600 MT/s, CAS 46) with no XMP/EXPO profile; a platform that runs it slower is not a setting the user can change. DDR4 Crucial parts use another layout and are left out."
+  },
+  {
+    "vendor": "TeamGroup",
+    "pattern": "^TEAMGROUP-UD[45]-(\\d{4})",
+    "speedFrom": "capture",
+    "profile": "xmp",
+    "note": "TEAMGROUP-UD5-6000: what the SPD (and so WMI) reports for T-Force kits; UD5 is DDR5 UDIMM (UD4 DDR4), then the MT/s. The retail SKU (FF3D532G6000HC38ADC01) never reaches the part-number field."
+  },
+  {
+    "vendor": "Patriot Viper",
+    "pattern": "^PV[A-Z]{1,2}5\\d+G(\\d{4})C\\d+",
+    "speedFrom": "capture",
+    "profile": "xmp",
+    "note": "PVV532G6000C36K (Venom), PVVR5 (Venom RGB), PVE5 (Elite 5): family letters, 5 = DDR5, kit capacity, MT/s, CAS. Parts that shorten the speed to two digits (PVX532G80C38K) are not decoded."
+  },
+  {
+    "vendor": "XPG",
+    "pattern": "^AX[45]U(\\d{4})",
+    "speedFrom": "capture",
+    "profile": "xmp",
+    "note": "AX5U6000C3016G-DCLABK (XPG Lancer), AX4U360016G18I-DB50 (XPG DDR4): AX, DDR generation, U = UDIMM, then the MT/s."
+  },
+  {
+    "vendor": "ADATA",
+    "pattern": "^AD[45]U(\\d{4})",
+    "speedFrom": "capture",
+    "profile": "jedec",
+    "note": "AD5U480016G-B (ADATA Premier): the same layout as XPG, but a JEDEC module with no profile."
+  }
+]

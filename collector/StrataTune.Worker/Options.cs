@@ -8,6 +8,8 @@ internal sealed class Options
     /// ArgumentOutOfRangeException from inside ComputeSharp), so the flag says so instead.</summary>
     public const int MaxElements = 1 << 29;
 
+    public const int MaxSeconds = 3600;
+
     public string Verb { get; private set; } = "";
     public int Elements { get; private set; } = 1 << 24;
     public int Rounds { get; private set; } = 256;
@@ -15,6 +17,9 @@ internal sealed class Options
     public ulong? Expect { get; private set; }
     public string? HeartbeatPath { get; private set; }
     public string? Adapter { get; private set; }
+    public bool Json { get; private set; }
+    public string Kind { get; private set; } = "";
+    public int Seconds { get; private set; }
 
     /// <exception cref="ArgumentException">An unknown flag, a missing value or a value out of range.</exception>
     public static Options Parse(string[] args)
@@ -29,23 +34,35 @@ internal sealed class Options
             switch (args[i])
             {
                 case "--devices" or "--hash": options.Verb = args[i]; break;
+                case "--load": options.Verb = args[i]; options.Kind = LoadKind(Value("--load")); break;
+                case "--bench": options.Verb = args[i]; break;
+                case "--seconds": options.Seconds = Positive("--seconds", Value("--seconds"), MaxSeconds); break;
                 case "--elements": options.Elements = Positive("--elements", Value("--elements"), MaxElements); break;
                 case "--rounds": options.Rounds = Positive("--rounds", Value("--rounds")); break;
                 case "--seed": options.Seed = (uint)Number("--seed", Value("--seed"), uint.MaxValue); break;
                 case "--expect": options.Expect = Hex("--expect", Value("--expect")); break;
                 case "--heartbeat": options.HeartbeatPath = Value("--heartbeat"); break;
                 case "--adapter": options.Adapter = Value("--adapter"); break;
+                case "--json": options.Json = true; break;
                 default: throw new ArgumentException($"unknown argument {args[i]}");
             }
         }
 
         if (options.Verb.Length == 0)
         {
-            throw new ArgumentException("expected --devices or --hash");
+            throw new ArgumentException("expected --devices, --hash, --load or --bench");
+        }
+
+        if (options.Verb == "--load" && options.Seconds == 0)
+        {
+            throw new ArgumentException("--load needs --seconds N");
         }
 
         return options;
     }
+
+    private static string LoadKind(string text) =>
+        text is "light" or "heavy" ? text : throw new ArgumentException($"--load: {text} is not light or heavy");
 
     private static int Positive(string flag, string text, int max = int.MaxValue) =>
         (int)Number(flag, text, (ulong)max) is > 0 and int value

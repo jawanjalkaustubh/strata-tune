@@ -22,6 +22,8 @@ internal static class Program
         usage:
           strata-tune-worker --devices
           strata-tune-worker --hash [--adapter LUID] [--elements N] [--rounds R] [--seed S] [--expect HEX] [--heartbeat PATH]
+          strata-tune-worker --load light|heavy --seconds N [--adapter LUID] [--heartbeat PATH]
+          strata-tune-worker --bench [--json] [--seconds N] [--adapter LUID] [--heartbeat PATH]
         --adapter takes a luid from --devices; without it the DXGI high-performance adapter is used.
         --elements is at most 536870912 (2 GiB of uint).
         """;
@@ -36,7 +38,13 @@ internal static class Program
         {
             Options options = Options.Parse(args);
 
-            return options.Verb == "--devices" ? ListDevices() : Hash(options);
+            return options.Verb switch
+            {
+                "--devices" => ListDevices(),
+                "--load" => RunLoad(options),
+                "--bench" => RunBench(options),
+                _ => Hash(options),
+            };
         }
         catch (Exception e) when (deviceLost || DeviceLoss.Matches(e))
         {
@@ -98,16 +106,16 @@ internal static class Program
         return match ?? throw new ArgumentException($"--adapter: no device with luid {luid}; run --devices");
     }
 
-    private static int Hash(Options options)
+    /// <summary>The device every verb runs on, or null with exit 3 already explained: a
+    /// software rasteriser is refused rather than reported as a GPU result.</summary>
+    private static GraphicsDevice? HardwareDevice(string? luid, bool announce = true)
     {
-        using Heartbeat? heartbeat = options.HeartbeatPath is null ? null : new Heartbeat(options.HeartbeatPath);
-
-        GraphicsDevice device = Select(options.Adapter);
+        GraphicsDevice device = Select(luid);
 
         if (!device.IsHardwareAccelerated)
         {
             Console.Error.WriteLine($"no DX12 SM6 hardware adapter was selected: {device.Name} is a software rasteriser");
-            return ExitNoHardwareGpu;
+            return null;
         }
 
         device.DeviceLost += (_, e) =>
@@ -116,7 +124,23 @@ internal static class Program
             Console.Error.WriteLine($"device lost event: {e.Reason}");
         };
 
-        Console.WriteLine($"device {device.Name} luid {device.Luid} hardware");
+        if (announce)
+        {
+            Console.WriteLine($"device {device.Name} luid {device.Luid} hardware");
+        }
+        return device;
+    }
+
+    private static int Hash(Options options)
+    {
+        using Heartbeat? heartbeat = options.HeartbeatPath is null ? null : new Heartbeat(options.HeartbeatPath);
+
+        GraphicsDevice? device = HardwareDevice(options.Adapter);
+        if (device is null)
+        {
+            return ExitNoHardwareGpu;
+        }
+
         Console.WriteLine($"elements {options.Elements} rounds {options.Rounds} seed 0x{options.Seed:x8}");
 
         HashResult result = HashRun.Run(device, options.Elements, options.Rounds, options.Seed);
@@ -128,12 +152,7 @@ internal static class Program
         Console.WriteLine($"throughput {result.BytesTouched / seconds / 1e9:F1} GB/s");
         Console.WriteLine($"mix {result.Steps / seconds / 1e9:F1} Gsteps/s");
 
-        // A heartbeat that stopped being written does not fail the run, but the supervisor
-        // was reading that file to decide whether this process was alive, so say it happened.
-        if (heartbeat?.Failure is string failure)
-        {
-            Console.Error.WriteLine($"heartbeat writes failed: {failure}");
-        }
+        ReportHeartbeat(heartbeat);
 
         if (options.Expect is ulong expected && expected != result.Hash)
         {
@@ -142,5 +161,64 @@ internal static class Program
         }
 
         return ExitOk;
+    }
+
+    private static int RunLoad(Options options)
+    {
+        using Heartbeat? heartbeat = options.HeartbeatPath is null ? null : new Heartbeat(options.HeartbeatPath);
+
+        GraphicsDevice? device = HardwareDevice(options.Adapter);
+        if (device is null)
+        {
+            return ExitNoHardwareGpu;
+        }
+
+        Console.WriteLine($"load {options.Kind} seconds {options.Seconds}");
+        LoadResult result = Load.Run(device, options.Kind, options.Seconds);
+        Console.WriteLine($"dispatches {result.Dispatches}");
+        Console.WriteLine($"elapsed {result.Elapsed.TotalMilliseconds:F0} ms");
+        Console.WriteLine($"steps {result.Steps}");
+
+        ReportHeartbeat(heartbeat);
+        return ExitOk;
+    }
+
+    private static int RunBench(Options options)
+    {
+        using Heartbeat? heartbeat = options.HeartbeatPath is null ? null : new Heartbeat(options.HeartbeatPath);
+
+        // --json promises one line on stdout and nothing else, so the device line stays off it.
+        GraphicsDevice? device = HardwareDevice(options.Adapter, announce: !options.Json);
+        if (device is null)
+        {
+            return ExitNoHardwareGpu;
+        }
+
+        BenchResult result = BenchRun.Run(device, options.Seconds > 0 ? options.Seconds : BenchRun.DefaultSeconds);
+
+        if (options.Json)
+        {
+            Console.WriteLine(result.ToJson());
+        }
+        else
+        {
+            Console.WriteLine($"buffer {result.BufferBytes} bytes");
+            Console.WriteLine($"bandwidth {result.BandwidthGBs:F1} GB/s best of {result.BandwidthPasses} passes, {result.BandwidthMedianGBs:F1} GB/s median");
+            Console.WriteLine($"matmul {result.MatmulN} fp32 {result.MatmulTflopsFp32:F2} TFLOPS, fp16 storage {result.MatmulTflopsFp16storage:F2} TFLOPS (median of {BenchRun.MatmulRuns})");
+            Console.WriteLine($"elapsed {result.ElapsedMs:F0} ms");
+        }
+
+        ReportHeartbeat(heartbeat);
+        return ExitOk;
+    }
+
+    // A heartbeat that stopped being written does not fail the run, but the supervisor
+    // was reading that file to decide whether this process was alive, so say it happened.
+    private static void ReportHeartbeat(Heartbeat? heartbeat)
+    {
+        if (heartbeat?.Failure is string failure)
+        {
+            Console.Error.WriteLine($"heartbeat writes failed: {failure}");
+        }
     }
 }

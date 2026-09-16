@@ -30,6 +30,17 @@
   :where(button, [role="button"]):focus:not(:focus-visible) { outline: none; }
 }
 
+/* Instrument-panel typography (plan 17a): tracked uppercase labels, tabular
+   figures. In the components layer so a colour utility on the same element
+   still wins. The chip-* classes size SVG text inside the diagrams. */
+@layer components {
+  .label { @apply text-[11px] uppercase tracking-[0.08em] text-studio-muted; }
+  .figure { @apply font-mono tabular-nums; }
+  .chip-label { font: 600 8px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.08em; }
+  .chip-figure { font: 500 11px/1 ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .chip-nominal { font: 400 8px/1 ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+}
+
 .custom-titlebar { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
 

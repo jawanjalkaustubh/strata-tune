@@ -19,12 +19,31 @@ nuspecs in `%USERPROFILE%\.nuget\packages`.
 | HidSharp 2.6.4 | Apache-2.0 (Copyright 2010-2025 James F. Bellinger) | transitive (LHM), in the collector |
 | Mono.Posix.NETStandard 1.0.0 | MIT (Mono project) | transitive (LHM), with its `MonoPosixHelper` natives |
 | System.Diagnostics.PerformanceCounter 10.0.12 | MIT | NuGet, in the collector |
-| System.Management 10.0.2, System.CodeDom 10.0.2, System.IO.Ports 10.0.3, System.Configuration.ConfigurationManager 10.0.12, System.Diagnostics.EventLog 10.0.12, System.Security.Cryptography.ProtectedData 10.0.12 | MIT | transitive, in the collector |
+| System.Management 10.0.2 | MIT | NuGet (direct; also pulled by LHM), in the collector |
+| System.CodeDom 10.0.2, System.IO.Ports 10.0.3, System.Configuration.ConfigurationManager 10.0.12, System.Diagnostics.EventLog 10.0.12, System.Security.Cryptography.ProtectedData 10.0.12 | MIT | transitive, in the collector |
 | ComputeSharp 3.2.0 and ComputeSharp.Core 3.2.0 | MIT | NuGet, in the worker |
 | PawnIO 2.2.0 | separate installer (namazso) | not redistributed; setup reports it and links to pawnio.eu |
 | PresentMon 2.5.1 | MIT (Copyright 2017-2024 Intel Corporation) | exe downloaded by the setup script, not committed |
 | .NET runtime (self-contained) | MIT + Microsoft .NET Library License for coreclr | embedded in the published exe |
 | nvml.h prototypes | NVIDIA notice (royalty-free; disclaimer reproduced) | transcribed into `collector/StrataTune.Collector/Nvml.cs` |
+
+## Runtime
+
+| Component | Licence | Shipped how |
+|---|---|---|
+| Electron 34.5.8 | MIT (Copyright (c) Electron contributors, Copyright (c) 2013-2020 GitHub Inc.), with Chromium, Node.js and V8 under their own licences | the app's executable; Electron's `LICENSE` and `LICENSES.chromium.html` (every Chromium and Node component notice) ship beside it |
+
+## JavaScript packages (production dependencies)
+
+From `package.json`; the dev-only toolchain (Vite, TypeScript, Tailwind, vitest, electron-packager) is not shipped and is not listed.
+
+| Package | Version | Licence |
+|---|---|---|
+| react | 18.3.1 | MIT (Copyright (c) Meta Platforms, Inc. and affiliates) |
+| react-dom | 18.3.1 | MIT (Copyright (c) Meta Platforms, Inc. and affiliates) |
+| lucide-react | 1.46.0 | ISC (Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather; all other copyright for Lucide are held by Lucide Contributors 2022) |
+| clsx | 2.1.1 | MIT (Copyright (c) Luke Edwards) |
+| tailwind-merge | 3.7.0 | MIT (Copyright (c) 2021 Dany Castillo) |
 
 ## The MIT licence text
 
@@ -116,6 +135,40 @@ Source and licence text: https://github.com/GameTechDev/PresentMon/blob/main/LIC
 
 The x64 executable is downloaded and hash-checked by `scripts/setup-tools.ps1`; it is not
 committed to this repository. MIT text above.
+
+## Electron — MIT
+
+Copyright (c) Electron contributors. Copyright (c) 2013-2020 GitHub Inc.
+
+Source and licence text: https://github.com/electron/electron/blob/main/LICENSE. Electron
+embeds Chromium (BSD-3-Clause) and Node.js (MIT), each with many third-party components;
+their notices are the `LICENSES.chromium.html` file Electron ships, which the packaged app
+carries beside its executable. MIT text above.
+
+## lucide-react — ISC
+
+ISC License. Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of
+Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2022.
+
+> Permission to use, copy, modify, and/or distribute this software for any purpose with or
+> without fee is hereby granted, provided that the above copyright notice and this
+> permission notice appear in all copies.
+>
+> THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO
+> THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT
+> SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR
+> ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+> OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE
+> USE OR PERFORMANCE OF THIS SOFTWARE.
+
+Source: https://github.com/lucide-icons/lucide/blob/main/LICENSE
+
+## react, react-dom, clsx, tailwind-merge — MIT
+
+react and react-dom: Copyright (c) Meta Platforms, Inc. and affiliates
+(https://github.com/facebook/react/blob/main/LICENSE). clsx: Copyright (c) Luke Edwards
+(https://github.com/lukeed/clsx/blob/master/license). tailwind-merge: Copyright (c) 2021
+Dany Castillo (https://github.com/dcastil/tailwind-merge/blob/main/LICENSE.md). MIT text above.
 
 ## The Microsoft packages — MIT
 

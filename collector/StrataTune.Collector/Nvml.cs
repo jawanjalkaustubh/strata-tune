@@ -28,7 +28,9 @@ namespace StrataTune.Collector;
 //   herein.
 
 /// <summary>Reads GPU facts straight from the driver's nvml.dll. No NuGet wrapper is current
-/// enough to trust (docs/dependencies.md), so the handful of calls we need are declared here.</summary>
+/// enough to trust (docs/dependencies.md), so the handful of calls we need are declared here.
+/// <see cref="Open"/> keeps NVML initialised for a long-running sampler; <see cref="Read"/>
+/// is the one-shot form the probe uses.</summary>
 internal static class Nvml
 {
     private const string Lib = "nvml";
@@ -36,6 +38,7 @@ internal static class Nvml
     // NVML_ERROR_NOT_SUPPORTED: this card does not have the field, which is not a failure.
     private const int NotSupported = 3;
     private const uint ClockSm = 1, ClockMem = 2, TemperatureGpu = 0;
+    private const ulong MiB = 1024 * 1024;
 
     // Public header bits; anything above 0x100 is newer than the header and printed as hex.
     private static readonly (ulong Bit, string Name)[] ReasonBits =
@@ -55,11 +58,7 @@ internal static class Nvml
     private struct Utilization { public uint Gpu, Memory; }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int ReasonsFn(IntPtr device, out ulong reasons);
-
-    /// <summary>A call resolved at run time, carrying the spelling that actually resolved so
-    /// a failure names the export we called.</summary>
-    private readonly record struct ResolvedCall(ReasonsFn Query, string Name);
+    internal delegate int ReasonsFn(IntPtr device, out ulong reasons);
 
     private delegate int Query<T>(IntPtr device, out T value) where T : struct;
 
@@ -78,6 +77,7 @@ internal static class Nvml
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetBAR1MemoryInfo(IntPtr device, out Bar1Memory bar1);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetPowerUsage(IntPtr device, out uint milliwatts);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetPowerManagementLimit(IntPtr device, out uint milliwatts);
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetPowerManagementLimitConstraints(IntPtr device, out uint minMilliwatts, out uint maxMilliwatts);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetClockInfo(IntPtr device, uint type, out uint mhz);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetTemperature(IntPtr device, uint sensor, out uint celsius);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetMemoryInfo(IntPtr device, out Memory memory);
@@ -106,50 +106,87 @@ internal static class Nvml
         return _handle;
     }
 
-    /// <summary>Init, read every GPU, shutdown. Throws naming the NVML call that failed; a
-    /// field this card does not support comes back null instead of failing the whole read.</summary>
+    /// <summary>Init, read every GPU, shutdown. Throws naming the NVML call that failed.</summary>
     public static IReadOnlyList<GpuFacts> Read()
+    {
+        using var session = Open();
+        return session.Read();
+    }
+
+    /// <summary>Initialises NVML and keeps it initialised until disposed, for a sampler that
+    /// reads ten times a second. Reads are serialised on the session.</summary>
+    public static Session Open()
     {
         Handle();
         Check(nvmlInit_v2(), nameof(nvmlInit_v2));
         try
         {
-            return ReadAll();
+            var driver = new byte[80];
+            Check(nvmlSystemGetDriverVersion(driver, (uint)driver.Length), nameof(nvmlSystemGetDriverVersion));
+            Check(nvmlDeviceGetCount_v2(out var count), nameof(nvmlDeviceGetCount_v2));
+            return new Session(AsciiZ(driver), count, ResolveReasons());
         }
-        finally
+        catch
         {
-            // The library stays loaded: the DllImport stubs cache its function pointers, so
-            // freeing it here would leave them dangling for a later Read().
             nvmlShutdown();
+            throw;
         }
     }
 
-    private static IReadOnlyList<GpuFacts> ReadAll()
+    internal sealed class Session(string driver, uint count, ReasonsFn? reasons) : IDisposable
     {
-        var driver = new byte[80];
-        Check(nvmlSystemGetDriverVersion(driver, (uint)driver.Length), nameof(nvmlSystemGetDriverVersion));
-        Check(nvmlDeviceGetCount_v2(out var count), nameof(nvmlDeviceGetCount_v2));
+        private readonly Lock _gate = new();
 
-        var reasons = ResolveReasons();
-        var list = new List<GpuFacts>();
-        for (uint i = 0; i < count; i++)
-            list.Add(ReadOne(i, AsciiZ(driver), reasons));
-        return list;
+        public string Driver { get; } = driver;
+
+        /// <summary>One GPU that fails a mandatory call (a driver reset in progress, a mobile
+        /// part answering NOT_SUPPORTED) is skipped, so a second card never blanks the first.
+        /// Only when no card could be read at all does the failure surface.</summary>
+        public IReadOnlyList<GpuFacts> Read()
+        {
+            lock (_gate)
+            {
+                var list = new List<GpuFacts>((int)count);
+                InvalidOperationException? failure = null;
+                for (uint i = 0; i < count; i++)
+                {
+                    try
+                    {
+                        list.Add(ReadOne(i, Driver, reasons));
+                    }
+                    catch (InvalidOperationException e)
+                    {
+                        failure = new InvalidOperationException($"GPU {i}: {e.Message}", e);
+                    }
+                }
+                if (list.Count == 0 && failure is not null)
+                    throw failure;
+                return list;
+            }
+        }
+
+        public void Dispose()
+        {
+            // The library stays loaded: the DllImport stubs cache its function pointers, so
+            // freeing it would leave them dangling for a later Open().
+            lock (_gate)
+                nvmlShutdown();
+        }
     }
 
     // 616.92 exports the renamed call; older drivers only the Throttle spelling (same
     // bitmask), and a driver with neither loses the bitmask, not the rest of the card.
-    private static ResolvedCall? ResolveReasons()
+    private static ReasonsFn? ResolveReasons()
     {
         string[] spellings = ["nvmlDeviceGetCurrentClocksEventReasons", "nvmlDeviceGetCurrentClocksThrottleReasons"];
         foreach (var name in spellings)
             if (NativeLibrary.TryGetExport(_handle, name, out var fn))
-                return new ResolvedCall(Marshal.GetDelegateForFunctionPointer<ReasonsFn>(fn), name);
+                return Marshal.GetDelegateForFunctionPointer<ReasonsFn>(fn);
 
         return null;
     }
 
-    private static GpuFacts ReadOne(uint index, string driver, ResolvedCall? reasons)
+    private static GpuFacts ReadOne(uint index, string driver, ReasonsFn? reasons)
     {
         Check(nvmlDeviceGetHandleByIndex_v2(index, out var dev), nameof(nvmlDeviceGetHandleByIndex_v2));
         var name = new byte[96];
@@ -163,24 +200,47 @@ internal static class Nvml
         Check(nvmlDeviceGetClockInfo(dev, ClockMem, out var memClock), nameof(nvmlDeviceGetClockInfo) + "(MEM)");
         Check(nvmlDeviceGetTemperature(dev, TemperatureGpu, out var temp), nameof(nvmlDeviceGetTemperature));
 
-        // The rest are optional: BAR1, the power-management limit and the utilisation rates
-        // answer NOT_SUPPORTED on several laptop and older cards, and
+        // The rest are optional: BAR1, the power limits and the utilisation rates answer
+        // NOT_SUPPORTED on several laptop and older cards, and
         // nvmlDeviceGetGpuMaxPcieLinkGeneration only exists on newer drivers. Losing one of
-        // them must not cost us the name, clocks and temperature that did read.
-        var gpuMaxGen = Optional<uint>(nvmlDeviceGetGpuMaxPcieLinkGeneration, dev);
+        // them must not cost us the name, clocks and temperature that did read; the wire
+        // shape has no null, so an absent field is 0.
+        var gpuMaxGen = Optional<uint>(nvmlDeviceGetGpuMaxPcieLinkGeneration, dev) ?? 0;
         var bar1 = Optional<Bar1Memory>(nvmlDeviceGetBAR1MemoryInfo, dev);
-        var power = Optional<uint>(nvmlDeviceGetPowerUsage, dev);
-        var limit = Optional<uint>(nvmlDeviceGetPowerManagementLimit, dev);
+        var power = Optional<uint>(nvmlDeviceGetPowerUsage, dev) ?? 0;
+        var limit = Optional<uint>(nvmlDeviceGetPowerManagementLimit, dev) ?? 0;
+        var maxLimit = OptionalMaxLimit(dev);
         var util = Optional<Utilization>(nvmlDeviceGetUtilizationRates, dev);
-        var bits = reasons is ResolvedCall call ? Optional<ulong>(call.Query.Invoke, dev, call.Name) : null;
+        var bits = reasons is null ? null : Optional<ulong>(reasons.Invoke, dev, "clocks event reasons");
 
-        const ulong MiB = 1024 * 1024;
         return new GpuFacts(
             (int)index, AsciiZ(name), driver,
-            curGen, curWidth, maxGen, maxWidth, gpuMaxGen,
-            bar1?.Total / MiB, mem.Total / MiB, mem.Used / MiB,
-            power, limit, sm, memClock, temp, util?.Gpu, util?.Memory,
-            bits, bits is ulong mask ? DecodeReasons(mask) : []);
+            new GpuPcie(curGen, curWidth, maxGen, maxWidth, gpuMaxGen),
+            (bar1?.Total ?? 0) / MiB,
+            new GpuVram(mem.Total / MiB, mem.Used / MiB),
+            power, limit, maxLimit,
+            new GpuClocks(sm, memClock),
+            temp,
+            new GpuUtilisation(util?.Gpu ?? 0, util?.Memory ?? 0),
+            new ClocksEventReasons(bits ?? 0, DecodeReasons(bits ?? 0)));
+    }
+
+    private static uint OptionalMaxLimit(IntPtr dev)
+    {
+        try
+        {
+            var rc = nvmlDeviceGetPowerManagementLimitConstraints(dev, out _, out var max);
+            return rc switch
+            {
+                Success => max,
+                NotSupported => 0,
+                _ => throw Failure(rc, nameof(nvmlDeviceGetPowerManagementLimitConstraints)),
+            };
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return 0;
+        }
     }
 
     /// <summary>A call whose absence is a missing field rather than a failed read:

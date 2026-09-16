@@ -128,8 +128,15 @@ Ryzen 9 9950X (32 logical CPUs), MSI MAG X870E TOMAHAWK WIFI (MS-7E59) BIOS 2.A6
   prototypes are transcribed — the P/Invoke file carries it.
 - Clocks-event-reason bits (NVML): GpuIdle 0x1, ApplicationsClocksSetting 0x2, SwPowerCap 0x4,
   HwSlowdown 0x8, SyncBoost 0x10, SwThermalSlowdown 0x20, HwThermalSlowdown 0x40,
-  HwPowerBrakeSlowdown 0x80, DisplayClockSetting 0x100. This box shows 0x400 at idle — newer
-  than the public header; decode known bits, show unknown as hex.
+  HwPowerBrakeSlowdown 0x80, DisplayClockSetting 0x100. This box shows 0x400 at idle **and under light load**,
+  and it disappears under heavy load (599/600 W → 0x4 SwPowerCap only), on driver 616.92 — so it
+  behaves like an idle/low-utilisation indicator on Blackwell; newer than the public header. Decode
+  known bits, show unknown as hex, and treat 0x400-only as "not loaded" for validity gates.
+- Measured on the dev box: heavy worker load holds SM 3210–3225 MHz at 599 W / 51 °C with
+  SwPowerCap set; a light (50 ms-dispatch) load bounces 1717–2812 MHz at 28 °C — clock drops
+  under light load are the boost governor, not throttling.
+- AM5 VSOC: AMD's AGESA cap is **1.30 V**; EXPO 6000+ kits run 1.25–1.30 V by design. Rails
+  need real nominal/limit tables (this box: SoC 1.304 V = at the cap, not a fault).
 
 ## Licence summary for THIRD-PARTY-NOTICES.md
 
