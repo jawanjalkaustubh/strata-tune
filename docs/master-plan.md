@@ -1,0 +1,758 @@
+# Strata Tune — Master Plan (v1, 2026-09-15)
+
+PC tuning and diagnostics app. Fifth member of the Strata family (Code, Photo, Video,
+Snap/Remote). Standalone project at `D:\AntiGravity\strata-tune`.
+
+**Hardware (verified 2026-09-15 on the dev box):** RTX 5090 32 GB (driver 616.92, PCIe
+Gen5 x16, ReBAR on, power limit 600 W = max, no headroom), Ryzen 9 9950X, 2×16 GB G.Skill
+F5-6000J2836G16G in A2/B2 running at 6200 MT/s, three NVMe SSDs, Windows 11 26200,
+Balanced power plan. The user is already in the Performance Log Users group.
+
+**Cost model:** free, no telemetry, no accounts, no cloud calls. Donations via `support.json`
+like Strata Photo. **Public repo** (the distribution model is people posting reports and
+share cards; that only works if the project is visible).
+
+The original idea document is kept verbatim at [spec-original.md](spec-original.md). This
+plan is the engineering version of it: same five capabilities, same build order, with the
+data sources and process model pinned down against this machine. Where the plan departs from
+the spec, Appendix A says why.
+
+---
+
+# Part I — Foundations
+
+## 1. Assumptions
+
+| # | Assumption |
+|---|---|
+| A1 | Windows 11 only. NVIDIA first; AMD/Intel GPUs get the read-only paths (sensors, audit) and no OC. |
+| A2 | Everything the user sees is interpreted: a verdict, a cost, a fix. Raw data exists but is behind a button. |
+| A3 | Collection is dumb and cheap; analysis runs after capture. The tool must never be the stutter. |
+| A4 | One clock. Every sample carries a `QueryPerformanceCounter` timestamp. |
+| A5 | The UI never touches hardware. A separate elevated collector does, over localhost. Same shape as Strata Photo's Python sidecar, but .NET, because the libraries that matter are .NET. |
+| A6 | The app runs with GPU acceleration disabled, always. It is a dashboard; there is nothing on screen that needs a GPU, and this is the only way to be sure the monitor does not perturb a stress test. |
+| A7 | Nothing writes to hardware until Phase 8. Phases 1–7 cannot damage a machine and are a complete product. |
+| A8 | The score measures potential realised, not speed. A well-configured 4060 can beat a misconfigured 5090. |
+| A9 | Model tables, PSU curves and expected-value cohorts ship as editable JSON in the repo. No server, ever. |
+| A10 | GPU co-tenancy with Strata Code / Photo / Video follows the existing `gpu.lock` convention (§20). Stress tests take the lock; passive monitoring never does. |
+| A11 | Anti-cheat: PresentMon is ETW-only (no injection, no overlay). Test against one live anti-cheat title in Phase 5 before building on top. |
+
+## 2. Goals, ranked
+
+1. Tell someone, in five ranked lines, what is wrong with their PC and what it costs them
+2. Explain each stutter — including "nothing on your end fixes this"
+3. Answer "what local AI models can this machine run, and how fast"
+4. Give an honest whole-system power number, every figure tagged measured or estimated
+5. Find a stable undervolt automatically, with rollback that cannot brick a boot
+
+## 3. Non-goals
+
+- Raw-speed benchmarking or a leaderboard (3DMark and Cinebench own that)
+- Overlay / in-game HUD (that is RTSS; it also trips anti-cheat)
+- Writing a kernel driver. Ever.
+- CPU or RAM overclocking from software. Detect, quantify, guide to BIOS.
+- Fan control (Fan Control exists and is excellent)
+- Mobile clients, cloud sync, accounts
+
+---
+
+# Part II — Architecture
+
+## 4. System shape
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Strata Tune — Electron 34 + React 18 + TS + Tailwind │  non-elevated
+│  GPU acceleration OFF (app.disableHardwareAcceleration)│
+│  ┌─────────┐ ┌────────┐ ┌────────┐ ┌───────┐ ┌──────┐ │
+│  │ Audit   │ │ Live   │ │ Capture│ │ AI    │ │ Tune │ │
+│  │ (5 fixes│ │ monitor│ │ +report│ │ advisor│ │ (OC) │ │
+│  └─────────┘ └────────┘ └────────┘ └───────┘ └──────┘ │
+│  ┌──────────────────────────────────────────────────┐ │
+│  │ Analysis (TS): classifier · power model · score  │ │
+│  │ Same code renders the in-app view and the HTML   │ │
+│  └──────────────────────────────────────────────────┘ │
+└──────────────────────────┬───────────────────────────┘
+                           │ HTTP + SSE, 127.0.0.1:<dynamic>, token
+                           ▼
+┌──────────────────────────────────────────────────────┐
+│  strata-tune-collector.exe  (.NET, elevated, own PID) │
+│  ┌──────────────┐ ┌──────────────┐ ┌───────────────┐ │
+│  │ LibreHardware│ │ NVML         │ │ PDH counters  │ │
+│  │ MonitorLib   │ │ (nvml.dll)   │ │ disk queue,   │ │
+│  │ CPU/board/   │ │ clocks, W,   │ │ per-proc CPU, │ │
+│  │ fans/SSD @10Hz│ │ throttle bits│ │ page faults   │ │
+│  └──────────────┘ └──────────────┘ └───────────────┘ │
+│  ┌──────────────┐ ┌──────────────┐ ┌───────────────┐ │
+│  │ PresentMon   │ │ Static       │ │ Ring buffer   │ │
+│  │ child proc,  │ │ snapshot     │ │ QPC-stamped,  │ │
+│  │ CSV stdout,  │ │ WMI/powercfg/│ │ 10 min full + │ │
+│  │ --qpc_time   │ │ SMBIOS       │ │ 1 Hz summary  │ │
+│  └──────────────┘ └──────────────┘ └───────────────┘ │
+│  ┌──────────────────────────────────────────────────┐ │
+│  │ Tune supervisor: state machine, watchdog,        │ │
+│  │ flight recorder, NVAPI writes (Phase 8 only)     │ │
+│  └───────────────────────┬──────────────────────────┘ │
+└──────────────────────────┼───────────────────────────┘
+                           │ spawn, heartbeat file every 2 s
+                           ▼
+              ┌────────────────────────────┐
+              │ strata-tune-worker.exe     │  disposable
+              │ ComputeSharp (DX12 compute)│
+              │ hash kernel · bandwidth    │
+              │ sweep · heavy/light/burst  │
+              └────────────────────────────┘
+```
+
+**Why a .NET collector and not Python.** LibreHardwareMonitor is a .NET library. That is the
+whole reason. NVML, PDH and WMI are all one P/Invoke or one NuGet away in C#. A Python
+sidecar would wrap LHM through a .NET bridge and lose the one thing the sidecar exists for.
+Publish it self-contained single-file (`dotnet publish -r win-x64 --self-contained
+-p:PublishSingleFile=true`) so users do not install a runtime.
+
+**Why NVML for reads, not NVAPI.** NVML (`nvml.dll`, ships with every driver) exposes clocks,
+power, temperatures, PCIe gen/width, BAR1 size, VRAM, utilisation and — the highlight of
+the spec — `nvmlDeviceGetCurrentClocksEventReasons`, the perf-limit bitmask. All of it
+without admin and without a driver. NVAPI is kept for the one thing NVML cannot do:
+write a VF curve offset (Phase 8). Verified on this box: `nvidia-smi
+--query-gpu=clocks_event_reasons.*` returns the same bits.
+
+**Why PresentMon as a child process, not the SDK.** `PresentMon.exe --output_stdout
+--qpc_time --process_id <pid>` streams one CSV row per present with `CPUBusy`, `CPUWait`,
+`GPUBusy`, `GPUWait`, `GPULatency`, `DisplayedTime` — every column the classifier needs,
+timestamped on the same QPC clock as our sensors. No native binding to maintain, and the
+PresentMon SDK's own service is not needed. Pin a version and vendor the exe under
+`tools/presentmon/` (MIT).
+
+**Why ComputeSharp for the worker.** The stress/hash kernel must be deterministic and
+vendor-neutral. ComputeSharp compiles C# to DX12 compute shaders; no CUDA toolkit, works on
+AMD later. The worker is a second .NET exe so that when it TDRs, the collector lives.
+
+## 5. Process model and elevation
+
+Three processes, three trust levels:
+
+| Process | Elevated | Lifetime | Owns |
+|---|---|---|---|
+| Electron UI | no | user session | rendering, analysis, reports |
+| Collector | **yes** | started by UI, exits with it | sensors, ETW, ring buffer, tune supervisor |
+| Worker | inherits | one per test candidate | the GPU |
+
+Elevation flow: the UI launches the collector with `ShellExecute("runas")`, one UAC prompt
+per app start. An elevated child cannot pipe stdout to a non-elevated parent, so the
+handshake is a file: the collector writes `%LOCALAPPDATA%\Strata Tune\collector.json`
+`{ port, token, pid, startedAt }` and the UI polls for it (timeout 15 s). Every HTTP call
+carries the token. The collector exits when the UI's PID disappears.
+
+What needs admin and what does not, on this machine:
+
+| Need | Admin? | Note |
+|---|---|---|
+| LHM sensors (CPU package power, VRM, board temps, fans) | **yes** | Needs the **PawnIO** driver. WinRing0 is on Microsoft's vulnerable-driver blocklist and is blocked by HVCI on fresh Windows 11 installs; recent LibreHardwareMonitor builds use PawnIO instead. Ship a one-time "install PawnIO" step in setup (signed, separate installer). Verify the exact LHM version/PawnIO pairing in Phase 0. |
+| PresentMon ETW session | no, **if** the user is in Performance Log Users | This user already is. Setup offers to add the user to the group (that part needs admin once) so the ETW path is unelevated in future. |
+| NVML reads | no | |
+| NVML/NVAPI writes (power limit, clocks) | yes | Phase 8 only |
+| PDH counters, WMI, powercfg | no | |
+
+Because LHM needs admin anyway, v1 keeps the whole collector elevated. Splitting it in two
+is a later optimisation, not a design change.
+
+**Install-location rule.** LHM loads `nvapi64.dll`, `nvml.dll`, `Ftd2xx.dll` and `ControlLib.dll`
+by bare name. The collector calls `SetDefaultDllDirectories(SYSTEM32 | APPLICATION_DIR)` so the
+working directory and `%PATH%` are out of the search, and the *exe directory* half is closed by
+installing the collector only where non-admins cannot write (Program Files / ProgramData with a
+restricted ACL) — an elevated process must never load a DLL from a user-writable folder.
+
+## 6. Data layer
+
+**One clock.** `Stopwatch.GetTimestamp()` in .NET is QPC. PresentMon `--qpc_time` emits
+raw QPC. Sensor samples are stamped at read time. Nothing uses `DateTime.Now` except the
+session header.
+
+**Streams.** Each stream is an append-only array of fixed-shape rows:
+
+| Stream | Rate | Row |
+|---|---|---|
+| `sensors` | 10 Hz (LHM + NVML) | one float per subscribed sensor id |
+| `frames` | per present | PresentMon row, PID-filtered |
+| `procs` | 1 Hz | top-8 CPU consumers by PID, page faults/s |
+| `disk` | 10 Hz | queue depth, read/write bytes per physical disk |
+| `events` | sparse | throttle-bit changes, TDR (Event ID 4101), game start/stop, user marks |
+| `snapshot` | once | static config (§8 inputs), hardware tree |
+
+**Ring buffer sized by time.** 10 minutes at full rate in RAM. Older data is folded into
+1 Hz summary rows (min/max/mean per sensor, stutter count per second) so a two-hour
+session still fits. A session is "stopped" by the user or by game exit; then the buffer is
+written to `%LOCALAPPDATA%\Strata Tune\sessions\<date>-<game>.stsession` — a folder of
+gzipped newline-JSON, one file per stream, plus `session.json`. CSV export (§9) is a
+straight dump of the same.
+
+**Sensor identity.** LHM sensor ids (`/amdcpu/0/power/0`) are stable per machine; NVML
+fields get synthetic ids (`/nvml/0/clocks/sm`). The UI subscribes to a list; the collector
+reads only subscribed sensors plus a fixed core set, so the "All sensors" view (§9) can
+cost more than the default view without the default view paying for it.
+
+**Live feed.** One SSE endpoint, 2 Hz, sending the latest row of each stream. The UI never
+polls sensors itself and never opens a second sensor session.
+
+## 7. Data sources — verified against this box
+
+| Fact | Source | Verified here |
+|---|---|---|
+| RAM rated speed | `Win32_PhysicalMemory.PartNumber` → regex for the speed in the kit part number (`F5-6000J…` → 6000), with a small kit table for parts that do not encode it | 6000 rated |
+| RAM actual speed | `Win32_PhysicalMemory.ConfiguredClockSpeed` | 6200 (user runs above EXPO) |
+| RAM slot map | `Win32_PhysicalMemory.DeviceLocator` | A2 + B2 → correct pair |
+| GPU PCIe link | NVML `CurrPcieLinkGeneration/Width` vs `MaxPcieLink*` | Gen5 x16 of Gen5 x16 |
+| Resizable BAR | NVML `BAR1MemoryInfo.total` ≈ VRAM total → enabled; 256 MiB → disabled | 32768 MiB of 32607 MiB VRAM → on |
+| Power plan | `powercfg /getactivescheme` GUID | Balanced |
+| Disk type per path | volume → partition → `Get-PhysicalDisk.MediaType/BusType` via WMI (`MSFT_PhysicalDisk`) | all NVMe SSD |
+| Free space | `DriveInfo` | D: 142 of 195 GB (73 %) |
+| GPU clocks, power, temps, VRAM, throttle bits | NVML | active reasons `0x400` at idle — a bit newer than the public header; decode known bits, show unknown as hex |
+| CPU package power, Tctl, VRM, fans, board temps | LHM (needs PawnIO) | yes — Tctl 49 °C, Package 64 W, NCT6687D-R fans/temps/13 rails, per-core SMU W + VID, 12VHPWR per-pin V/A |
+| Per-frame timing | PresentMon | yes — 28-column QPC-stamped CSV from a desktop app; not yet against a game (Phase 4) |
+| Disk queue, per-process CPU, page faults | PDH `PhysicalDisk`, `Process` | standard |
+| TDR | Windows event log, `Display` source, Event ID 4101 | standard |
+| GPU driver version and install date | NVML `DriverVersion`; `Win32_PnPSignedDriver.DriverDate` | 616.92 |
+
+Note the WMI `Speed` field reports the *configured* speed on this board (6200 = 6200), not
+the SPD rated speed, which is why the EXPO check parses the part number instead. True SPD
+reads over SMBus are a Phase 9 nicety.
+
+---
+
+# Part III — Features
+
+## 8. System audit (Phase 1 — the v1)
+
+Runs in under five seconds, no game needed, cannot change anything. Each check returns
+`{ id, state, costEstimate, severity, fix }` and the page shows the **top five by
+estimated cost**. The rest are one click away under "show all".
+
+| Check | Rule | Cost text |
+|---|---|---|
+| EXPO/XMP | `configured < rated − 5 %` | "10–15 % in CPU-bound games" |
+| RAM channels | two sticks not in A2/B2 (or four not fully populated) | "up to 20 %" |
+| PCIe link | current gen/width < max, GPU not idle-downclocked (re-read under a 2 s load burst; Gen/width drop at idle on some boards) | "2–8 %" |
+| Resizable BAR | BAR1 ≪ VRAM | "0–10 %, title dependent" |
+| Power plan | laptop: not High Performance; **desktop Zen 4/5: Balanced is AMD's recommended plan, do not flag** | "large on laptops" |
+| Boot drive space | > 90 % full | "severe" |
+| Game on HDD | `MediaType == HDD` for a launched game's path | "traversal stutter" |
+| Thermal headroom | 20 s load ramp (worker, light kernel): clock at t=20 vs t=2, throttle bits set | "throttling" |
+| GPU driver age | > 180 days | "occasional title bugs" |
+| Background hogs | 5 s idle sample, any process > 5 % CPU or > 2 GB RAM | names the process |
+| Power limit headroom | `power.limit == power.max_limit` | "no headroom to raise — undervolt instead" (informational; this box) |
+
+Ranking: `severity × costEstimate`. Ties broken by "fixable in BIOS in ten minutes" first.
+
+## 9. Full sensor view (Phase 2)
+
+Behind an "All sensors" button, opens as a second window. LHM hardware tree grouped by
+component, plus the NVML group. Per sensor: current, min, max, mean over the session.
+Search box, "only changed" toggle, pin-to-main-bar, CSV export. Sensors at a limit
+(throttle bit set, at power cap, at temp target) are highlighted in the tree. 2 Hz, no
+animation, plain DOM.
+
+## 10. Local AI model advisor (Phase 3)
+
+Inputs come from the snapshot: VRAM total/free, RAM total/free, GPU memory bandwidth
+(NVML does not expose it; a small `gpus.json` keyed by name — 5090: 1792 GB/s), CPU cores,
+free space on the model drive, Ollama's model list if it is installed.
+
+```
+weights   = params × bytes_per_weight     (FP16 2.0 · FP8/Q8 1.0 · Q6_K 0.82 · Q5_K 0.70 · Q4_K_M 0.56 · NVFP4 0.5)
+kv_cache  = 2 × layers × kv_heads × head_dim × context × kv_bytes     (GQA: kv_heads, not heads)
+required  = weights + kv_cache + 0.6 GB CUDA/activations + 1.0 GB desktop reserve
+tok/s     ≈ bandwidth / weights × 0.65      (offloaded fraction runs at RAM bandwidth, ~1/20)
+```
+
+Buckets: Runs fast / Runs, tight (< 1.5 GB headroom) / Runs slowly (spills; show the tok/s
+cliff) / Won't run. Context length is a slider. Sorted by largest model that still runs
+fast. Download size checked against free space.
+
+**AI stats card (user request 2026-09-15).** At the top of the page, before the model list:
+
+| Stat | Source | Tag |
+|---|---|---|
+| Tensor TOPS by precision (FP16 / FP8 / INT8 / FP4, dense and sparse) | `gpus.json` spec row for the detected GPU; NPU TOPS from the CPU row when a Ryzen AI / Core Ultra NPU is present | spec |
+| Memory bandwidth | `gpus.json` spec **and** the worker's bandwidth sweep kernel (§16 stage 2 reused read-only) | spec + measured |
+| Matmul throughput | worker FP16/INT8 matmul kernel, achieved TFLOPS vs spec | measured |
+| Tokens/s calibration | if Ollama is running: time a fixed 256-token generation on each resident/installed model, compare with the estimate | measured |
+| **Best model for…** | chat · coding · vision · reasoning — the largest model in `models.json` tagged for that use that still "runs fast", with its estimated tok/s (and measured, when calibrated) | estimate |
+
+Measured bandwidth replaces the spec number in the tok/s formula once it exists; the card
+shows both so the gap (a throttled or shared card) is visible. Same measured/estimated
+tagging rule as §13.
+
+`models.json` seeds with what this family already uses: qwen3-vl:30b, qwen2.5-coder:32b,
+qwen3:4b, llama3.3:70b, gemma, deepseek-r1 sizes, plus the LTX-2.5 / Gemma 4 12B pair from
+Strata Video as a "diffusion" row type. **Calibration:** Ollama is installed here, so Phase
+3 ends with a measured tok/s for three models against the estimate, and the 0.65 factor is
+set from that, not guessed.
+
+Later: Strata Code's setup wizard (which currently picks a model by VRAM alone) could read
+this advisor's output. Not in scope now.
+
+## 11. Frame capture and stutter classifier (Phases 4–5, the real lift)
+
+**Capture.** Start/stop by button, by the Game Mode process list lifted from Strata Video
+(`game-mode.ts`: allowlist + exclusive-fullscreen probe), or by picking a PID. PresentMon
+is started with `--process_id` so Strata Tune's own presents are never in the stream. The
+first 300 frames are ignored (level load).
+
+**Detection.** A frame is a stutter when `frame_time > 2.0 × rolling_median(120)` **or**
+`> 50 ms`. Report stutter count, % of playtime lost, and separately frame-time stdev
+outside stutters (pacing).
+
+**Classification.** First match wins. All inputs are on one timeline, so "concurrent" means
+within ±100 ms of the frame's QPC stamp.
+
+| # | Signature | Verdict | Fixable |
+|---|---|---|---|
+| 1 | `GPUBusy` spike, `CPUBusy` normal, first visit to area, rate decays over the session | Shader compilation | plays out |
+| 2 | SM clock drop + `HwThermalSlowdown`/`SwThermalSlowdown` bit or temp ≥ target | Thermal throttle | fan curve, airflow |
+| 3 | SM clock drop + `SwPowerCap` bit, temps normal | Power limit | raise limit / undervolt |
+| 4 | VRAM used ≥ 95 % + spike on new assets | VRAM exhaustion | lower textures |
+| 5 | disk queue depth spike concurrent | Storage | SSD, free space |
+| 6 | another PID's CPU spike concurrent | Background process | names it |
+| 7 | inter-stutter interval CV < 0.15 | GC / streaming tick | **no — engine** |
+| 8 | `CPUBusy` spike, `GPUWait` high, nothing else | Engine stall | **no — engine** |
+| 9 | alternating long/short, no resource correlation | Pacing / sync | cap FPS, check vsync/frame gen |
+
+Confidence: high if two signals agree, low if one weak correlation. Shown in the report.
+The throttle-bit inputs (cases 2, 3) are why NVML matters: the GPU says *why* it slowed,
+we do not infer it from a temperature chart.
+
+**Report:** headline verdict → cause breakdown by % → what to do → raw at the bottom.
+Cases 7 and 8 produce the sentence *"no setting on your end changes this"* in the
+headline.
+
+## 11a. Built-in stutter bench (Phase 5, user request 2026-09-15)
+
+A capture needs a game; a **bench** does not. `StrataTune.Bench` is a small DX12 rendering
+workload with a real swapchain, so PresentMon sees it like any game, and it plays a fixed
+90-second script designed to trip specific classifier cases on purpose:
+
+| Segment | What it does | Signature it should produce |
+|---|---|---|
+| 0–10 s | warm-up, ignored (level load rule) | — |
+| 10–30 s | steady scene, many pipeline states compiled on first use, then reused | case 1 shader compilation, decaying |
+| 30–45 s | streams textures from disk in bursts, growing VRAM use | case 4/5 (VRAM / storage) if the machine is weak there |
+| 45–60 s | CPU-heavy simulation step every 2 s with the GPU waiting | case 8 engine stall (the "not fixable" verdict, on purpose) |
+| 60–90 s | sustained GPU load at ~90 % | case 2/3 (thermal / power) if the cooler or limit is the issue |
+
+Everything else stays identical between runs, so bench results are comparable across
+machines and over time — which is what makes it usable as the **Smoothness** workload in
+§14 and the before/after workload in §15. Built with Vortice.Windows (MIT DX12 bindings for
+.NET), vendor-neutral, lives beside the worker in `collector/`. The report it feeds is the
+same renderer as a game capture (§11, §19): headline verdict, one-sentence summary with %
+of playtime lost, frame-time chart with stutters marked, cause breakdown by % with a plain
+paragraph each, what to do, measurements table last. Design reference noted, not copied.
+
+## 12. CPU-bound vs GPU-bound (Phase 5, falls out)
+
+Per-frame `GPUBusy` vs `CPUBusy` plus GPU utilisation: report which side is the limiter
+for the capture. *"Your GPU sat at 60 % while your CPU was pegged — lowering graphics
+settings will not help you."*
+
+## 13. Whole-system power (Phase 6)
+
+Every number carries `measured` or `estimated`, visibly.
+
+| Part | Method | Tag |
+|---|---|---|
+| CPU package | LHM `Package` power — on Zen 4/5 this is the MSR `C001_029B` energy accumulator (RAPL-style, core + SoC), *not* SVI3; LHM has no SVI3/PM-table readout for Zen 5, so no per-rail volts/amps or PPT/TDC/EDC | measured |
+| GPU board | NVML `power.draw` | measured |
+| VRM input | LHM, if the board exposes it | measured (board dependent) |
+| RAM | `count × (2.5 W idle … 5 W loaded)` per DDR5 DIMM, weighted by memory bandwidth counter | estimated |
+| Drives | per-device idle/active model (NVMe 0.5/6 W), weighted by queue depth | estimated |
+| Fans, RGB, chipset, USB | device counts × flat model, board chipset table | estimated |
+
+`wall = (measured + estimated) / efficiency(load_fraction, psu_rating)` with an 80 PLUS
+curve table in `psu.json`. PSU model and 80 PLUS rating asked once. Unlocks: "do I need a
+bigger PSU" (peak sustained vs rated, from their own sessions), electricity cost, and
+performance-per-watt — the number that sells undervolting in §16.
+
+**Stated in the UI, not a footnote:** polling is 10 Hz; PSU OCP transients are microseconds;
+a clean graph does not prove a healthy PSU.
+
+## 14. System score and share card (Phase 7)
+
+Four subscores, each clickable to the findings that cost points:
+
+| Subscore | Source |
+|---|---|
+| Configuration | §8 audit, deterministic |
+| Thermals | sustained clock vs rated, % of load time with a throttle bit set |
+| Smoothness | §11, **cases 7 and 8 excluded** |
+| Efficiency | §13 performance per watt |
+
+Stability caps the total: any compute error or TDR in validation ceilings the score.
+Expected values day one come from spec (`gpus.json`: rated boost, TDP, bandwidth;
+`cpus.json`: boost, TDP). Later, opt-in anonymised cohorts shipped as JSON through GitHub
+releases.
+
+Validity: fixed workload (the worker's heavy pattern, 60 s) and duration; the run is marked
+invalid if background load, throttling or thermal drift tripped during capture. A silently
+bad score is worse than none.
+
+Share card: 1200×630 PNG drawn on a 2D canvas (works with GPU acceleration off) — total,
+four bars, top fix, hardware line, `St` monogram.
+
+## 15. Fix verification (Phase 7, trivial once §14 exists)
+
+After any change, re-run the identical workload, show the delta, store
+`{ what, before, after, date }` in `history.json`. The score's movement over time is that
+history.
+
+## 16. OC auto-tune (Phase 8 — last, opt-in, behind a warning)
+
+**Undervolt first, not overclock.** On this box the power limit is already at its maximum,
+so an undervolt is the only lever with any gain anyway.
+
+Two corrections to the manual method, both from the spec, both kept:
+
+- **Two-phase validation.** Hunt the ceiling with fans high, then re-validate at the user's
+  real fan curve under sustained load. Ship the second number.
+- **Memory by bandwidth, not stability.** Sweep upward, measure bandwidth per step, back off
+  to the last rising point. GDDR7 corrects silently and just gets slower.
+
+**Failure ladder** — stop at the first stage that trips:
+
+| # | Stage | Detector | Cost |
+|---|---|---|---|
+| 1 | silent compute/memory error | deterministic kernel, hash vs stock-clock reference | none |
+| 2 | bandwidth regression | throughput drops as memory retries | none |
+| 3 | TDR | Event 4101; worker dies, collector lives | ~5 s |
+| 4 | hard hang | `PENDING` flag on disk, caught at next boot | a reboot |
+
+**Three load patterns per candidate** (heavy, near-idle, rapid switching). VF-curve
+instability shows up at *low* load; an undervolt that survives an hour of heavy load and
+crashes on the desktop is the common failure.
+
+**Bisect, one variable at a time.**
+
+**Rollback state machine** (in the collector, persisted to `tune-state.json` *before* each
+apply):
+
+```
+KNOWN_GOOD → PENDING → VALIDATING → KNOWN_GOOD
+                 ↓ (crash / flag found at next launch)
+              REVERTED  (tell the user exactly which value did it)
+```
+
+`VALIDATING` requires one clean shutdown; only a clean boot after a clean shutdown
+promotes. Also register a Windows Task Scheduler entry at logon that runs
+`strata-tune-collector.exe --revert-if-pending`, so the revert happens even if the user
+never opens the app again.
+
+**Flight recorder.** During any test, the last 30 s of the timeline is flushed to disk every
+second. After a hard hang the app opens on "here is what temps, clocks, power and limit
+bits were doing in the seconds before it died".
+
+**Live monitor during tests** lives in the UI, fed by the collector at 2 Hz: total W
+(tagged), CPU/GPU W, requested vs effective clock, mem clock, GPU core/hotspot/memory
+junction, CPU package, fan %, **perf-limit reasons as a label**, VRAM, test state (candidate,
+ladder position, pattern, elapsed, error count, bandwidth). A **test validity indicator**
+turns red if a throttle bit is set during a ceiling hunt.
+
+**Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
+NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
+third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set
+for Afterburner / GPU Tweak**, so people who do not trust the tool to apply settings can
+still use its results, and so AMD users get something from day one.
+
+---
+
+# Part IV — Product
+
+## 17. UI
+
+Five pages on the family's bottom-bar page switcher, in the order people need them:
+
+`Audit · Monitor · Capture · AI Models · Tune`
+
+- **Audit** is the home page: score at the top once it exists, five ranked findings, "All
+  sensors" button, pinned-sensor strip.
+- **Monitor** is the 2 Hz live view; also the view shown during a Tune test.
+  Includes a **core grid** (user request 2026-09-15, Ryzen Master-style): one tile per
+  physical core showing load %, effective clock, and nominal clock, laid out by CCD when the
+  CPU has more than one (9950X: 2 × 8), with per-core SMU power and VID on hover. All of it
+  is already in LHM's tree (`/amdcpu/0/load/N`, `/amdcpu/0/clock/N` + `(Effective)`,
+  `/amdcpu/0/power/N (SMU)`, `/amdcpu/0/voltage/N VID`) — this is presentation, not a new
+  source. Effective clock is the honest number (a parked core reports 5.7 GHz nominal and
+  ~0 effective); the tile colour follows load, the big figure is the effective clock. Intel
+  CPUs get the same grid from their per-core sensors, P/E cores grouped instead of CCDs.
+- **Capture** lists sessions; opening one shows the report (same renderer as the HTML).
+- **AI Models** is the advisor with the context slider.
+- **Tune** is hidden behind a settings toggle plus a warning modal until Phase 8 ships.
+
+Right-hand chat panel like the other apps — but here it is *optional* and *later*: the
+family's Ollama agent could explain a report in plain words, but the report already is
+plain words. Not before Phase 9.
+
+Rendering rules everywhere: `app.disableHardwareAcceleration()` before `ready`; no canvas
+charts during an active test; report charts are inline SVG.
+
+## 17a. Monitor page design (user direction 2026-09-15)
+
+The Monitor page is an instrument panel, not a table of numbers. It should look like a
+professional hardware tool — dense, calm, dark, every value with a bar or a gauge so the
+eye reads state before it reads digits. Still plain DOM/SVG at 2 Hz, no canvas, no
+continuous animation (CSS transitions ≤ 200 ms on bar width only), so it costs nothing
+while a test runs (A6).
+
+**Layout (desktop ≥ 1280 px), top to bottom:**
+
+1. **Header strip** — CPU name · GPU name · board · session time · collector status.
+2. **CPU panel** (left half)
+   - *Chip diagram*: an SVG outline of the package with one cell per core, arranged by CCD
+     (two 4×2 blocks for the 9950X; P/E clusters on Intel). Cell fill = load (0 % dim →
+     100 % accent), cell label = effective GHz, small nominal GHz beneath; hover → SMU W,
+     VID, load. CCD header shows its Tdie; the IOD/package cell shows Tctl and Package W.
+   - *Bars beside the chip*: Tctl vs Tjmax (95 °C on Zen 5) with the throttle line marked;
+     Package power vs PPT (or vs the 9950X's 230 W stock PPT when the SMU value is not
+     readable); average effective clock vs max boost; per-CCD temps.
+3. **GPU panel** (right half)
+   - *Board diagram*: an SVG outline of the card with the GPU die (core temp), memory
+     (VRAM used/total as a fill), the 12VHPWR connector drawn as six pins each showing its
+     amps as a bar (LHM exposes per-pin voltage and current on the 5090 — imbalance is the
+     thing that melts connectors, so colour any pin > 1.3× the mean amber), and the fan
+     positions with RPM.
+   - *Bars*: core temp vs target, hotspot and memory junction when present, board power vs
+     limit (with the max limit marked), SM clock requested vs effective (the gap *is*
+     throttling — draw both on one bar), memory clock, GPU/memory-controller/bus load.
+   - *Perf-limit reasons* as pill labels under the bars: none / power cap / thermal / voltage
+     / reliability / sync boost / idle — decoded from the NVML bitmask, the spec's highlight.
+4. **Board & memory panel** (full width, shorter)
+   - Rails as bars with tolerance bands: +12 V, +5 V, +3.3 V, Vcore, SoC, DIMM (DDR5 1.1–1.45 V
+     band), each amber outside ±5 %.
+   - Board temps (VRM MOS, chipset, socket, system) and every fan header with RPM and duty %.
+   - DIMM slots drawn as a slot map (A1 A2 B1 B2) with populated slots filled, speed and
+     capacity on each; the EXPO state from the audit as a badge.
+5. **Storage & system panel** — one row per NVMe/SSD: temperature bar, free-space bar,
+   current disk queue; total RAM used bar with the top hog named.
+6. **Sparklines** — every bar carries a 60 s history sparkline (SVG polyline, 30 points at
+   2 Hz… 120 at 2 Hz for 60 s) drawn from the ring buffer window so a spike that just
+   happened is still visible.
+
+**Visual rules:** one accent (emerald) for "good/active", amber for "near a limit", red for
+"at a limit / throttling", slate for idle or absent. Bars are thin (6–8 px), rounded, with
+the limit drawn as a tick, not a second bar. Numbers in a tabular monospace figure font;
+labels in the UI font at 11 px, uppercase, tracked. Panels have a 1 px border and a
+slightly lighter surface; no shadows, no gradients except the load fill on the chip cells.
+Nothing blinks. Absent sensors collapse their row rather than showing "—" walls.
+
+**Responsive:** below 1280 px the two halves stack; the diagrams keep their aspect ratio
+and scale with `max-width: 100%`.
+
+**Phase 1 ships** the CPU panel (chip diagram + bars), the GPU panel (bars, perf-limit pills,
+12VHPWR pins, without the board outline art if time is short), rails and fans, and
+sparklines. The GPU board diagram, storage panel and DIMM map follow in Phase 2 with the
+full sensor view. Same components later render inside the Tune live monitor (§16).
+
+## 18. Brand
+
+- **Strata Tune**, `St` monogram, geometric construction like Sc/Sp/Ss (no typeface), from
+  the family's `monograms.py` — add an `St` entry.
+- Accent: **emerald `#10b981`**; the family script's luminance rule puts near-black marks on it
+  (same as gold). Indigo is Code, gold is Photo/Snap; green reads as diagnostics/health and
+  does not collide.
+- "Created by Kaustubh Jawanjal" in About and the Help menu footer only — **not** in the title
+  bar (user decision 2026-09-15; Strata Photo's title-bar byline is that app's rule, not the family's).
+- `support.json` with the same shape as Strata Code; donate button hidden while the URL is
+  empty.
+- Title bar: `St` monogram · STRATA TUNE · Help · window controls.
+- Bottom bar: `St` monogram · STRATA TUNE · session/capture state · page switcher.
+
+## 19. The HTML report
+
+One React renderer, two outputs: the in-app Capture view and a standalone HTML file. The
+build produces `report-template.html` with `vite-plugin-singlefile` (all JS/CSS inlined);
+exporting a report injects the session's analysis JSON into a `<script type="application/
+json">` tag. No external requests, opens from a Discord download, renders in any browser.
+Raw stream data is not embedded (size); the report carries the analysis, the summary rows
+and the top-N stutter windows.
+
+## 20. Sharing the GPU with the family
+
+Strata Code, Photo and Video coordinate through `gpu.lock` plus Ollama's loaded-model list.
+Strata Tune:
+
+- **Passive monitoring never takes the lock.** Reading NVML while Strata Video renders is
+  free and is in fact a useful thing to watch.
+- **Stress tests and score runs take the lock**, and refuse to start if another Strata app
+  holds it or Ollama has a model resident (the test would be invalid anyway — background
+  load trips the validity indicator).
+- The Game Mode probe is shared code: copy `game-mode.ts` now, factor into a family package
+  later if a third app needs it.
+
+---
+
+# Part V — Execution
+
+## 21. Project structure
+
+```
+strata-tune/
+  docs/
+    master-plan.md           this file
+    spec-original.md         the idea document, verbatim
+  electron/
+    main.ts                  frameless window, GPU accel off, collector lifecycle
+    collector-client.ts      handshake file, token, SSE, typed API
+    game-mode.ts             from Strata Video
+    preload.cjs
+  src/
+    pages/{Audit,Monitor,Capture,Advisor,Tune}.tsx
+    analysis/
+      audit.ts               §8 rules
+      stutter.ts             §11 detection + classifier
+      bound.ts               §12
+      power.ts               §13
+      score.ts               §14
+      advisor.ts             §10
+    report/                  shared renderer, singlefile build target
+    components/              TitleBar, BottomBar, SensorTree, Monogram
+    data/
+      models.json  gpus.json  cpus.json  psu.json  kits.json
+  collector/                 .NET solution
+    StrataTune.Collector/    Kestrel minimal API, SSE, ring buffer, LHM, NVML, PDH,
+                             PresentMon host, tune supervisor, revert-if-pending
+    StrataTune.Worker/       ComputeSharp kernels, heartbeat
+    StrataTune.Bench/        DX12 rendering workload with a swapchain (§11a), Phase 5
+    StrataTune.Shared/       row types, wire types
+  tools/
+    presentmon/              vendored PresentMon.exe (gitignored binary, script fetches)
+  scripts/
+    setup-tools.ps1          downloads + hash-checks PresentMon, reports PawnIO/.NET/group state (PawnIO is not ours to redistribute; it links to pawnio.eu)
+    build-collector.ps1      dotnet publish self-contained → resources/collector/
+  assets/                    strata-tune-st.ico, logo data URL
+  support.json  package.json  vite.config.ts  tailwind.config.js  tsconfig.json
+  run-strata-tune.bat  run-strata-tune.vbs  Install-Shortcuts.ps1
+```
+
+## 22. Toolchain setup (Phase 0)
+
+At planning time this machine had no .NET SDK and no PresentMon; PawnIO 2.2.0 turned out to be
+installed already (2026-08-30). Pinned versions and verified API facts live in
+[dependencies.md](dependencies.md). Phase 0 is mostly installs:
+
+1. .NET SDK 10.0.401 (`winget install Microsoft.DotNet.SDK.10`) — installed 2026-09-15.
+2. `LibreHardwareMonitorLib` 0.9.6 — the only stable release that pairs with PawnIO 2.1+;
+   PawnIO 2.2.0 is already installed here. Confirm LHM enumerates CPU package
+   power, Tctl, VRM and fan RPM on this X670E/X870 board with HVCI on. **This is the
+   go/no-go for the whole sensor layer**; if PawnIO+LHM does not read this board, the
+   fallback is HWiNFO's shared-memory interface (read-only, requires HWiNFO running) and
+   the plan gets a §7 amendment.
+3. PresentMon 2.5.1 (GitHub `GameTechDev/PresentMon`), vendored by `scripts/setup-tools.ps1`. Run it once with
+   `--qpc_time` and confirm the CSV columns match §11 (done against a desktop app; the first game capture is Phase 4).
+4. `ComputeSharp` 3.2.0 (needs `AllowUnsafeBlocks`); a uint-only hash kernel proving
+   determinism across runs.
+5. Electron shell scaffolded from Strata Video (same versions: Electron 34, React 18, Vite
+   6, TS 5.7, Tailwind), `disableHardwareAcceleration` on, `St` monogram generated.
+
+## 23. Phases — with a calendar
+
+Days, not months, like the Video plan. The dev box is the only test machine until Phase 4;
+a second machine (a laptop, an AMD card, a box with EXPO off) is wanted from Phase 4 on.
+
+### Phase 0 — Toolchain (day 1)
+§22. Ends when LHM lists this board's sensors from an elevated .NET console app and
+PresentMon writes QPC-stamped rows.
+
+### Phase 1 — Sensor layer + audit (days 1–3) — **ships as v0.1**
+Collector: handshake, token, ring buffer, LHM + NVML at 10 Hz, snapshot, SSE. UI: Audit
+page with the §8 rules, top five, "show all". Every check exercised on this box (EXPO on,
+ReBAR on, Gen5 x16, Balanced-on-Zen5 not flagged, D: at 73 % not flagged, C: fine).
+
+### Phase 2 — Full sensor view (day 4)
+§9. Presentation over Phase 1. Pins, min/max/mean, CSV export.
+
+### Phase 3 — AI model advisor (days 4–5) — **v0.2, the shareable one**
+§10 with `models.json`, `gpus.json` TOPS/bandwidth rows, the AI stats card (spec + measured), best-model-for picks, context slider, and the Ollama calibration run.
+
+### Phase 4 — Frame capture (days 6–7)
+PresentMon host, PID filter, Game Mode start/stop, `frames` stream, session save/load,
+stutter *detection* and the pacing number. No classification yet. **Anti-cheat check** on
+one live title (A11).
+
+### Phase 5 — Classifier + bound verdict + bench (days 8–11) — **v0.3**
+§11 nine cases with confidence, §11a built-in bench, §12, report renderer, singlefile HTML export. Gate: a
+capture of a known shader-compilation-heavy title gets case 1 with high confidence; a
+capture with Strata Video rendering in the background gets case 6 naming it.
+
+### Phase 6 — Power (days 11–12)
+§13, `psu.json`, PSU prompt, the transient disclaimer, performance-per-watt.
+
+### Phase 7 — Score, share card, fix verification (days 12–14) — **v0.4**
+§14 fixed workload via the worker's heavy kernel (needs Phase 8's worker, built early —
+read-only use), validity rules, PNG card, §15 history.
+
+### Phase 8 — Tune (days 15–20, opt-in) — **v1.0**
+§16 in order: rollback state machine and logon revert task **first**, flight recorder,
+worker ladder (hash → bandwidth → TDR → PENDING), three load patterns, bisect, two-phase
+validation, NVML power/clock writes, then NVAPI VF offset. Undervolt only in 1.0; core
+offset and memory sweep in 1.1. Afterburner value-set export ships with 1.0 regardless.
+
+### Phase 9 — Later
+SPD reads over SMBus, AMD (ADL/ADLX) read paths, opt-in cohort JSON, Ollama explainer
+panel, sharing the advisor with Strata Code's setup wizard.
+
+## 24. Expected result
+
+On this box, v0.1 says: EXPO on and above rated; ReBAR on; Gen5 x16; power limit already at
+max — undervolt is the lever; driver 616.92 current; no background hogs; nothing to fix.
+That is the right answer for a tuned machine and it is worth showing that the tool can say
+"you're fine". v0.3 on a real game capture is the first output a stranger would post. v1.0
+finds a stable undervolt, re-validates it at the real fan curve, and shows the FPS-vs-watts
+trade in one sentence.
+
+## 25. Risks
+
+| # | Risk | Mitigation |
+|---|---|---|
+| R1 | PawnIO + LHM does not read this board's sensors under HVCI | Phase 0 go/no-go; HWiNFO shared memory as the fallback read path |
+| R2 | NVAPI VF-curve set call is semi-private and Blackwell may have changed it | Undervolt via NVML locked clocks + power limit first (fully public); VF offset second; Afterburner export always works |
+| R3 | PresentMon column set changes between releases | Pin the version, vendor the exe, parse by header name not index |
+| R4 | The 2 Hz dashboard still perturbs a bandwidth sweep | GPU accel off app-wide; validity indicator; compare sweep results with the UI minimised |
+| R5 | EXPO detection from part numbers misses kits | `kits.json` grows; unknown kit → "could not determine rated speed", never a false flag |
+| R6 | Classifier over-confident on single-signal cases | Confidence shown; low-confidence cases render as "probably" |
+| R7 | A hard hang leaves the machine on a bad value | PENDING flag + logon revert task; state persisted *before* apply |
+| R8 | Elevated collector exposes an HTTP endpoint | Loopback only, random port, per-launch token, no writes without the token, exits with the UI |
+| R9 | Only one test machine | Phase 4 onward wants a laptop and an AMD box; ask the family/friends |
+
+## 26. First three commits
+
+1. `Toolchain: .NET collector solution, LHM+PawnIO sensor dump, PresentMon vendored` — a
+   console app printing this board's sensor tree and ten QPC-stamped frame rows.
+2. `Electron shell from Strata Video, GPU acceleration off, St monogram, collector
+   handshake` — the app launches, elevates the collector, shows the live sensor strip.
+3. `Audit page: eleven checks, top five ranked, verified on the dev box` — v0.1.
+
+## 27. Open decisions
+
+- **Spelling**: "Strata Tune" (two words, like Photo/Code/Video) is used here; StrataSnap is
+  one word because it is the Android app. Flip it before commit 2 if preferred.
+- **Licence**: MIT for the repo. LHM is MPL-2.0 (library use is fine), PresentMon MIT,
+  ComputeSharp MIT, PawnIO is a separately installed driver (check its licence for
+  redistribution of the installer vs linking to it).
+- **Elevation UX**: one UAC prompt per launch (v1) vs installing the collector as a Windows
+  service once (later). v1 is the prompt.
+- **.NET 10 vs 8**: 10 unless a library lags.
+
+---
+
+# Appendix A — Where this plan departs from the spec
+
+| Spec says | Plan does | Why |
+|---|---|---|
+| NVAPI for GPU reads (link width, ReBAR, perf-limit reasons) | NVML for all reads; NVAPI for writes only | NVML is public, no admin, no driver, and exposes the perf-limit bitmask directly. ReBAR comes from BAR1 size — verified here (32768 MiB). |
+| "EXPO: compare SPD rated vs actual" | Part-number parse vs `ConfiguredClockSpeed` | WMI `Speed` reports the configured value on this board; real SPD needs SMBus and is Phase 9 |
+| Windows power plan flagged when not High Performance | Not flagged on desktop Zen 4/5 | AMD recommends Balanced there; flagging it would be the first false positive a Ryzen owner sees |
+| Ryzen Master SDK for CPU detect | Not used | LHM already exposes PPT/TDC/EDC and clocks; no need for a flaky SDK even for detection |
+| "Admin is required" (whole app implied) | Only the collector is elevated; ETW can be unelevated via Performance Log Users | Chromium should not run as admin; this user is already in the group |
+| Monitor window: "disable GPU acceleration for the monitor window" | Whole app has GPU acceleration off | Electron only supports the switch app-wide before `ready`; nothing here needs a GPU |
+| Stress worker unspecified | ComputeSharp (DX12) second .NET exe | Vendor-neutral, deterministic, no CUDA toolkit |
+| Rollback on next app launch | Plus a logon scheduled task | The user might never reopen the app after a bad hang |
+| Four capabilities (lists five) | Five | Counting |
+| Open source | Public repo, MIT | Stated explicitly because the other Strata repos are private |

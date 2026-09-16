@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-electron/
+release/
+collector/**/bin/
+collector/**/obj/
+tools/presentmon/*.exe
+tools/presentmon/*.partial
+resources/collector/
+*.log
+.vite/
+.claude/
+# Raw sensor probes carry board/DIMM serials and the SMBIOS blob; keep them local (docs/dependencies.md has the verified facts).
+docs/phase0-probe.txt
