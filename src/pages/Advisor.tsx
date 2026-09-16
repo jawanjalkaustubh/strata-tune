@@ -1,11 +1,242 @@
-import React from 'react';
-import { Placeholder } from './Placeholder';
+import React, { useEffect, useMemo, useState } from 'react';
+import { api, ipcErrorMessage, type BenchError, type GpuBench, type OllamaBench, type OllamaList } from '../api';
+import { loadSettings, saveSettings, type Settings } from '../settings';
+import { useCollectorStatus } from '../components/useCollectorStatus';
+import { CollectorStatusPill } from '../components/CollectorStatusPill';
+import { Pill } from '../components/monitor/Pill';
+import { vendorOf } from '../components/monitor/vendors';
+import { HardwarePicker } from '../components/advisor/HardwarePicker';
+import { StatsCard } from '../components/advisor/StatsCard';
+import { Calibration } from '../components/advisor/Calibration';
+import { BestFor } from '../components/advisor/BestFor';
+import { ModelList } from '../components/advisor/ModelList';
+import { Tag } from '../components/advisor/Tag';
+import { gib, tokens } from '../components/advisor/format';
+import { factsFromPicker, factsFromSnapshot, freeRamBytes, sameGpu, type HardwareFacts, type PickerChoice } from '../components/advisor/hardware';
+import { ALL_TAGS, DEFAULT_FACTOR, GPU_NAMES, MAX_CONTEXT, adviseRows, bestRows, derivedFactor, gpuSpecOf, npuTopsOf, streamedBandwidth } from '../components/advisor/rows';
 
-/** Local AI model advisor (master plan section 10). */
-export const Advisor: React.FC = () => (
-  <Placeholder title="AI Models" phase="Phase 3">
-    Which local AI models this machine can run and how fast, worked out from VRAM, RAM, memory bandwidth and CPU cores
-    for each model and quantisation, sorted by the largest that still runs fast, with a context-length slider and the
-    download size checked against free space on the model drive.
-  </Placeholder>
-);
+const DEFAULT_CONTEXT = 8192;
+const MEASUREMENTS_KEY = 'strata-tune.calibration';
+
+/** A timing carries the card and driver it was taken on, so a swap or a driver update retires it the way bench.json is retired. */
+type Measurement = OllamaBench & { device: string; driver: string | null };
+
+function loadMeasurements(): Record<string, Measurement> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MEASUREMENTS_KEY) || '{}') as Record<string, Partial<Measurement>>;
+    return Object.fromEntries(Object.entries(raw).filter(([, m]) => typeof m.device === 'string' && typeof m.tokPerSec === 'number')) as Record<string, Measurement>;
+  } catch {
+    return {};
+  }
+}
+
+function saveMeasurements(m: Record<string, Measurement>) {
+  try {
+    localStorage.setItem(MEASUREMENTS_KEY, JSON.stringify(m));
+  } catch {
+    /* private mode or full storage: the numbers still show this session */
+  }
+}
+
+/** The dev box's card first so the standalone page opens on something familiar; any table row otherwise. */
+const initialPicker = (): PickerChoice => ({ gpuName: GPU_NAMES.find((n) => /5090/.test(n)) ?? GPU_NAMES[0] ?? '', ramGiB: 32, freeDiskGiB: null });
+
+/** Local AI model advisor (master plan section 10): the AI stats card, then every model in models.json against this machine. */
+export const Advisor: React.FC = () => {
+  const status = useCollectorStatus();
+  const connected = status.status === 'connected';
+
+  const [snapshotFacts, setSnapshotFacts] = useState<HardwareFacts | null>(null);
+  const [snapshotError, setSnapshotError] = useState('');
+  const [picker, setPicker] = useState<PickerChoice>(initialPicker);
+  const [ollama, setOllama] = useState<OllamaList | null>(null);
+  const [ollamaError, setOllamaError] = useState<BenchError | null>(null);
+  const [bench, setBench] = useState<GpuBench | null>(null);
+  const [measuring, setMeasuring] = useState(false);
+  const [benchError, setBenchError] = useState('');
+  const [stored, setStored] = useState<Record<string, Measurement>>(loadMeasurements);
+  const [calibrating, setCalibrating] = useState<string | null>(null);
+  const [calibrateError, setCalibrateError] = useState('');
+  const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [contextTokens, setContextTokens] = useState(DEFAULT_CONTEXT);
+  const [filter, setFilter] = useState<string | null>(null);
+
+  // Ollama needs no collector, only the app; the plain browser has no bridge.
+  useEffect(() => {
+    if (!api) return;
+    let live = true;
+    api.advisor.ollamaList().then((r) => live && ('error' in r ? setOllamaError(r) : setOllama(r)));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const modelsDir = ollama?.modelsDir ?? null;
+  useEffect(() => {
+    if (!api || !connected) {
+      setSnapshotFacts(null);
+      return;
+    }
+    const c = api.collector;
+    let live = true;
+    (async () => {
+      const snapshot = await c.snapshot();
+      // Free RAM is a sensor, not a snapshot field; without it the total stands in.
+      let freeRam: number | null = null;
+      try {
+        const [meta, latest] = await Promise.all([c.sensorsMeta(), c.sensorsLatest()]);
+        freeRam = freeRamBytes(meta, latest);
+      } catch {
+        /* the stream may not be up yet */
+      }
+      if (live) setSnapshotFacts(factsFromSnapshot(snapshot, freeRam, modelsDir));
+    })().catch((e) => live && setSnapshotError(ipcErrorMessage(e)));
+    return () => {
+      live = false;
+    };
+  }, [connected, modelsDir]);
+
+  const facts: HardwareFacts = snapshotFacts ?? factsFromPicker(picker, gpuSpecOf(picker.gpuName)?.vramGiB ?? 0);
+  const spec = gpuSpecOf(facts.gpuName, snapshotFacts ? snapshotFacts.vramBytes / 1024 ** 2 : undefined);
+
+  // bench.json is reused until the driver changes, so the cached line is read once the driver is known.
+  useEffect(() => {
+    if (!api) return;
+    let live = true;
+    api.advisor.benchGpu({ driver: facts.driver, run: false }).then((r) => live && r && !('error' in r) && setBench(r));
+    return () => {
+      live = false;
+    };
+  }, [facts.driver]);
+
+  const benchApplies = !!bench && sameGpu(bench.device, facts.gpuName);
+  const bandwidth = streamedBandwidth(bench, benchApplies, spec);
+  const bandwidthGBs = bandwidth?.gbs ?? null;
+  const factor = settings.calibrationFactor ?? DEFAULT_FACTOR;
+
+  // Only timings from this card and driver count; the rest stay stored for the card they belong to.
+  const measurements = useMemo(
+    () => Object.fromEntries(Object.entries(stored).filter(([, m]) => sameGpu(m.device, facts.gpuName) && (m.driver === null || facts.driver === null || m.driver === facts.driver))),
+    [stored, facts.gpuName, facts.driver]
+  );
+
+  const rows = useMemo(() => adviseRows({ facts, bandwidthGBs, contextTokens, factor }), [facts, bandwidthGBs, contextTokens, factor]);
+  const picks = useMemo(() => bestRows(rows), [rows]);
+  const shown = filter ? rows.filter((r) => r.tags.includes(filter)) : rows;
+
+  const estimates = useMemo(() => {
+    const byTag = new Map(rows.map((r) => [r.pullTag, r]));
+    return Object.fromEntries((ollama?.installed ?? []).map((m) => [m.name, byTag.get(m.name) ?? byTag.get(m.name.replace(/:latest$/, ''))]));
+  }, [rows, ollama]);
+  const measuredByTag = useMemo(() => Object.fromEntries(Object.values(measurements).map((m) => [m.model, m.tokPerSec])), [measurements]);
+  const derived = useMemo(() => derivedFactor(measurements, estimates, factor), [measurements, estimates, factor]);
+
+  const measure = async () => {
+    if (!api || measuring) return;
+    setMeasuring(true);
+    setBenchError('');
+    const r = await api.advisor.benchGpu({ driver: facts.driver, run: true });
+    if (r && 'error' in r) setBenchError(r.error);
+    else if (r) setBench(r);
+    setMeasuring(false);
+  };
+
+  const calibrate = async (model: string) => {
+    if (!api || calibrating) return;
+    setCalibrating(model);
+    setCalibrateError('');
+    const r = await api.advisor.benchOllama(model);
+    if ('error' in r) setCalibrateError(`${model}: ${r.error}`);
+    else {
+      const next = { ...stored, [model]: { ...r, device: facts.gpuName, driver: facts.driver } };
+      setStored(next);
+      saveMeasurements(next);
+    }
+    setCalibrating(null);
+  };
+
+  const setFactor = (calibrationFactor: number | null) => {
+    const next = { ...settings, calibrationFactor };
+    saveSettings(next);
+    setSettings(next);
+  };
+
+  const summaryKind = facts.source === 'collector' ? 'measured' : 'spec';
+  const diskLabel = facts.diskLetter ? `${facts.diskLetter}:` : 'the model drive';
+
+  return (
+    <div className="p-4 max-w-6xl w-full mx-auto space-y-4">
+      <header className="flex flex-wrap items-center gap-3">
+        <h1 className="text-base font-semibold text-studio-text">AI Models</h1>
+        <CollectorStatusPill state={status} />
+        <span className="flex-1" />
+        <span className="flex items-center gap-1.5 text-mini text-studio-muted figure">
+          VRAM {gib(facts.vramBytes, 0)} · RAM {gib(facts.ramBytes, 0)}
+          {facts.freeDiskBytes !== null && ` · ${diskLabel} ${gib(facts.freeDiskBytes, 0)} free`}
+          <Tag kind={summaryKind} title={facts.source === 'collector' ? 'From the collector snapshot' : 'From gpus.json and the inputs beside the picker'} />
+          <span>· RAM bus {facts.ramBandwidthGBs.toFixed(0)} GB/s</span>
+          <Tag kind={facts.ramBandwidthDefault ? 'default' : 'spec'} title={facts.ramBandwidthDefault ? 'No module speed known: the analysis default' : 'From the configured DIMM speed and channel count'} />
+        </span>
+      </header>
+
+      {facts.source === 'picker' && (
+        <div className="rounded-md border border-studio-border bg-studio-panel/50 px-3 py-2.5 flex flex-wrap items-end gap-3">
+          <Pill tone="idle" title={status.message}>
+            Collector not connected
+          </Pill>
+          <HardwarePicker gpuNames={GPU_NAMES} choice={picker} onChange={setPicker} />
+          {snapshotError && <span className="text-mini text-rose-300">Snapshot failed: {snapshotError}</span>}
+        </div>
+      )}
+
+      <StatsCard
+        gpuName={facts.gpuName}
+        gpuColour={vendorOf(facts.gpuName).colour}
+        spec={spec}
+        npuTops={npuTopsOf(facts.cpuName)}
+        bench={bench}
+        applies={benchApplies}
+        measuring={measuring}
+        canMeasure={!!api}
+        error={benchError}
+        onMeasure={measure}
+      />
+
+      <Calibration
+        installed={ollama?.installed ?? null}
+        loaded={(ollama?.loaded ?? []).map((m) => m.name)}
+        available={!!api}
+        ollamaAbsent={ollamaError?.code === 'ollama-absent'}
+        listError={ollamaError?.error ?? ''}
+        estimates={estimates}
+        measurements={measurements}
+        calibrating={calibrating}
+        calibrateError={calibrateError}
+        factor={factor}
+        defaultFactor={DEFAULT_FACTOR}
+        factorIsSet={settings.calibrationFactor !== null}
+        derived={derived}
+        onCalibrate={calibrate}
+        onSetFactor={() => derived !== null && setFactor(Number(derived.toFixed(2)))}
+        onResetFactor={() => setFactor(null)}
+      />
+
+      <BestFor picks={picks} measured={measuredByTag} contextTokens={tokens(contextTokens)} />
+
+      <ModelList
+        rows={shown}
+        vramBytes={facts.vramBytes}
+        liveVram={facts.source === 'collector'}
+        freeDiskBytes={facts.freeDiskBytes}
+        diskLabel={diskLabel}
+        contextTokens={contextTokens}
+        maxContext={MAX_CONTEXT}
+        onContext={setContextTokens}
+        tags={ALL_TAGS}
+        filter={filter}
+        onFilter={setFilter}
+        bandwidthKnown={bandwidthGBs !== null}
+      />
+    </div>
+  );
+};

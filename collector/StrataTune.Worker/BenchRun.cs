@@ -47,8 +47,10 @@ internal static class BenchRun
     private const int Slice = 65535 * 64;
     private const int FillElements = 1 << 20;
     private const int MaxSweepsPerPass = 64;
-    private static readonly TimeSpan PassTarget = TimeSpan.FromMilliseconds(40);
+    private const int MaxRepeats = 64;
+    private static readonly TimeSpan PassTarget = TimeSpan.FromMilliseconds(20);
     private static readonly TimeSpan DispatchTarget = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan RunTarget = TimeSpan.FromMilliseconds(100);
 
     public static BenchResult Run(GraphicsDevice device, int seconds)
     {
@@ -87,9 +89,11 @@ internal static class BenchRun
             long bytesPerSweep = 2L * elements * ElementBytes;
 
             // The first dispatch of a process pays for the driver's DXIL compile; one untimed
-            // sweep takes that hit. The second sizes the passes: about 40 ms of work under one
-            // fence is long enough that the submit and fence round trip is noise and short
-            // enough that a slow adapter still delivers dozens of passes in the budget.
+            // sweep takes that hit. The second sizes the passes: about 20 ms of work under one
+            // fence keeps the submit and fence round trip near one percent, and it is short
+            // enough that the budget holds ~150 passes. The best-of figure is a tail sample
+            // and needs that many: with 40 ms passes it wandered 4 % between runs on the
+            // 5090 while the median stood still; with 20 ms it repeats to 0.2 %.
             Sweep(device, source, destination, 1);
             TimeSpan probe = Sweep(device, source, destination, 1);
             int sweeps = (int)Math.Clamp(PassTarget.Ticks / Math.Max(probe.Ticks, 1), 1, MaxSweepsPerPass);
@@ -200,37 +204,50 @@ internal static class BenchRun
         using ReadOnlyBuffer<UInt4> bufferB = Upload(device, b, halfStorage);
         using ReadWriteBuffer<Float4> c = device.AllocateReadWriteBuffer<Float4>(n * n / 4);
 
-        // One row block twice: the first pays the DXIL compile, the second is the measurement
-        // that sizes the dispatches (dependencies.md: by throughput, never a fixed count).
-        Multiply(device, bufferA, bufferB, c, 1, 1, halfStorage);
-        TimeSpan probe = Multiply(device, bufferA, bufferB, c, 1, 1, halfStorage);
-        int blocksPerDispatch = (int)Math.Clamp(DispatchTarget.Ticks / Math.Max(probe.Ticks, 1), 1, rowBlocks);
+        // One row block twice: the first pays the DXIL compile, the second sizes the
+        // dispatches (dependencies.md: by throughput, never a fixed count). A third pass, the
+        // whole product once, sizes the timed run: on a fast card one product is a few
+        // milliseconds, where the submit and fence round trip would cost several percent
+        // and the clock has not settled, so the product is repeated under one fence until
+        // the run is about 100 ms long. A slow card gets one product per run.
+        Multiply(device, bufferA, bufferB, c, 1, 1, 1, halfStorage);
+        TimeSpan block = Multiply(device, bufferA, bufferB, c, 1, 1, 1, halfStorage);
+        int blocksPerDispatch = (int)Math.Clamp(DispatchTarget.Ticks / Math.Max(block.Ticks, 1), 1, rowBlocks);
+        TimeSpan product = Multiply(device, bufferA, bufferB, c, rowBlocks, blocksPerDispatch, 1, halfStorage);
+        int repeats = (int)Math.Clamp(RunTarget.Ticks / Math.Max(product.Ticks, 1), 1, MaxRepeats);
 
         double[] seconds = new double[MatmulRuns];
 
         for (int run = 0; run < MatmulRuns; run++)
         {
-            seconds[run] = Multiply(device, bufferA, bufferB, c, rowBlocks, blocksPerDispatch, halfStorage).TotalSeconds;
+            seconds[run] = Multiply(device, bufferA, bufferB, c, rowBlocks, blocksPerDispatch, repeats, halfStorage).TotalSeconds;
         }
 
         Check(c, a, b, n);
         Array.Sort(seconds);
 
-        return 2.0 * n * n * n / seconds[MatmulRuns / 2] / 1e12;
+        return 2.0 * n * n * n * repeats / seconds[MatmulRuns / 2] / 1e12;
     }
 
-    private static TimeSpan Multiply(GraphicsDevice device, ReadOnlyBuffer<UInt4> a, ReadOnlyBuffer<UInt4> b, ReadWriteBuffer<Float4> c, int rowBlocks, int blocksPerDispatch, bool halfStorage)
+    // Every repeat rewrites C with the same values; the barrier between them keeps that a
+    // sequence rather than a race, at the cost of one drain per product.
+    private static TimeSpan Multiply(GraphicsDevice device, ReadOnlyBuffer<UInt4> a, ReadOnlyBuffer<UInt4> b, ReadWriteBuffer<Float4> c, int rowBlocks, int blocksPerDispatch, int repeats, bool halfStorage)
     {
         int width = MatmulN / MatmulKernel.Block * MatmulKernel.Threads;
         long started = Stopwatch.GetTimestamp();
 
         using (ComputeContext context = device.CreateComputeContext())
         {
-            for (int first = 0; first < rowBlocks; first += blocksPerDispatch)
+            for (int repeat = 0; repeat < repeats; repeat++)
             {
-                int count = Math.Min(blocksPerDispatch, rowBlocks - first);
+                for (int first = 0; first < rowBlocks; first += blocksPerDispatch)
+                {
+                    int count = Math.Min(blocksPerDispatch, rowBlocks - first);
 
-                context.For(width, count * MatmulKernel.Threads, new MatmulKernel(a, b, c, MatmulN, first, halfStorage));
+                    context.For(width, count * MatmulKernel.Threads, new MatmulKernel(a, b, c, MatmulN, first, halfStorage));
+                }
+
+                context.Barrier(c);
             }
         }
 

@@ -20,7 +20,7 @@ export interface GpuBench {
   bufferBytes: number | null;
   matmulN: number | null;
   matmulTflopsFp32: number;
-  /** Half storage with float arithmetic, not tensor-core FP16; null when the worker omitted it. */
+  /** The worker's matmulTflopsFp16storage: half storage with float arithmetic, not tensor-core FP16. */
   matmulTflopsFp16: number | null;
   elapsedMs: number | null;
   /** The GPU driver the caller knew at measure time (from the collector snapshot); null standalone. */
@@ -60,6 +60,8 @@ export interface OllamaList {
 
 export interface BenchError {
   error: string;
+  /** Nothing answers on :11434: the page shows the plan's install line instead of an error. */
+  code?: 'ollama-absent';
 }
 
 const OLLAMA = 'http://127.0.0.1:11434';
@@ -129,7 +131,7 @@ function parseBenchLine(stdout: string, driver: string | null): GpuBench | null 
         bufferBytes: num(j.bufferBytes),
         matmulN: num(j.matmulN),
         matmulTflopsFp32: fp32,
-        matmulTflopsFp16: num(j.matmulTflopsFp16) ?? num(j.matmulTflopsFp16storage),
+        matmulTflopsFp16: num(j.matmulTflopsFp16storage),
         elapsedMs: num(j.elapsedMs),
         driver,
         measuredAt: new Date().toISOString()
@@ -191,11 +193,11 @@ async function doBenchGpu(driver: string | null): Promise<GpuBench | BenchError>
 
 // ------------------------------------------------------------------ Ollama
 
-function ollamaErrorMessage(e: unknown): string {
+function ollamaError(e: unknown): BenchError {
   const cause = (e as { cause?: { code?: string } }).cause;
-  if (cause?.code === 'ECONNREFUSED') return 'Ollama is not running';
-  if (e instanceof Error && e.name === 'TimeoutError') return 'Ollama did not answer in time';
-  return e instanceof Error ? e.message : String(e);
+  if (cause?.code === 'ECONNREFUSED') return { error: 'Ollama is not running', code: 'ollama-absent' };
+  if (e instanceof Error && e.name === 'TimeoutError') return { error: 'Ollama did not answer in time' };
+  return { error: e instanceof Error ? e.message : String(e) };
 }
 
 async function ollamaJson<T>(route: string, body?: unknown, timeoutMs = 10_000): Promise<T> {
@@ -243,7 +245,7 @@ async function benchOllama(model: string): Promise<OllamaBench | BenchError> {
       totalMs: (g.total_duration ?? 0) / 1e6
     };
   } catch (e) {
-    return { error: ollamaErrorMessage(e) };
+    return ollamaError(e);
   }
 }
 
@@ -269,7 +271,7 @@ async function ollamaList(): Promise<OllamaList | BenchError> {
       modelsDir: process.env.OLLAMA_MODELS || path.join(os.homedir(), '.ollama', 'models')
     };
   } catch (e) {
-    return { error: ollamaErrorMessage(e) };
+    return ollamaError(e);
   }
 }
 
