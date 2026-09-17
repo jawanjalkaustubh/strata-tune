@@ -706,6 +706,24 @@ app version. Serials, hostnames and user names never appear (§17 redaction is r
 opens anywhere with no app, so people paste it in forums and compare; two files side by side is
 the comparison — the app does not host anything (plan §27a privacy).
 
+**A P0 delta write REPLACES the vendor tool's offset (found 2026-09-16 22:08, collector log run
+74c3442b1294).** The card as found held 16008 MHz memory (GPU Tweak +4072 effective); GetPstates20
+read 0 / 0; writing our first memory rung, +15 MHz, made the card hold **14016** — stock 14001
+plus our 15 — and the movement guard fired ("another tool is changing the memory clock"). It was
+not another tool: the driver keeps one effective offset, GPU Tweak's route does not show in
+GetPstates20, and SetPstates20 overwrote it. "Restore 0 / 0" then left the card at stock, not as
+found, and the user's tune was gone. So, binding rules: (1) with a vendor tune detected (held
+clock above the driver ceiling with our delta 0) the ladder writes **vendor + step**, never the
+bare step, and restores **vendor**, never 0; (2) the vendor value comes from the user — the
+Headroom section asks "what does your vendor tool show?" (core MHz, memory in the slider's
+units) once, remembers it, and cross-checks it against the held clock (memory: 16008 − 14001 =
+2007 NVML ≈ +4014 effective ✓ against +4072; core cannot be cross-checked under a power cap, so
+the entered value is trusted and the additivity check guards it); (3) nothing is ever written
+during the as-found measurement (run 74c3442b1294 wrote 0 / 0 before measuring — that line goes);
+(4) after any run the page says what the card holds now versus as found, and if they differ
+tells the user to re-apply in the vendor tool. The 2026-09-16 first-rung additivity check stays
+as the proof that the arithmetic held.
+
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
 third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set
