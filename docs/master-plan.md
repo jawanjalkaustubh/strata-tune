@@ -662,6 +662,19 @@ of climbing blind. The result names both: "your tune holds 3225 / 16008; certifi
 guard above therefore refuses only a vendor tool that is *changing* clocks during a run (a
 profile timer, a fan-curve app re-applying), not a tune that is simply applied and steady.
 
+**A rung is a minute of realistic load, not forty seconds of patterns (user, 2026-09-16: "the
+load should be variable in the first 30 s with spikes every 2–4 s, and another 30 s full load, so
+at least a minute of load tests the validity of the OC value — realistically a user runs long
+gaming or AI sessions").** Every rung runs the same 60 s shape: **30 s variable** — bursts of
+heavy work 2–4 s apart with light or idle gaps between them, the clock and voltage transitions
+where a marginal offset actually fails — then **30 s sustained full load**; the hash is checked on
+every pass of both halves and throughput is judged on the sustained half. The pair the ladder
+certifies (core and memory together) then gets a **5-minute soak** of the same shape repeated
+before the values are handed over; a failure in the soak steps the failing ladder down one fine
+step and soaks again, once. The light and transient patterns of the first build fold into the
+variable half. Total for a typical card: memory ladder ~6 rungs + core ladder ~6 rungs + soak ≈
+17 minutes, shown as a time estimate before the user starts.
+
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
 third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set
