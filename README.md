@@ -109,3 +109,15 @@ PowerShell for that: `msg.exe` does not exist on Windows Home).
 `support.json` at the repo root holds the project, issues and donation links,
 same shape as the rest of the family. The donate entries stay hidden while
 `donateUrl` is empty; the file is read at launch, so no rebuild is needed.
+
+## Legal
+
+Strata Tune is free software, provided as is, with no warranty; the author is not
+responsible for any damage or loss from using it. Tune (Phase 8) can change clocks,
+voltages and power limits — that can crash a machine, lose unsaved work, damage or
+shorten the life of hardware and void its warranty, and you do it at your own risk.
+Readings and advice are informational, not professional advice. The full text is in
+[DISCLAIMER.md](DISCLAIMER.md); the code licence is [MIT](LICENSE); shipped
+components and their licences are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+NVIDIA, AMD, Intel, ASUS, MSI, Microsoft and every other name in the app are
+trademarks of their owners; this project is not affiliated with any of them.

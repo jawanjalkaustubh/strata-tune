@@ -36,6 +36,7 @@ the spec, Appendix A says why.
 | A9 | Model tables, PSU curves and expected-value cohorts ship as editable JSON in the repo. No server, ever. |
 | A10 | GPU co-tenancy with Strata Code / Photo / Video follows the existing `gpu.lock` convention (§20). Stress tests take the lock; passive monitoring never does. |
 | A11 | Anti-cheat: PresentMon is ETW-only (no injection, no overlay). Test against one live anti-cheat title in Phase 5 before building on top. |
+| A12 | **Lightweight on every machine** (user, 2026-09-16): the app must run well on laptops and modest PCs, not just the dev box. §17c sets the budget; every phase is measured against it before its PR. |
 
 ## 2. Goals, ranked
 
@@ -242,6 +243,8 @@ estimated cost**. The rest are one click away under "show all".
 | Background hogs | 5 s idle sample, any process > 5 % CPU or > 2 GB RAM | names the process |
 | Power limit headroom | `power.limit == power.max_limit` | "no headroom to raise — undervolt instead" (informational; this box) |
 | NVMe link width | PCIe current vs max link width/speed per NVMe controller (`DEVPKEY_PciDevice_*`, no admin) | "a drive on x2 halves its sequential speed — its M.2 slot shares lanes" (this box: the 980 PRO runs x2) |
+| GPU unit counts (missing ROPs) | NVAPI `GetROPCount` / `GetGpuCoreCount` vs the reference in `gpus.json`; bench fill-rate cross-check (pixels/s divided by clock, with bands) when the direct read is unavailable | "168 of 176 ROPs: an early RTX 50-series unit with a raster engine disabled, about 4 % slower; the vendor replaces it" (user, 2026-09-16) |
+| Timer resolution | `NtQueryTimerResolution` current vs min/max and which process requested it | "a background app holds the timer at 0.5 ms — costs battery on laptops" / "15.6 ms with no game raising it — uneven frame pacing" (info) |
 
 Ranking: `severity × costEstimate`. Ties broken by "fixable in BIOS in ten minutes" first.
 
@@ -513,6 +516,9 @@ history.
 
 ## 16. OC auto-tune (Phase 8 — last, opt-in, behind a warning)
 
+The warning modal's wording and the acknowledgement it records are specified in §27a (the
+hardware-risk paragraph is shown every time Tune is enabled, not once).
+
 **Undervolt first, not overclock.** On this box the power limit is already at its maximum,
 so an undervolt is the only lever with any gain anyway.
 
@@ -592,6 +598,15 @@ Five pages on the family's bottom-bar page switcher, in the order people need th
 - **Capture** lists sessions; opening one shows the report (same renderer as the HTML).
 - **AI Models** is the advisor with the context slider.
 - **Tune** is hidden behind a settings toggle plus a warning modal until Phase 8 ships.
+- **About** is a utility hub in the CPU-Z tradition (user, 2026-09-16), not a credits card:
+  version · author · licence · Windows edition, version and build · DirectX level · GPU driver ·
+  collector / PawnIO / HWiNFO-bridge status; and a **Tools** block: *Save system report*
+  (.txt / .html — our own: snapshot, spec sheet, current sensors, serials redacted — the file
+  people attach to a forum post), *Clocks* (a live per-core / GPU clock table window), *Timers*
+  (Windows timer resolution current/min/max via `NtQueryTimerResolution`, QPC frequency, HPET/TSC
+  source — also an §8 audit check), *Validation* (the §14 share card), *Copy hardware summary*,
+  *Open logs folder*, *Support development*. A **Legal** block renders `LICENSE`, `DISCLAIMER.md`,
+  `THIRD-PARTY-NOTICES.md` and the privacy statement from the bundled files (§27a).
 
 Right-hand chat panel like the other apps — but here it is *optional* and *later*: the
 family's Ollama agent could explain a report in plain words, but the report already is
@@ -629,8 +644,12 @@ while a test runs (A6).
        power, plus connector totals). Under the pins: total A / W against the connector's
        600 W rating with a limit tick, and the two numbers GPU Tweak never computes —
        **spread** (max − min) and **max/mean** — coloured emerald ≤ 10 % spread, amber
-       10–20 %, red > 20 % or any pin above 8 A. Hover a pin → its 60 s sparkline. Cards
-       without per-pin sensing show one total bar from NVML board power, labelled so.
+       10–20 %, red > 20 % or any pin above 8 A. Hover a pin → its 60 s sparkline. **Only cards with
+       per-pin shunts expose this** — ASUS ROG Astral / Matrix and a handful of others; a Founders
+       Edition or most partner cards report board power only. **No per-pin sensors → the whole
+       12V-2x6 block is hidden** (user, 2026-09-16), the GPU panel reflows around it, and the
+       spread / max-mean analysis and any connector-balance audit row do not exist for that card.
+       Board power is already on the GPU bars, so nothing is lost and nothing is faked.
      - **Centre — die block**: core temp large, core voltage and SM clock small; hotspot
        only when the driver exposes it (NVML thermal sensors), otherwise omitted, never "—".
      - **Around the die — memory blocks**: VRAM used/total as a fill, memory-junction temp,
@@ -671,7 +690,8 @@ vendor colours**: bars, ticks and pills keep emerald / amber / red / slate for g
 at-limit / idle, so an AMD panel's red header never reads as "throttling". Vendor is
 detected from the snapshot (`cpu.name`, `gpus[].name`, `motherboard.manufacturer`), one map
 in `src/data/vendors.json`, unknown → slate. Bars are thin (6–8 px), rounded, with
-the limit drawn as a tick, not a second bar. Numbers in a tabular monospace figure font;
+the limit drawn as a tick, not a second bar. **No text is ever clipped**: tiles and rows wrap or shorten by
+content; a CSS `truncate` on a label is a defect (user, 2026-09-16). Numbers in a tabular monospace figure font;
 labels in the UI font at 11 px, uppercase, tracked. Panels have a 1 px border and a
 slightly lighter surface; no shadows, no gradients except the load fill on the chip cells.
 Nothing blinks. Absent sensors collapse their row rather than showing "—" walls.
@@ -685,6 +705,34 @@ sparklines. The card schematic around that block came in with Phase 1's polish p
 (user feedback 2026-09-16, `.claude/workflows/phase1-polish.md`, with named and movable
 panels); the storage panel and the DIMM map are Phase 2's first items, with the full sensor
 view. Same components later render inside the Tune live monitor (§16).
+
+## 17c. Footprint budget (user direction 2026-09-16)
+
+Measured on each PR, on the dev box and on a laptop when one is available:
+
+| Budget | Target | How measured |
+|---|---|---|
+| Collector idle CPU | ≤ 1 % of one core at 2 Hz LHM / 10 Hz NVML; ≤ 0.3 % on battery | Process V2 counter over 60 s |
+| Renderer idle CPU | ≤ 1 % with Monitor open, ≈ 0 on other pages | same |
+| RAM | collector ≤ 120 MB, renderer ≤ 200 MB, worker/bench only while running | working set |
+| Package | ≤ 150 MB installed: one shared .NET runtime folder for collector, worker and bench (framework-dependent publish into one `runtime/`), not three self-contained bundles; renderer assets minified, no unused fonts/icons | installer size |
+| Startup | UI ≤ 1.5 s to first paint, collector first tick ≤ 1.5 s after UAC | log timing lines |
+| GPU | none, ever (A6); no canvas, no WebGL, no continuous animation | `app.getGPUFeatureStatus` |
+| Small screens | usable at 1366×768 and 125–150 % DPI: panels stack, bars stay legible, no horizontal scroll | screenshot at that size |
+| Battery | on DC power: LHM 1 Hz, NVML 2 Hz, sparklines 1 Hz; Monitor tab hidden → no ticks | `powercfg` / Electron `powerMonitor` |
+| No NVIDIA | AMD/Intel: NVML absent → the GPU panel shows LHM's AMD/Intel sensors; audit rules that need NVML report 'unknown', never fail; the advisor works from the table | run with NVML export disabled in tests |
+| Idle Ollama/apps | never poll a service the user does not run; discover once, back off | log |
+
+**Every long action can be stopped** (user, 2026-09-16: the audit had no way to interrupt it).
+Audit, capture, bench, measure, calibrate, tune hunt, validation: a Stop button next to the
+progress line from the first second; Stop cancels the underlying process (collector `POST
+/load/{id}/cancel` kills the worker or bench and releases the lock; PresentMon is terminated;
+Ollama generation is aborted), the collector returns to idle within 2 s, and the page shows the
+partial result marked *interrupted* rather than a blank. Escape does the same while the run
+is focused. A stopped run never leaves a PENDING tune state, a lingering process, or a held
+gpu.lock.
+
+Rules of thumb: subscribe to sensors, never read everything; batch IPC at 2 Hz; unmount pages fully; no timers on hidden pages; the ring buffer's memory is bounded by time (§6).
 
 ## 18. Brand
 
@@ -880,12 +928,89 @@ trade in one sentence.
   the service install moves up to the first post-v0.1 item so the collector is already warm
   when the app opens.
 - **.NET 10 vs 8**: 10 unless a library lags.
+- **Release model (user, 2026-09-16): every Strata app ships as freeware** — free downloads for
+  anyone, no paid tier, no subscription, donations via `support.json`. For Strata Tune that adds a
+  release phase after Phase 8: an installer (electron-builder NSIS, per-user install into
+  `%LOCALAPPDATA%` for the UI, the collector/worker/bench under an admin-only folder per §5's
+  install-location rule), Authenticode signing (Smart App Control, §27 above), GitHub Releases
+  with the installer and a portable zip, a one-page download site, the plain-language
+  disclaimer shown on first launch and on the installer's licence page (§27a) and the third-party
+  notices, and the repo flipped public at that point. The same checklist applies
+  to Strata Code, Photo, Video and Snap when they follow.
 - **Code signing (found 2026-09-16)**: Smart App Control on the dev box (Windows 11 Home) blocks the
   loose, unsigned collector DLLs from `bin/` (CodeIntegrity 3077/3118, HRESULT 0x800711C7) but
   allows the self-contained single-file publish. Dev launches prefer the published bundle. Before
   v0.1 ships publicly, the collector, worker and bench exes need an Authenticode signature
   (an OV cert, or Azure Trusted Signing) or Smart App Control users get a silently blocked
   collector; the client must also detect that exit and say so in the status pill.
+
+## 27a. Legal (user direction 2026-09-16)
+
+The user's words: "all the required legal stuff, and I will not be responsible for anything".
+Strata Tune reads sensors, runs stress loads and — in Phase 8 — changes clocks and voltages.
+That is exactly the kind of tool whose author gets blamed for a dead card, so the legal
+surface is part of the product, not a footnote. Not legal advice; the author reads every text
+before v0.1 ships. Everything below is plain language first, legalese only where a term of art
+is needed.
+
+**One source, many surfaces.** The texts live in the repo root beside `LICENSE`:
+`DISCLAIMER.md` (no warranty · no liability · hardware risk · readings and advice are
+informational · not affiliated with any vendor) and `THIRD-PARTY-NOTICES.md` (exists). The app
+bundles both files verbatim (electron-builder `extraResources`) and renders them; nothing is
+retyped into a component, so the wording can only drift in one place.
+
+| Surface | What it shows | When |
+|---|---|---|
+| **First launch** | `DISCLAIMER.md` in a modal with one button, *I understand*; the app does not start the collector until it is pressed. Acceptance is stored as `{ version, acceptedAt }` in settings and re-shown when the disclaimer's version changes. | once per disclaimer version |
+| **Tune warning modal** (§16) | the Phase 8 four-section warning already there, plus the hardware-risk paragraph of the disclaimer and an explicit line: raising clocks or voltages can crash the machine, lose unsaved work in other apps, shorten the life of or damage the card, and may void the vendor's warranty; the user does this at their own risk. Acknowledged with the settings toggle each time Tune is enabled; the acknowledgement (date, app version, GPU name) is written to the tune log so a later bug report shows it. | every enable |
+| **About → Legal** (§17) | tabs: *Licence* (MIT), *Disclaimer*, *Third-party notices*, *Privacy*; a *Copy* button per tab. | on demand |
+| **Installer** | the NSIS licence page shows `LICENSE` followed by `DISCLAIMER.md`; declining exits setup. The portable zip carries both files at its root. | install |
+| **README / download page** | a *Legal* section: two-sentence summary, links to the three files, the trademark line. | always |
+| **Reports and share cards** (§14, §19) | one footer line: "Readings come from your drivers and sensors and can be wrong; nothing here is professional advice." Serials stay redacted (§17 system report). | every export |
+
+**What `DISCLAIMER.md` says** (the plain-language points, in this order):
+
+1. *Free software, as is.* No warranty of any kind — not that it works, not that readings are
+   right, not that it is fit for any purpose. (The MIT licence already says this for the code;
+   the disclaimer says it for the app people download.)
+2. *No liability.* The author is not responsible for any damage or loss from using the app:
+   hardware damage, data loss, downtime, lost warranty, anything else, whatever the legal theory.
+   Where a jurisdiction does not allow a full exclusion, liability is limited to the greatest
+   extent it does allow — and the app is free, so nothing was paid to refund.
+3. *Hardware risk is real and it is the user's.* Phases 1–7 change nothing (A7). Tune is off by
+   default, behind a warning, and applies only what the user enables; overclocking, undervolting,
+   power-limit and fan changes can crash, corrupt unsaved work, damage components and void
+   warranties. Run it on a machine you can afford to lose work on, back up first, and stop if
+   anything looks wrong.
+4. *Readings and advice are informational.* Sensor values come from drivers, firmware and
+   third-party libraries and can be wrong or missing; the audit's findings, the advisor's model
+   and token-rate estimates, PSU sizing and the stutter verdicts are estimates from published
+   references and the app's own tests, not professional, engineering or purchasing advice.
+   Verify before acting on anything that costs money or touches hardware.
+5. *Not affiliated.* NVIDIA, GeForce, AMD, Ryzen, Radeon, Intel, ASUS, ROG, MSI, Gigabyte,
+   Windows, DirectX, HWiNFO, Ollama and every other name in the app are trademarks of their
+   owners; Strata Tune is an independent project, not endorsed by or connected with any of them.
+   Model names in the advisor are their publishers' and each model has its own licence.
+6. *Your data stays yours.* No telemetry, no accounts, no network calls except the ones the
+   user starts (a local Ollama on `127.0.0.1`, external links the user clicks, and the optional
+   update check when it exists — off until asked). Sessions, logs and settings live under
+   `%LOCALAPPDATA%\Strata Tune`; exported reports and share cards may carry hardware names and
+   clocks — the user decides where those go, and serials are never in them.
+7. *Third-party components* are listed with their licences in `THIRD-PARTY-NOTICES.md`; PawnIO
+   is a separately installed driver under its own terms; HWiNFO, when the user runs it, is theirs
+   under HWiNFO's terms (§9b); Ollama and the models it serves are the user's own installs.
+8. *Donations* are voluntary gifts, buy nothing, and are not tax-deductible unless the user's
+   own rules say so.
+9. *Governing text.* The English text is the one that counts; translations, when they exist,
+   are for convenience.
+
+**Repo hygiene that backs the words.** The `LICENSE` copyright line, the About author line and
+the disclaimer's "the author" all name the same person; `THIRD-PARTY-NOTICES.md` is regenerated
+on every dependency bump (its own header says how); the MPL-2.0 components stay unmodified
+(modifying an LHM file would require publishing that file — the plan never does; §9b's bridge
+reads HWiNFO's shared memory, which is a documented interface, not HWiNFO code). Every Strata
+app ships the same `DISCLAIMER.md` skeleton with its own hardware-risk paragraph (Photo and
+Video have none; Snap's is the camera), per the family freeware rule in §27.
 
 ---
 
