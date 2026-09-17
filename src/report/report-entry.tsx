@@ -1,6 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { ReportView } from './ReportView';
+import { ReportFileView } from './ReportView';
 import { readEmbeddedReport } from './export';
 
 /**
@@ -11,7 +11,7 @@ const data = readEmbeddedReport(document);
 const root = createRoot(document.getElementById('root')!);
 root.render(
   data ? (
-    <ReportView report={data.report} session={data.session} />
+    <ReportFileView data={data} />
   ) : (
     <div className="rp">
       <div className="rp-page">

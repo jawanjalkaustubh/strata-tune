@@ -7,7 +7,8 @@ import { Bar, toneByLimit, toneByThresholds } from './Bar';
 import { Pill, type Tone } from './Pill';
 import { PinHeader } from './PinHeader';
 import { CardSchematic } from './CardSchematic';
-import { gpuLayout } from './gpuLayout';
+import { gpuLayout, igpuLayout } from './gpuLayout';
+import { NO_CAPS, type Caps } from './caps';
 import { decodeReasons } from './reasons';
 import { GPU_IDLE, hasAny, hasBit, IDLE_HINT, SLOWDOWN, SW_POWER_CAP, THERMAL_OR_BRAKE } from '../../analysis/nvmlBits';
 import { fanState } from './fans';
@@ -18,6 +19,8 @@ interface Props {
   tick: Tick;
   ring: Ring;
   panel?: PanelChrome;
+  /** Plan 17d rule 2: the capabilities computed once by the page; absent when the panel renders on its own. */
+  caps?: Caps;
 }
 
 /** The NVML node the rename is keyed by. */
@@ -27,26 +30,64 @@ const gib = (mib: number) => `${(mib / 1024).toFixed(1)} GiB`;
 const degrees = (x: number) => `${x.toFixed(0)} °C`;
 const mhz = (x: number) => `${x.toFixed(0)} MHz`;
 const percent = (x: number) => `${x.toFixed(0)} %`;
+const watts = (x: number) => `${x.toFixed(1)} W`;
+
+/**
+ * The integrated GPU's panel (plan 17d row 1, 17c 'No NVIDIA'): the library's own sensors
+ * for the AMD or Intel node, headed by its name: core clock, load, the engine loads that are
+ * busy, shared and dedicated memory, power and temperature. Rows the node does not carry
+ * collapse; nothing NVML-shaped is drawn for a card that is not there.
+ */
+const IgpuPanel: React.FC<Props> = ({ index, tick, ring, panel }) => {
+  const layout = useMemo(() => igpuLayout(index, undefined), [index]);
+  if (!layout) {
+    return (
+      <Panel kind="GPU" title="GPU" {...panel}>
+        <p className="text-mini text-studio-muted">No GPU sensors on this machine: neither NVML nor the library reports a GPU.</p>
+      </Panel>
+    );
+  }
+  const v = (id?: string) => (id === undefined ? undefined : tick.sensors[id]);
+  const hist = (id?: string) => (id === undefined ? undefined : ring.series((t) => t.sensors[id]));
+  const vendor = vendorOf(layout.name);
+  const clockHigh = Math.max(ring.high((t) => (layout.clock ? t.sensors[layout.clock] : undefined)), v(layout.clock) ?? 0, 1000);
+  const powerHigh = Math.max(ring.high((t) => (layout.power ? t.sensors[layout.power] : undefined)), v(layout.power) ?? 0, 15);
+  const sharedTotal = v(layout.sharedTotal);
+  const engines = layout.engines.map((e) => ({ name: e.name, load: Math.max(0, ...e.ids.map((id) => tick.sensors[id] ?? 0)) })).filter((e) => e.load > 0);
+  return (
+    <Panel kind="GPU" title={layout.name} nameKey={layout.hardware} vendor={vendor} aside={<span className="figure text-[12px] text-studio-muted">integrated · no discrete card</span>} {...panel}>
+      <div className="bars space-y-1.5 min-w-0">
+        <Bar label="Core clock" value={v(layout.clock)} format={mhz} max={clockHigh * 1.05} mark={clockHigh} markLabel={`Highest this session ${clockHigh.toFixed(0)} MHz`} tone={(v(layout.load) ?? 0) < 5 ? 'idle' : 'ok'} history={hist(layout.clock)} />
+        <Bar label="GPU load" value={v(layout.load)} format={percent} max={100} tone={(v(layout.load) ?? 0) < 5 ? 'idle' : 'ok'} history={hist(layout.load)} />
+        {engines.map((e) => (
+          <Bar key={e.name} label={e.name} value={e.load} format={percent} max={100} tone="ok" />
+        ))}
+        <Bar label="Shared memory" value={v(layout.sharedUsed)} format={(x) => gib(x)} max={sharedTotal || Math.max(v(layout.sharedUsed) ?? 0, 1024)} sub={sharedTotal ? `of ${gib(sharedTotal)} of RAM` : 'from RAM'} tone={toneByLimit(v(layout.sharedUsed) ?? 0, sharedTotal || undefined, 0.9)} history={hist(layout.sharedUsed)} />
+        <Bar label="Dedicated" value={v(layout.dedicatedUsed)} format={(x) => `${x.toFixed(0)} MB`} max={Math.max(v(layout.dedicatedUsed) ?? 0, 512)} tone="ok" history={hist(layout.dedicatedUsed)} />
+        <Bar label="Power" value={v(layout.power)} format={watts} max={powerHigh * 1.1} tone="ok" history={hist(layout.power)} />
+        <Bar label="Temperature" value={v(layout.temperature)} format={degrees} max={100} tone={toneByThresholds(v(layout.temperature) ?? 0, 80, 90)} history={hist(layout.temperature)} />
+      </div>
+    </Panel>
+  );
+};
 
 /**
  * Laid out like the CPU panel (phase1-polish item 4): the card schematic on the left with
  * the perf-limit pills under it, the 12V-2x6 block filling the column to its right, the
  * compact bars beneath. The schematic takes 42 % of the panel (300–380 px) so its
- * figures grow with the panel rather than staying a small tile in a wide box.
+ * figures grow with the panel rather than staying a small tile in a wide box. A card
+ * without per-pin shunts has no block and no column for it (plan section 17a): the
+ * schematic stands alone on its row and the bars carry the board power.
  */
-export const GpuPanel: React.FC<Props> = ({ index, tick, ring, panel }) => {
+export const GpuPanel: React.FC<Props> = (props) => {
+  const { index, tick, ring, panel, caps = NO_CAPS } = props;
   const gpu: GpuFacts | undefined = tick.gpu[0];
   const gpuName = gpu?.name;
   const layout = useMemo(() => gpuLayout(index, gpuName), [index, gpuName]);
   const vendor = useMemo(() => vendorOf(gpuName), [gpuName]);
 
-  if (!gpu) {
-    return (
-      <Panel kind="GPU" title="GPU" {...panel}>
-        <p className="text-mini text-studio-muted">The collector reports no NVML GPU.</p>
-      </Panel>
-    );
-  }
+  // No NVML card: the integrated GPU's own sensors, or one sentence and a short panel.
+  if (!gpu) return <IgpuPanel {...props} />;
 
   const v = (id?: string) => (id === undefined ? undefined : tick.sensors[id]);
   const hist = (id?: string) => (id === undefined ? undefined : ring.series((t) => t.sensors[id]));
@@ -56,6 +97,8 @@ export const GpuPanel: React.FC<Props> = ({ index, tick, ring, panel }) => {
   const limitW = gpu.powerLimitMw / 1000;
   const maxLimitW = gpu.powerMaxLimitMw / 1000;
   const powerMax = Math.max(limitW, maxLimitW, powerW) * 1.05 || 100;
+  // Plan 17d row 2: on a laptop the limit is the TGP and moves with Dynamic Boost, so it is a band from the TGP to the boosted limit, not one tick.
+  const boost = caps.dynamicBoost && maxLimitW > limitW;
   const reasons = gpu.clocksEventReasons.raw;
   const idle = hasBit(reasons, GPU_IDLE) || (hasBit(reasons, IDLE_HINT) && gpu.utilisation.gpu < 5);
   // The reference is the highest SM clock this session: a gap below it means something
@@ -85,7 +128,7 @@ export const GpuPanel: React.FC<Props> = ({ index, tick, ring, panel }) => {
   return (
     <Panel kind="GPU" title={gpuTitle(gpu)} nameKey={gpuKey(gpu)} vendor={vendor} aside={<span className="figure text-[12px] text-studio-muted truncate">driver {gpu.driver}</span>} {...panel}>
       <div className="split">
-        <div className="shrink-0 w-[42%] min-w-[min(100%,300px)] max-w-[min(100%,380px)] space-y-1.5">
+        <div className={`shrink-0 ${layout.pins.length > 0 ? 'w-[42%] min-w-[min(100%,300px)] max-w-[min(100%,380px)]' : 'w-full max-w-[520px]'} space-y-1.5`}>
           <CardSchematic
             vendor={vendor}
             coreC={gpu.temperatureC}
@@ -110,18 +153,16 @@ export const GpuPanel: React.FC<Props> = ({ index, tick, ring, panel }) => {
           />
           {pills}
         </div>
-        <div className="flex-1 min-w-0">
-          {layout.pins.length > 0 ? (
+        {layout.pins.length > 0 && (
+          <div className="flex-1 min-w-0">
             <PinHeader
               pins={layout.pins.map((p) => ({ n: p.n, amps: v(p.ampsId), volts: v(p.voltsId), watts: v(p.wattsId) }))}
               totalAmps={connectorA}
               totalWatts={v(layout.connectorW)}
               history={(p) => hist(layout.pins.find((x) => x.n === p.n)?.ampsId)}
             />
-          ) : (
-            <p className="text-micro text-studio-subtle leading-relaxed">No per-pin connector sensing on this card; the board power below is NVML's total.</p>
-          )}
-        </div>
+          </div>
+        )}
       </div>
       <div className="split-2 pt-1">
         <div className="bars space-y-1.5 min-w-0">
@@ -133,12 +174,14 @@ export const GpuPanel: React.FC<Props> = ({ index, tick, ring, panel }) => {
             value={powerW}
             format={(x) => `${x.toFixed(0)} W`}
             max={powerMax}
-            limit={limitW || undefined}
+            limit={boost ? undefined : limitW || undefined}
             limitLabel={`Power limit ${limitW.toFixed(0)} W`}
-            mark={maxLimitW && maxLimitW !== limitW ? maxLimitW : undefined}
-            markLabel={`Maximum limit ${maxLimitW.toFixed(0)} W`}
-            sub={limitW ? `of ${limitW.toFixed(0)} W` : undefined}
-            tone={toneByLimit(powerW, limitW || undefined, 0.95)}
+            mark={boost ? maxLimitW : maxLimitW && maxLimitW !== limitW ? maxLimitW : undefined}
+            markLabel={boost ? `Dynamic Boost up to ${maxLimitW.toFixed(0)} W` : `Maximum limit ${maxLimitW.toFixed(0)} W`}
+            band={boost ? [limitW, maxLimitW] : undefined}
+            sub={boost ? `TGP ${limitW.toFixed(0)} W` : limitW ? `of ${limitW.toFixed(0)} W` : undefined}
+            note={boost ? `Dynamic Boost up to ${maxLimitW.toFixed(0)} W` : undefined}
+            tone={toneByLimit(powerW, (boost ? maxLimitW : limitW) || undefined, 0.95)}
             history={g((f) => f.powerMw / 1000)}
           />
           <Bar

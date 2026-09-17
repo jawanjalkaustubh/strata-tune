@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { needsFillRateCrossCheck, parseSlot, rankFindings, rankTop, runAudit, type AuditFinding, type AuditInputs } from '../src/analysis/audit';
-import type { GpuFacts, HogsResult, LoadRun, PhysicalDisk, StaticSnapshot, Volume } from '../src/collector-types';
+import { needsFillRateCrossCheck, parseSlot, rankFindings, rankTop, runAudit, timerHolders, type AuditFinding, type AuditInputs } from '../src/analysis/audit';
+import type { GpuFacts, HogsResult, LoadRun, PhysicalDisk, StaticSnapshot, Timers, Volume } from '../src/collector-types';
 import { NOW, cpuRun, devbox, loadRun } from './fixtures';
 
 const inputs = (snapshot: StaticSnapshot, extra: Partial<AuditInputs> = {}): AuditInputs =>
-  ({ snapshot, hogs: null, pcieUnderLoad: null, thermalRamp: null, cpuLoad: null, cpuPptW: null, nowIso: NOW, ...extra });
+  ({ snapshot, hogs: null, pcieUnderLoad: null, thermalRamp: null, cpuLoad: null, cpuPptW: null, curveOptimizer: NO_CO, nowIso: NOW, ...extra });
+/** Nothing typed into the Monitor gear: the advice may still suggest a Curve Optimizer. */
+const NO_CO = { coAllCore: null };
+/** The dev box as the user runs it: −30 all-core (polish 3 item 2). */
+const CO_30 = { coAllCore: -30 };
 const byId = (findings: AuditFinding[]) => Object.fromEntries(findings.map(f => [f.id, f]));
 const audit = (snapshot: StaticSnapshot, extra: Partial<AuditInputs> = {}) => byId(runAudit(inputs(snapshot, extra)));
 const score = (f: AuditFinding) => f.severity * f.costEstimate;
@@ -14,7 +18,9 @@ const busyHogs: HogsResult = {
   seconds: 5, logicalCpus: 32,
   processes: [{ pid: 4321, name: 'OneDrive.exe', cpuPercent: 40, workingSetMiB: 900 }, ...quietHogs.processes]
 };
-const flatRuns = { pcieUnderLoad: loadRun('light', 2), thermalRamp: loadRun('heavy', 20), cpuLoad: cpuRun(20) };
+/** The timer at the platform default: nothing holds it, the rule reads info. */
+const quietTimers: Timers = { currentMs: 15.625, finestMs: 0.5, coarsestMs: 15.625, qpcFrequency: 10_000_000, qpcSource: 'TSC', qpcNote: 'invariant TSC', requesters: null, requestersNote: null };
+const flatRuns = { pcieUnderLoad: loadRun('light', 2), thermalRamp: loadRun('heavy', 20), cpuLoad: cpuRun(20), timers: quietTimers };
 /** What NVAPI reads on the dev box's RTX 5090 (docs/dependencies.md, HWiNFO agrees): the full configuration. */
 const FULL_5090 = { shaders: 21760, sms: 170, rops: 176, tmus: 680, source: 'nvapi' as const };
 const withUnits = (units: NonNullable<GpuFacts['units']> | null = FULL_5090, s = devbox()) => {
@@ -31,7 +37,7 @@ const x8Link = loadRun('light', 2, () => ({ pcieWidth: 8 }));
 const ALL_IDS = [
   'expo', 'ram-channels', 'pcie-link', 'rebar', 'power-plan', 'boot-drive-space', 'game-on-hdd',
   'thermal-headroom', 'gpu-driver-age', 'background-hogs', 'gpu-power-limit', 'gpu-oc-offsets', 'gpu-units',
-  'cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-smt', 'cpu-idle-clock', 'ai-model-resident'
+  'cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-smt', 'cpu-idle-clock', 'ai-model-resident', 'timer-resolution'
 ];
 
 describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
@@ -49,7 +55,7 @@ describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
     expect(f['gpu-power-limit'].state).toBe('info');
     expect(f['gpu-power-limit'].detail).toBe('Power limit slider is at its maximum (600 W) — nothing to raise there. Clock and memory offsets are a separate lever.');
     expect(f['gpu-oc-offsets'].state).toBe('info');
-    expect(f['gpu-oc-offsets'].detail).toBe('Core +150 MHz, memory +500 MHz offsets applied (driver max 3090).');
+    expect(f['gpu-oc-offsets'].detail).toBe("Core +150 MHz, memory +250 MHz (+500 on the effective rate, the slider's figure) offsets applied (driver max 3090).");
     expect(f['cpu-smt'].state).toBe('ok');
     for (const id of ['cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-idle-clock']) {
       expect(f[id].state).toBe('unknown');
@@ -78,7 +84,7 @@ describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
     expect(f['thermal-headroom'].state).toBe('ok');
     expect(f['thermal-headroom'].detail).toContain('heavy load');
     expect(f['background-hogs'].state).toBe('ok');
-    expect(f['gpu-oc-offsets'].detail).toBe('Core +150 MHz, memory +500 MHz offsets applied; held 2800 MHz under load (driver max 3090).');
+    expect(f['gpu-oc-offsets'].detail).toBe("Core +150 MHz, memory +250 MHz (+500 on the effective rate, the slider's figure) offsets applied; held 2800 MHz under load (driver max 3090).");
     expect(f['cpu-allcore-clock'].detail).toBe('All-core 5.2 GHz effective under load (spec base 4.3 GHz, single-core boost 5.7 GHz).');
     expect(f['cpu-package-power'].detail).toBe('PBO / raised PPT active — measured 245 W over the stock 230 W; set your PPT limit here.');
     expect(f['cpu-idle-clock'].detail).toContain('Idle: 194 MHz effective');
@@ -688,7 +694,7 @@ describe('GPU overclock (item 7)', () => {
   it('offsets on this box are info, with the held clock once the ramp has run', () => {
     const f = audit(devbox(), { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3210 })) })['gpu-oc-offsets'];
     expect(f.state).toBe('info');
-    expect(f.detail).toBe('Core +150 MHz, memory +500 MHz offsets applied; held 3210 MHz under load (driver max 3090).');
+    expect(f.detail).toBe("Core +150 MHz, memory +250 MHz (+500 on the effective rate, the slider's figure) offsets applied; held 3210 MHz under load (driver max 3090).");
     expect(f.fix).toContain('lower the overclock first');
   });
 
@@ -701,7 +707,7 @@ describe('GPU overclock (item 7)', () => {
     expect(held.state).toBe('ok');
     expect(held.detail).toBe('The driver reports no clock offsets; held 3090 MHz under load (driver max 3090).');
     s.gpus[0].clockOffsets = { smMhz: null, memMhz: 500, maxClockSmMhz: null, maxClockMemMhz: null };
-    expect(audit(s)['gpu-oc-offsets'].detail).toBe('memory +500 MHz offsets applied.');
+    expect(audit(s)['gpu-oc-offsets'].detail).toBe("memory +250 MHz (+500 on the effective rate, the slider's figure) offsets applied.");
     s.gpus[0].clockOffsets = { smMhz: -100, memMhz: 0, maxClockSmMhz: null, maxClockMemMhz: null };
     expect(audit(s)['gpu-oc-offsets'].detail).toBe('Core -100 MHz, memory +0 MHz offsets applied.');
     s.gpus[0].clockOffsets = { smMhz: null, memMhz: null, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
@@ -734,17 +740,17 @@ describe('CPU rules (item 6) and the PPT setting (item 2)', () => {
     expect(f.state).toBe('info');
     expect(f.severity).toBe(0);
     expect(f.detail).toBe('PBO / raised PPT active — measured 245 W over the stock 230 W; set your PPT limit here.');
-    expect(f.fix).toContain('with the button below (Monitor page, gear > CPU power limit (PPT))');
+    expect(f.fix).toContain('with the button below (Monitor page, gear > CPU tuning you set in BIOS > PPT)');
     expect(f.fixWhere).toBe('app');
   });
 
   it('with the PPT set to 300 W the same run is ok against the configured limit; at 95 % of it, info', () => {
     const f = audit(devbox(), { cpuLoad: cpuRun(20), cpuPptW: 300 })['cpu-package-power'];
     expect(f.state).toBe('ok');
-    expect(f.detail).toBe('245 W under the all-core load, within the 300 W PPT limit.');
+    expect(f.detail).toBe('245 W under the all-core load, within the 300 W PPT limit (set by you).');
     const capped = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 298 })), cpuPptW: 300 })['cpu-package-power'];
     expect(capped.state).toBe('info');
-    expect(capped.detail).toContain('At the 300 W PPT limit under the all-core load (298 W)');
+    expect(capped.detail).toContain('At the 300 W PPT limit (set by you) under the all-core load (298 W)');
     const over = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 340 })), cpuPptW: 300 })['cpu-package-power'];
     expect(over.detail).toContain('Measured 340 W over the configured 300 W limit');
   });
@@ -766,34 +772,82 @@ describe('CPU rules (item 6) and the PPT setting (item 2)', () => {
     expect(audit(s, { cpuLoad: cpuRun(20), cpuPptW: 250 })['cpu-package-power'].detail).toContain('At the 250 W PPT limit');
   });
 
-  it('thermal: 88 °C on a 95 °C part is ok; 92 °C sustained on Ryzen is a mild warn by design; pinned with sagging clocks is bad', () => {
+  it('thermal: 88 °C on a 95 °C part is ok; 92 °C sustained on Ryzen is info, by design; pinned with sagging clocks is a warn (polish 3 item 1)', () => {
     const ok = audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-thermal'];
     expect(ok.state).toBe('ok');
     expect(ok.detail).toBe('Held 88 °C under the all-core load (peak 88 °C), 7 °C below the 95 °C limit.');
     const warm = audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 92 : 49 })) })['cpu-thermal'];
-    expect(warm.state).toBe('warn');
-    expect(warm.severity).toBe(1);
-    expect(warm.detail).toContain('92 °C under the all-core load, 3 °C from its 95 °C limit');
+    expect(warm.state).toBe('info');
+    expect(warm.severity).toBe(0);
+    expect(warm.detail).toContain('held 92 °C, 3 °C from its 95 °C limit');
     expect(warm.detail).toContain('by design');
     const pinned = cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 49, avgEffectiveMhz: t < 10 ? 5200 : 4700 }));
-    const bad = audit(devbox(), { cpuLoad: pinned })['cpu-thermal'];
-    expect(bad.state).toBe('bad');
-    expect(bad.severity).toBe(3);
-    expect(bad.detail).toContain('sat at its 95 °C limit');
-    expect(bad.detail).toContain('clocks fell');
-    expect(bad.fix).toContain('fresh paste');
-    expect(bad.costText).toContain('Throttling');
+    const sagging = audit(devbox(), { cpuLoad: pinned })['cpu-thermal'];
+    expect(sagging.state).toBe('warn');
+    expect(sagging.severity).toBe(2);
+    expect(sagging.costEstimate).toBeCloseTo(0.1, 2);
+    expect(sagging.detail).toBe('The CPU sat at its 95 °C limit under the all-core load and its clocks fell 10 % (5200 to 4700 MHz effective): it is thermally throttling.');
+    expect(sagging.fix).toContain('fresh paste');
+    expect(sagging.fix).toContain('Curve Optimizer undervolt');
+    expect(sagging.costText).toContain('Throttling');
+    expect(sagging.fixWhere).toBe('hardware');
   });
 
-  it('this box: pinned at Tjmax with the clocks holding is one honest card, no repaste for a working cooler', () => {
+  it('this box: the 9950X pinned at Tjmax with the clocks holding is info, by design, with the hotter-room sentence as the detail', () => {
     const f = audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95.2 : 44, avgEffectiveMhz: t > 0 ? 5384 - t * 1.6 : 452 })) })['cpu-thermal'];
-    expect(f.state).toBe('warn');
-    expect(f.severity).toBe(1);
-    expect(f.detail).toBe('The CPU held 95 °C under the all-core load, 0 °C from its 95 °C limit, with clocks holding (5375 to 5357 MHz effective). Ryzen boosts until it meets its limit, so this is by design under an all-core load; games load it less.');
-    expect(f.costText).toBe('Nothing lost now: the clocks held, but there is no headroom left for a hotter room or a longer load.');
+    expect(f.state).toBe('info');
+    expect(f.severity).toBe(0);
+    expect(f.costEstimate).toBe(0);
+    expect(f.detail).toBe('The CPU sat at its 95 °C limit under the all-core load, with clocks holding (5375 to 5357 MHz effective). Ryzen boosts until it meets its limit, so this is by design under an all-core load; games load it less. Nothing is lost now, but a hotter room or a longer load has no headroom left.');
+    expect(f.costText).toBe('Nothing lost: the clocks held.');
     expect(f.fix).toBe('Nothing required; a lower PPT or a Curve Optimizer undervolt in the BIOS buys headroom at little cost.');
     expect(f.fixWhere).toBe('none');
     expect(f.fix).not.toContain('paste');
+  });
+
+  it('sagging 5 % while pinned is the warn threshold; 4 % holds as info', () => {
+    const at = (drop: number) => audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 49, avgEffectiveMhz: t < 10 ? 5200 : 5200 * (1 - drop) })) })['cpu-thermal'];
+    expect(at(0.05).state).toBe('warn');
+    expect(at(0.04).state).toBe('info');
+    expect(at(0.04).detail).toContain('clocks holding');
+  });
+
+  it('already within 2 °C of Tjmax before the load starts is the cooler, not the boost: warn, pump first', () => {
+    const hot = audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 93.4 })) })['cpu-thermal'];
+    expect(hot.state).toBe('warn');
+    expect(hot.severity).toBe(2);
+    expect(hot.detail).toBe('The CPU was already at 93 °C before the all-core load started, 2 °C from its 95 °C limit, and held 95 °C under it (5200 to 5200 MHz effective): the cooler is not keeping up even at rest.');
+    expect(hot.costText).toContain('games will sit at the limit too');
+    expect(hot.fix).toMatch(/^Check the pump and fans first/);
+    expect(hot.fix).toContain('Curve Optimizer undervolt');
+    // 3 °C below before the load is the by-design card again.
+    expect(audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 92 })) })['cpu-thermal'].state).toBe('info');
+    // No pre-load reading at all: nothing to judge the rest by, the all-core verdict stands.
+    expect(audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95 : null })) })['cpu-thermal'].state).toBe('info');
+  });
+
+  it('a Curve Optimizer the user set (polish 3 item 2) is never recommended back; without one it is an option', () => {
+    const pinned = cpuRun(20, t => ({ tctlC: t > 0 ? 95.2 : 44 }));
+    const set = audit(devbox(), { cpuLoad: pinned, curveOptimizer: CO_30 })['cpu-thermal'];
+    expect(set.state).toBe('info');
+    expect(set.fix).toBe('Nothing required; you already run −30 all-core Curve Optimizer, so the remaining levers are a lower PPT in the BIOS or better cooling.');
+    expect(set.fix).not.toContain('Curve Optimizer undervolt');
+    const unset = audit(devbox(), { cpuLoad: pinned })['cpu-thermal'];
+    expect(unset.fix).toContain('a Curve Optimizer undervolt in the BIOS');
+    // The cooler advice keeps the settings lever last, and adapts the same way.
+    const sagging = cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 49, avgEffectiveMhz: t < 10 ? 5200 : 4700 }));
+    const coolerSet = audit(devbox(), { cpuLoad: sagging, curveOptimizer: CO_30 })['cpu-thermal'];
+    expect(coolerSet.fix).toBe('Improve CPU cooling: reseat the cooler with fresh paste, check the pump and fans, raise the fan curve; on Ryzen you already run −30 all-core Curve Optimizer, so the remaining levers are a lower PPT in the BIOS or better cooling.');
+    // A per-core note counts as set too; a 0 does not (the BIOS default is no offset).
+    const perCore = audit(devbox(), { cpuLoad: pinned, curveOptimizer: { coAllCore: null, coPerCore: '−30, cores 3 and 7 at −20' } })['cpu-thermal'];
+    expect(perCore.fix).toContain('you already run a per-core Curve Optimizer (−30, cores 3 and 7 at −20)');
+    expect(audit(devbox(), { cpuLoad: pinned, curveOptimizer: { coAllCore: 0 } })['cpu-thermal'].fix).toContain('a Curve Optimizer undervolt');
+    // Intel has no Curve Optimizer: the cooler advice ends without the Ryzen levers.
+    const s = devbox();
+    s.cpu.name = '13th Gen Intel(R) Core(TM) i9-13900K';
+    const intel = audit(s, { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 100 : 49, avgEffectiveMhz: t < 10 ? 5200 : 4700 })), curveOptimizer: CO_30 })['cpu-thermal'];
+    expect(intel.state).toBe('warn');
+    expect(intel.fix).toBe('Improve CPU cooling: reseat the cooler with fresh paste, check the pump and fans, raise the fan curve.');
   });
 
   it('thermal on an Intel part warns harder near Tjmax, and an unknown part gets the numbers without a verdict', () => {
@@ -802,7 +856,7 @@ describe('CPU rules (item 6) and the PPT setting (item 2)', () => {
     const f = audit(s, { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 97 : 40 })) })['cpu-thermal'];
     expect(f.state).toBe('warn');
     expect(f.severity).toBe(2);
-    expect(f.detail).toContain('from its 100 °C limit');
+    expect(f.detail).toContain('held 97 °C, 3 °C from its 100 °C limit');
     expect(f.detail).not.toContain('by design');
     expect(f.costText).toContain('Little headroom');
     expect(f.fix).toContain('cooling');
@@ -907,5 +961,62 @@ describe('missing inputs never flag', () => {
     s.chassis = { isLaptop: true, chassisTypes: [10] };
     s.powerPlan = { guid: '', name: '', overlayGuid: null };
     expect(audit(s)['power-plan'].state).toBe('unknown');
+  });
+});
+
+describe("timer resolution (plan section 8, the About hub's Timers tool feeds it)", () => {
+  const timers = (over: Partial<Timers> = {}): Timers => ({ ...quietTimers, ...over });
+  const discord = { pid: 4242, name: 'Discord.exe', path: 'C:\Apps\Discord.exe', periodMs: 0.5, own: false };
+  const own = { pid: 77, name: 'electron.exe', path: null, periodMs: 1, own: true };
+
+  it('no probe answers unknown; the platform default is info with the counter named', () => {
+    expect(audit(devbox())['timer-resolution'].state).toBe('unknown');
+    const f = audit(devbox(), { timers: timers() })['timer-resolution'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe('15.625 ms, the platform default: nothing is holding it raised. A game raises it to 0.5–1 ms itself while it runs; if one does not, its frame pacing gets uneven. The performance counter runs at 10 MHz from the TSC.');
+    expect(f.severity).toBe(0);
+  });
+
+  it('a background app holding the finest step with nothing running is the one warning, and it is named', () => {
+    const f = audit(devbox(), { timers: timers({ currentMs: 0.5, requesters: [discord, own] }) })['timer-resolution'];
+    expect(f.state).toBe('warn');
+    expect(f.severity).toBe(1);
+    expect(f.detail).toContain('Discord.exe (asks for 0.5 ms) holds the timer at its finest step, 0.5 ms, with nothing running that needs it.');
+    expect(f.detail).toContain('On a desktop this costs a little idle power');
+    expect(f.detail).not.toContain('electron.exe');
+    expect(f.fix).toContain('Settings > Apps > Startup');
+    const laptop = devbox();
+    laptop.chassis = { isLaptop: true, chassisTypes: [10] };
+    expect(audit(laptop, { timers: timers({ currentMs: 0.5, requesters: [discord] }) })['timer-resolution'].detail).toContain('On a laptop this costs battery');
+  });
+
+  it('raised but not at the finest step, or held only by Strata Tune, or by nobody the trace could name, is info', () => {
+    const media = audit(devbox(), { timers: timers({ currentMs: 1, requesters: [{ ...discord, periodMs: 1 }] }) })['timer-resolution'];
+    expect(media.state).toBe('info');
+    expect(media.detail).toContain('raised from the 15.625 ms default by Discord.exe (asks for 1 ms). Normal for a media or chat app');
+    const ours = audit(devbox(), { timers: timers({ currentMs: 1, requesters: [own] }) })['timer-resolution'];
+    expect(ours.state).toBe('info');
+    expect(ours.detail).toContain('only Strata Tune itself holds it');
+    const untraced = audit(devbox(), { timers: timers({ currentMs: 0.5 }) })['timer-resolution'];
+    expect(untraced.state).toBe('info');
+    expect(untraced.detail).toContain('the trace that names the holder did not run');
+    const failed = audit(devbox(), { timers: timers({ currentMs: null }) })['timer-resolution'];
+    expect(failed.state).toBe('unknown');
+  });
+
+  it('holders are named once per program with a count, finest period first (the dev box listed claude.exe nine times)', () => {
+    const many = [
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => ({ pid: 100 + i, name: 'claude.exe', path: null, periodMs: 1, own: false })),
+      { pid: 7, name: 'iCUE.exe', path: null, periodMs: 4, own: false },
+      { pid: 8, name: 'Discord.exe', path: null, periodMs: 1, own: false },
+      { pid: 9, name: 'Discord.exe', path: null, periodMs: 0.5, own: false },
+      { pid: 10, name: 'Discord.exe', path: null, periodMs: null, own: false }
+    ];
+    expect(timerHolders(many)).toEqual(['Discord.exe ×3 (asks for 0.5 ms)', 'claude.exe ×9 (asks for 1 ms)', 'iCUE.exe (asks for 4 ms)']);
+    const f = audit(devbox(), { timers: timers({ currentMs: 0.5, requesters: many }) })['timer-resolution'];
+    expect(f.state).toBe('warn');
+    expect(f.detail).toContain('Discord.exe ×3 (asks for 0.5 ms), claude.exe ×9 (asks for 1 ms) and iCUE.exe (asks for 4 ms) hold the timer at its finest step');
+    expect(f.detail).not.toContain('claude.exe (asks for 1 ms), claude.exe');
+    expect(f.fix).toContain('Close them');
   });
 });

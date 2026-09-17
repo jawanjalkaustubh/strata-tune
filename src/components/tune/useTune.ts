@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ipcErrorMessage } from '../../api';
-import type { FlightLine, TuneExport, TuneRun, TuneStatus } from '../../collector-types';
+import type { FlightLine, PstateDeltas, TuneExport, TuneRun, TuneRunKind, TuneStatus } from '../../collector-types';
+import type { TuneCaps } from '../../api';
 import { refusalOf } from './wire';
 
-export type TuneAction = 'core' | 'memory' | 'validate' | 'stop' | 'keep' | 'revert';
+export type TuneAction = TuneRunKind | 'stop' | 'revert';
 
 export interface TuneHook {
   /** null until the collector has answered GET /tune/state. */
@@ -19,10 +20,9 @@ export interface TuneHook {
   /** A transport failure (the collector gone, a route missing), distinct from a refusal. */
   error: string;
   refresh(): void;
-  start(kind: 'core' | 'memory', enabled: boolean): Promise<void>;
-  validate(): Promise<void>;
+  /** `vendor` is what the user's vendor tool shows (slider units), needed when a tune of the tool's is on the card; `caps` the user's "never test above" clocks (plan section 16). */
+  start(kind: TuneRunKind, enabled: boolean, vendor?: PstateDeltas, caps?: TuneCaps): Promise<void>;
   stop(): Promise<void>;
-  keep(): Promise<void>;
   revert(): Promise<void>;
 }
 
@@ -139,10 +139,8 @@ export function useTune(connected: boolean): TuneHook {
     refusal,
     error,
     refresh,
-    start: (kind, enabled) => act(kind, () => api!.tune.start(kind, enabled)),
-    validate: () => act('validate', () => api!.tune.validate()),
+    start: (kind, enabled, vendor, caps) => act(kind, () => api!.tune.start(kind, enabled, vendor, caps)),
     stop: () => act('stop', () => api!.tune.stop()),
-    keep: () => act('keep', () => api!.tune.keep()),
     revert: () => act('revert', () => api!.tune.revert())
   };
 }

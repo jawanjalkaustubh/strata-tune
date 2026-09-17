@@ -10,8 +10,11 @@
  * happened is not a fault). Every sentence is written for someone who has
  * never opened a BIOS.
  */
-import type { HogsResult, LoadRun, StaticSnapshot } from '../collector-types';
+import type { HogsResult, LoadRun, StaticSnapshot, TimerRequester, Timers } from '../collector-types';
+import type { Settings } from '../settings';
+import { coText, curveOptimizerSet } from '../components/monitor/cpuTuning';
 import { boardPartnerOf } from '../components/monitor/vendors';
+import { nvmlMemOffsetMhz } from '../components/advisor/thisCard';
 import { cpuSpec } from './cpuSpec';
 import { fillRateEstimate } from './gpuUnits';
 import { lookupGpu } from './hardware-tables';
@@ -35,6 +38,8 @@ export interface AuditFinding {
   fixWhere: FixWhere;
 }
 
+export type CurveOptimizer = Pick<Settings, 'coAllCore' | 'coPerCore'>;
+
 export interface AuditInputs {
   snapshot: StaticSnapshot;
   hogs: HogsResult | null;
@@ -44,9 +49,17 @@ export interface AuditInputs {
   cpuLoad: LoadRun | null;
   /** Settings.cpuPptW: the socket power limit the user configured; null falls back to the stock value in cpus.json. */
   cpuPptW: number | null;
+  /**
+   * Settings.coAllCore / coPerCore: the Curve Optimizer the user set in the BIOS. No software
+   * reads it on Zen 5 (no SMU access), so the CPU thermal advice takes it from here and never
+   * recommends the undervolt the user already runs (polish 3 item 2).
+   */
+  curveOptimizer: CurveOptimizer;
   /** The optional 6 s fill-rate cross-check (kind 'fillrate'), the gpu-units rule's fallback when the direct NVAPI read is unavailable. */
   fillRate?: LoadRun | null;
   nowIso: string;
+  /** GET /timers, traced when the timer is held raised (plan section 8's timer-resolution row); absent or null answers 'unknown'. */
+  timers?: Timers | null;
 }
 
 type Base = Pick<AuditFinding, 'id' | 'title' | 'costText' | 'fixWhere'>;
@@ -92,10 +105,16 @@ const laneRate = (gen: number) => PCIE_GT_PER_LANE[Math.min(gen, PCIE_GT_PER_LAN
 /** Package power this far over the stock limit means PBO or a raised PPT; the sensors cannot read the limit itself (dependencies.md). */
 const PBO_OVER_STOCK = 1.05;
 const AT_LIMIT_FRACTION = 0.95;
-/** Sustained this close to Tjmax is worth a warning; pinned at Tjmax with sagging clocks is throttling. */
-const CPU_WARN_BELOW_TJMAX_C = 5;
+/**
+ * Sustained this close to Tjmax under the all-core load is worth a card. Pinned at Tjmax with
+ * the clocks holding is how Zen 4/5 boosts (info, by design; polish 3 item 1); the cooler is
+ * only at fault when the clocks sag while pinned, or when Tctl is already this close to Tjmax
+ * before the load starts (the run's first sample), which is what a game would see too.
+ */
+const CPU_WARM_BELOW_TJMAX_C = 5;
 const CPU_PINNED_BELOW_TJMAX_C = 1;
-const CPU_SAG_BAD = 0.05;
+const CPU_SAG_WARN = 0.05;
+const CPU_REST_WARN_BELOW_TJMAX_C = 2;
 const BELOW_BASE = 0.9;
 
 const GIB = 1024 ** 3;
@@ -503,11 +522,31 @@ function checkGpuOffsets(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
     }
     return finding(base, ok(`The driver reports no clock offsets${held}${ceiling}.`));
   }
-  const parts = [offsets.smMhz !== null ? `Core ${signed(offsets.smMhz)} MHz` : '', offsets.memMhz !== null ? `memory ${signed(offsets.memMhz)} MHz` : ''].filter(Boolean);
+  // The driver counts the memory offset on the effective rate, the slider's figure (thisCard.ts nvmlMemOffsetMhz).
+  const memNvml = nvmlMemOffsetMhz(offsets);
+  const parts = [offsets.smMhz !== null ? `Core ${signed(offsets.smMhz)} MHz` : '', memNvml !== null ? `memory ${signed(memNvml)} MHz${memNvml ? ` (${signed(offsets.memMhz!)} on the effective rate, the slider's figure)` : ''}` : ''].filter(Boolean);
   return finding(base, info(`${parts.join(', ')} offsets applied${held}${ceiling}.`, stableFix));
 }
 
-function checkCpuThermal(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
+/** "−30 all-core Curve Optimizer": what the user set, in words for the advice; null when nothing is set. */
+function curveOptimizerRun(co: CurveOptimizer): string | null {
+  if (!curveOptimizerSet(co)) return null;
+  return co.coAllCore ? `${coText(co.coAllCore)} all-core Curve Optimizer` : `a per-core Curve Optimizer (${co.coPerCore!.trim()})`;
+}
+
+/** The setting-side levers against Ryzen heat, minus the one the user already pulled (polish 3 item 2). */
+function ryzenHeatLevers(co: CurveOptimizer): string {
+  const run = curveOptimizerRun(co);
+  return run ? `you already run ${run}, so the remaining levers are a lower PPT in the BIOS or better cooling.` : 'a lower PPT or a Curve Optimizer undervolt in the BIOS buys headroom at little cost.';
+}
+
+/** Tctl before the worker started: the run's first sample is the idle reference (LoadRunner), so it stands for what a light load sees. */
+function restTctl(run: LoadRun | null): number | null {
+  const t = run?.cpuSamples[0]?.tctlC;
+  return t !== null && t !== undefined && Number.isFinite(t) ? Math.round(t) : null;
+}
+
+function checkCpuThermal(s: StaticSnapshot, run: LoadRun | null, co: CurveOptimizer): AuditFinding {
   const base: Base = { id: 'cpu-thermal', title: 'CPU thermal headroom', costText: 'Throttling: the CPU drops its clocks when it reaches its temperature limit.', fixWhere: 'hardware' };
   const steady = cpuSteady(run);
   if (!steady) return finding(base, CPU_RUN_MISSING);
@@ -522,33 +561,46 @@ function checkCpuThermal(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
   const ends = clocks.length >= 4 ? endsOf(clocks) : null;
   const sag = ends && ends.start > 0 ? (ends.start - ends.end) / ends.start : 0;
   const held = ends ? `${Math.round(ends.start)} to ${Math.round(ends.end)} MHz effective` : '';
-  if (peak >= tjmax - CPU_PINNED_BELOW_TJMAX_C && sag >= CPU_SAG_BAD) {
-    // The one branch where the cooler is the fault: the repaste advice belongs here alone.
+  const ryzen = /ryzen/i.test(s.cpu.name);
+  const pinned = peak >= tjmax - CPU_PINNED_BELOW_TJMAX_C;
+  const rest = restTctl(run);
+  // The cooler branches name the settings lever last; on Ryzen it never repeats what the user already set.
+  const levers = ryzen ? `; on Ryzen ${ryzenHeatLevers(co)}` : '.';
+  if (pinned && sag >= CPU_SAG_WARN) {
     return finding(base, {
-      state: 'bad', severity: 3, costEstimate: Number(sag.toFixed(2)),
+      state: 'warn', severity: 2, costEstimate: Number(sag.toFixed(2)),
       detail: `The CPU sat at its ${tjmax} °C limit under the all-core load and its clocks fell ${pct(sag)} % (${held}): it is thermally throttling.`,
-      fix: 'Improve CPU cooling: reseat the cooler with fresh paste, check the pump and fans, raise the fan curve; on Ryzen a lower PPT or a Curve Optimizer undervolt cuts heat at little cost.'
+      fix: `Improve CPU cooling: reseat the cooler with fresh paste, check the pump and fans, raise the fan curve${levers}`
     });
   }
-  if (sustained >= tjmax - CPU_WARN_BELOW_TJMAX_C) {
-    // Ryzen boosts until it meets Tjmax by design, so a pinned all-core load with steady
-    // clocks loses nothing today; what it lacks is headroom, and the card says exactly that
-    // rather than sending the owner of a working cooler to repaste it.
-    const ryzen = /ryzen/i.test(s.cpu.name);
+  if (rest !== null && rest >= tjmax - CPU_REST_WARN_BELOW_TJMAX_C) {
+    return finding(base, {
+      state: 'warn', severity: 2, costEstimate: 0.05,
+      costText: 'Little headroom: games will sit at the limit too, and throttle on a hot day.',
+      detail: `The CPU was already at ${rest} °C before the all-core load started, ${tjmax - rest} °C from its ${tjmax} °C limit, and held ${sustained} °C under it${held ? ` (${held})` : ''}: the cooler is not keeping up even at rest.`,
+      fix: `Check the pump and fans first: a CPU this hot before a load points at a cooler not making contact or a pump that has stopped; then fresh paste and a higher fan curve${levers}`
+    });
+  }
+  if (sustained >= tjmax - CPU_WARM_BELOW_TJMAX_C) {
+    const gap = tjmax - sustained;
+    const where = gap <= 0 ? `sat at its ${tjmax} °C limit` : `held ${sustained} °C, ${gap} °C from its ${tjmax} °C limit,`;
     const holding = held ? `, with clocks holding (${held})` : '';
     if (ryzen) {
+      // Ryzen boosts until it meets Tjmax by design, so a pinned all-core load with steady
+      // clocks loses nothing today; what it lacks is headroom, and the card says exactly that
+      // rather than sending the owner of a working cooler to repaste it.
       return finding(base, {
-        state: 'warn', severity: 1, costEstimate: 0.02,
-        costText: 'Nothing lost now: the clocks held, but there is no headroom left for a hotter room or a longer load.',
-        detail: `The CPU held ${sustained} °C under the all-core load, ${tjmax - sustained} °C from its ${tjmax} °C limit${holding}. Ryzen boosts until it meets its limit, so this is by design under an all-core load; games load it less.`,
-        fix: 'Nothing required; a lower PPT or a Curve Optimizer undervolt in the BIOS buys headroom at little cost.',
+        state: 'info', severity: 0, costEstimate: 0,
+        costText: 'Nothing lost: the clocks held.',
+        detail: `The CPU ${where} under the all-core load${holding}. Ryzen boosts until it meets its limit, so this is by design under an all-core load; games load it less. Nothing is lost now, but a hotter room or a longer load has no headroom left.`,
+        fix: `Nothing required; ${ryzenHeatLevers(co)}`,
         fixWhere: 'none'
       });
     }
     return finding(base, {
       state: 'warn', severity: 2, costEstimate: 0.05,
       costText: 'Little headroom: a hotter room or a longer load will start throttling.',
-      detail: `The CPU held ${sustained} °C under the all-core load, ${tjmax - sustained} °C from its ${tjmax} °C limit${holding}. Games load it less, but there is little headroom for a hot day.`,
+      detail: `The CPU ${where} under the all-core load${holding}. Games load it less, but there is little headroom for a hot day.`,
       fix: 'Improve CPU cooling: check the pump and fans and raise the fan curve; fresh paste if the cooler has been on for years.'
     });
   }
@@ -586,7 +638,7 @@ function checkCpuPackagePower(s: StaticSnapshot, run: LoadRun | null, cpuPptW: n
   const stock = spec?.stockPowerW;
   const configured = cpuPptW !== null && cpuPptW > 0 ? Math.round(cpuPptW) : null;
   // The control is the gear on the Monitor page (the button under this card opens it); there is no Settings page.
-  const setIt = `Enter the limit you set in the BIOS or Ryzen Master with the button below (Monitor page, gear > CPU power limit (${name})), so the Package bar and this check use it.`;
+  const setIt = `Enter the limit you set in the BIOS or Ryzen Master with the button below (Monitor page, gear > CPU tuning you set in BIOS > ${name}), so the Package bar and this check use it.`;
   if (configured === null && stock === undefined) {
     return finding(base, info(`Package power averaged ${measured} W under the all-core load; this part's stock limit is not in the table, so there is no verdict until the limit is set.`, setIt));
   }
@@ -595,7 +647,7 @@ function checkCpuPackagePower(s: StaticSnapshot, run: LoadRun | null, cpuPptW: n
     return finding(base, info(`PBO / raised ${name} active — measured ${measured} W over the stock ${stock} W; set your ${name} limit here.`, setIt));
   }
   const limit = configured ?? stock!;
-  const label = configured === null ? ' (stock)' : '';
+  const label = configured === null ? ' (stock)' : ' (set by you)';
   if (configured !== null && measured > configured * PBO_OVER_STOCK) {
     return finding(base, info(`Measured ${measured} W over the configured ${configured} W limit: the limit set here looks lower than the one the BIOS applies.`, `Check the ${name} set on the Monitor page against the BIOS or Ryzen Master.`));
   }
@@ -722,6 +774,59 @@ function checkAiModel(s: StaticSnapshot): AuditFinding | null {
   });
 }
 
+/**
+ * Timer resolution (plan section 8). Windows ticks at 15.625 ms by default; games raise it to
+ * 0.5–1 ms while they run and the kernel drops it again when they exit. During the audit
+ * nothing should be running, so a timer held at the finest step is a background program's,
+ * and the one the trace names is the finding. Strata Tune's own processes (Chromium raises
+ * the timer while the window animates) are never the culprit. On a desktop the cost is a
+ * little idle power; on a laptop it is battery, which is where it earns a warning.
+ */
+/**
+ * One holder per image name, the finest period it asks for and how many of its processes
+ * hold the timer: the trace lists every process, and a chat app with nine helpers (the dev
+ * box read claude.exe nine times, Discord.exe three) is one thing to close, not nine.
+ * Finest period first, then the most processes.
+ */
+export function timerHolders(foreign: readonly TimerRequester[]): string[] {
+  const byName = new Map<string, { count: number; periodMs: number | null }>();
+  for (const r of foreign) {
+    const g = byName.get(r.name) ?? { count: 0, periodMs: null };
+    g.count += 1;
+    if (r.periodMs !== null && (g.periodMs === null || r.periodMs < g.periodMs)) g.periodMs = r.periodMs;
+    byName.set(r.name, g);
+  }
+  return [...byName]
+    .sort((a, b) => (a[1].periodMs ?? Number.MAX_VALUE) - (b[1].periodMs ?? Number.MAX_VALUE) || b[1].count - a[1].count)
+    .map(([name, g]) => `${name}${g.count > 1 ? ` ×${g.count}` : ''}${g.periodMs !== null ? ` (asks for ${g.periodMs} ms)` : ''}`);
+}
+
+function checkTimerResolution(t: Timers | null, s: StaticSnapshot): AuditFinding {
+  const base: Base = { id: 'timer-resolution', title: 'Windows timer resolution', costText: 'A background program holding the timer at its finest step costs battery on laptops and a little idle power on desktops.', fixWhere: 'windows' };
+  if (!t || t.currentMs === null || t.coarsestMs === null || t.finestMs === null) return finding(base, unknown("Read from the collector's timer probe.", 'Run the audit; the timer is read with it.'));
+  const current = `${t.currentMs} ms`;
+  const clock = `The performance counter runs at ${(t.qpcFrequency / 1e6).toFixed(t.qpcFrequency % 1e6 ? 3 : 0)} MHz from the ${t.qpcSource}.`;
+  if (t.currentMs >= t.coarsestMs) {
+    return finding(base, info(`${current}, the platform default: nothing is holding it raised. A game raises it to 0.5–1 ms itself while it runs; if one does not, its frame pacing gets uneven. ${clock}`));
+  }
+  const foreign = (t.requesters ?? []).filter((r) => !r.own);
+  const names = timerHolders(foreign);
+  const atFinest = t.currentMs <= t.finestMs;
+  if (foreign.length === 0) {
+    const who = t.requesters === null ? 'the trace that names the holder did not run' : t.requesters.length ? 'only Strata Tune itself holds it, which ends when this window closes' : t.requestersNote ?? 'the trace listed no holder';
+    return finding(base, info(`${current}, raised from the ${t.coarsestMs} ms default; ${who}. ${clock}`));
+  }
+  if (!atFinest) {
+    return finding(base, info(`${current}, raised from the ${t.coarsestMs} ms default by ${list(names)}. Normal for a media or chat app; it drops back when they close. ${clock}`));
+  }
+  const cost = s.chassis.isLaptop ? 'On a laptop this costs battery: the CPU cannot rest between ticks.' : 'On a desktop this costs a little idle power and nothing in games.';
+  return finding(base, {
+    state: 'warn', severity: 1, costEstimate: 0.01,
+    detail: `${list(names)} ${names.length === 1 ? 'holds' : 'hold'} the timer at its finest step, ${current}, with nothing running that needs it. ${cost} ${clock}`,
+    fix: `Close ${names.length === 1 ? 'it' : 'them'} when you are not using ${names.length === 1 ? 'it' : 'them'}, or stop ${names.length === 1 ? 'it' : 'them'} from starting with Windows (Settings > Apps > Startup). Games raise the timer themselves.`
+  });
+}
+
 const score = (f: AuditFinding) => Math.round(f.severity * f.costEstimate * 1e6);
 const biosFirst = (f: AuditFinding) => (f.fixWhere === 'bios' ? 0 : 1);
 
@@ -751,12 +856,13 @@ export function runAudit(inputs: AuditInputs): AuditFinding[] {
     checkPowerLimit(s),
     checkGpuOffsets(s, inputs.thermalRamp),
     checkGpuUnits(s, inputs.fillRate),
-    checkCpuThermal(s, inputs.cpuLoad),
+    checkCpuThermal(s, inputs.cpuLoad, inputs.curveOptimizer),
     checkCpuAllCoreClock(s, inputs.cpuLoad),
     checkCpuPackagePower(s, inputs.cpuLoad, inputs.cpuPptW),
     checkCpuSmt(s),
     checkCpuIdleClock(inputs.cpuLoad),
-    checkAiModel(s)
+    checkAiModel(s),
+    checkTimerResolution(inputs.timers ?? null, s)
   ];
   return rankFindings(findings.filter((f): f is AuditFinding => f !== null));
 }

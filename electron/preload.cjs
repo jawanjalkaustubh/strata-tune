@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('strata', {
     gpu: () => ipcRenderer.invoke('collector:gpu'),
     hogs: (seconds) => ipcRenderer.invoke('collector:hogs', seconds),
     load: (kind, seconds) => ipcRenderer.invoke('collector:load', kind, seconds),
+    // Stop (plan 17c): cancels the load run in flight; the pending load() then resolves as cancelled.
+    cancelLoad: () => ipcRenderer.invoke('collector:cancelLoad'),
     // Ticks flow only while a page asks for them (the Monitor, later the Tune view).
     subscribe: () => ipcRenderer.send('collector:subscribe'),
     unsubscribe: () => ipcRenderer.send('collector:unsubscribe'),
@@ -40,6 +42,9 @@ contextBridge.exposeInMainWorld('strata', {
   advisor: {
     benchGpu: (req) => ipcRenderer.invoke('bench:gpu', req),
     benchOllama: (model) => ipcRenderer.invoke('bench:ollama', model),
+    // Stop (plan 17c): the pending benchGpu / benchOllama then answers { error, code: 'cancelled' }.
+    cancelBenchGpu: () => ipcRenderer.invoke('bench:cancelGpu'),
+    cancelBenchOllama: () => ipcRenderer.invoke('bench:cancelOllama'),
     ollamaList: () => ipcRenderer.invoke('ollama:list')
   },
 
@@ -61,8 +66,26 @@ contextBridge.exposeInMainWorld('strata', {
     setVerdict: (id, verdict) => ipcRenderer.invoke('sessions:verdict', id, verdict),
     reveal: (id) => ipcRenderer.invoke('sessions:reveal', id),
     exportHtml: (data) => ipcRenderer.invoke('sessions:exportHtml', data),
+    exportSheet: (sheet) => ipcRenderer.invoke('sessions:exportSheet', sheet),
     trashCount: () => ipcRenderer.invoke('sessions:trashCount'),
     emptyTrash: () => ipcRenderer.invoke('sessions:emptyTrash')
+  },
+
+  // About hub (electron/about.ts): Windows and DirectX facts, the bundled legal texts, the
+  // collector's timer probe, a save dialog for the tools' files, the logs folder.
+  about: {
+    system: () => ipcRenderer.invoke('about:system'),
+    directx: () => ipcRenderer.invoke('about:directx'),
+    legal: () => ipcRenderer.invoke('about:legal'),
+    timers: (traceSeconds) => ipcRenderer.invoke('about:timers', traceSeconds),
+    saveFile: (req) => ipcRenderer.invoke('about:saveFile', req),
+    openLogs: () => ipcRenderer.invoke('about:openLogs')
+  },
+
+  // First launch (electron/legal.ts, plan 27a): the disclaimer's acceptance record; accept starts the collector it held back.
+  legal: {
+    status: () => ipcRenderer.invoke('legal:status'),
+    accept: () => ipcRenderer.invoke('legal:accept')
   },
 
   // Fix verification (electron/history.ts): { what, before, after, date } entries in history.json.
@@ -75,10 +98,8 @@ contextBridge.exposeInMainWorld('strata', {
   tune: {
     state: () => ipcRenderer.invoke('tune:state'),
     enable: (enabled, acknowledgedAt) => ipcRenderer.invoke('tune:enable', enabled, acknowledgedAt),
-    start: (kind, enabled) => ipcRenderer.invoke('tune:start', kind, enabled),
-    validate: () => ipcRenderer.invoke('tune:validate'),
+    start: (kind, enabled, vendor, caps) => ipcRenderer.invoke('tune:start', kind, enabled, vendor, caps),
     stop: () => ipcRenderer.invoke('tune:stop'),
-    keep: () => ipcRenderer.invoke('tune:keep'),
     revert: () => ipcRenderer.invoke('tune:revert'),
     export: () => ipcRenderer.invoke('tune:export'),
     flight: () => ipcRenderer.invoke('tune:flight'),

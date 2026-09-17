@@ -4,20 +4,19 @@ using StrataTune.Shared;
 namespace StrataTune.Collector;
 
 /// <summary>The /tune/* surface: one run at a time, the refusals that keep a hunt honest
-/// (plan sections 16 and 20), the keep / revert / enable transitions of the state file,
-/// and the status the UI reads. The GPU work is in <see cref="TuneHunt"/>; the file is
+/// (plan sections 16 and 20), the revert / enable transitions of the state file, and the
+/// status the UI reads. The GPU work is in <see cref="TuneHunt"/>; the file is
 /// <see cref="TuneStateStore"/>. Nothing here runs unless Tune is enabled on both sides:
 /// the UI's setting arrives with the start request and the state file keeps its own flag.
-/// Every mutation (start, keep, revert, enable) goes through one async lock and waits for
-/// the start-of-session pass, so a keep cannot land between a start's checks and its
-/// baseline read, and nothing acts on a crash before it has been attributed.</summary>
+/// Every mutation (start, revert, enable) goes through one async lock and waits for the
+/// revert-at-start pass, so nothing acts on a crash before it has been attributed.</summary>
 internal sealed class TuneSupervisor
 {
     public const int Conflict = StatusCodes.Status409Conflict, BadRequest = StatusCodes.Status400BadRequest, Forbidden = StatusCodes.Status403Forbidden;
     private const int IdLength = 12;
-    // The vendor tools re-apply their profiles on timers and would fight a hunt for the
-    // same NVAPI call; the bench and a capture load the GPU; another worker is a load run.
-    private static readonly string[] VendorTools = ["GPU Tweak III", "GPUTweakIII", "MSIAfterburner"];
+    // The bench and a capture load the GPU; another worker is a load run. A vendor OC tool
+    // may stay open: its applied tune is the baseline, and one that changes clocks mid-run
+    // is caught on the held clock (plan section 16, the card as found).
     private static readonly string[] GpuUsers = ["strata-tune-bench", "StrataTune.Bench", "strata-tune-worker"];
     private const string CapturePrefix = "PresentMon-";
     // Windows bug-checks on the sixth GPU hang in 60 s (dependencies.md): no start within
@@ -61,34 +60,39 @@ internal sealed class TuneSupervisor
             log.Write("tune: another collector on this machine holds the tune state (another user's session); Tune is read-only here");
     }
 
-    /// <summary>The start-of-session pass: a crash is reverted and its flight file kept, a
-    /// kept result that survived a clean boot is promoted, the logon task is brought in line
-    /// with the flag and this exe's location, and the session is marked as running so a
-    /// crash from here on is recognised next time.</summary>
-    public void Reconcile()
+    /// <summary>The first thing every collector start does (plan section 16): a rung left on
+    /// the card by a collector that died is reverted before a port is bound or a sensor
+    /// opened, and a crash keeps its flight file. Cheap on an ordinary start: the file is
+    /// read, nothing is written to the driver.</summary>
+    public void RevertAtStart()
     {
-        var before = _store.Current;
         if (!_ownsMachine)
         {
-            _log.Write("tune: start-of-session pass skipped: another collector owns the state");
+            _log.Write("tune: revert-at-start pass skipped: another collector owns the state");
             _reconciled = true;
             return;
         }
+        var before = _store.Current.State;
         if (!TuneStateMachine.Reconcile(_store, _log.Write, out var outcome))
-            _log.Write($"tune: state {outcome} could not be reverted at start; the logon task will retry");
-        if (_store.Current.State == TuneRollback.Reverted && before.State != TuneRollback.Reverted)
+            _log.Write($"tune: state {outcome.Wire()} could not be reverted at start; the next start, or POST /tune/revert, retries");
+        if (_store.Current.State == TuneRollback.Reverted && before != TuneRollback.Reverted)
             FlightRecorder.KeepLastCrash(_log.Write);
-        _store.MarkRunning();
-        RevertTask.Reconcile(_store.Current.Enabled, _log.Write);
         _reconciled = true;
+    }
+
+    /// <summary>After the sources have warmed, off the start-up path: the card as found goes
+    /// to the log, and a logon task left by the Phase 8 build is removed.</summary>
+    public void AfterWarm()
+    {
         var deltas = NvapiPstates.ReadDeltas(out var failure);
         _log.Write(deltas is null
             ? $"tune: NVAPI pstates unavailable: {failure}"
-            : $"tune: NVAPI P0 deltas core {deltas.Deltas.CoreKhz / 1000} / memory {deltas.Deltas.MemKhz / 1000} MHz (range core {deltas.CoreMinKhz / 1000}..{deltas.CoreMaxKhz / 1000}, memory {deltas.MemMinKhz / 1000}..{deltas.MemMaxKhz / 1000}, editable {deltas.Editable}, {NvapiPstates.GpuCount} GPU(s)), state {_store.Current.State.Wire()}");
+            : $"tune: NVAPI P0 deltas core {deltas.Deltas.CoreMhz} / memory {deltas.Deltas.MemMhz} MHz (range core {deltas.CoreMinKhz / 1000}..{deltas.CoreMaxKhz / 1000}, memory {deltas.MemMinKhz / 1000}..{deltas.MemMaxKhz / 1000}, editable {deltas.Editable}, {NvapiPstates.GpuCount} GPU(s)), state {_store.Current.State.Wire()}");
         // The offsets do not survive a boot: a baseline the file remembers from before one
         // is not what the card holds now, and the strip would show a value the card lacks.
-        if (deltas is not null && _store.Current.State == TuneRollback.KnownGood && _store.Current.Baseline is { } remembered && remembered != deltas.Deltas)
-            _store.Baseline(deltas.Deltas, $"baseline re-read from the card at start: the driver holds core {deltas.Deltas.CoreKhz / 1000} / memory {deltas.Deltas.MemKhz / 1000} MHz, the file remembered {remembered.CoreKhz / 1000} / {remembered.MemKhz / 1000} (offsets do not survive a reboot)");
+        if (deltas is not null && _ownsMachine && _store.Current.State == TuneRollback.Idle && _store.Current.Baseline is { } remembered && remembered != deltas.Deltas)
+            _store.Baseline(deltas.Deltas, null, $"baseline re-read from the card at start: the driver holds core {deltas.Deltas.CoreMhz} / memory {deltas.Deltas.MemMhz} MHz, the file remembered {remembered.CoreMhz} / {remembered.MemMhz} (offsets do not survive a reboot)");
+        LegacyLogonTask.RemoveIfPresent(_log.Write);
     }
 
     /// <summary>A run is active until its finally has restored the baseline and released
@@ -112,11 +116,11 @@ internal sealed class TuneSupervisor
     {
         var f = _store.Current;
         var range = NvapiPstates.ReadDeltas(out var failure);
-        return new TuneStatus(f.Enabled, f.State, f.Baseline, f.Candidate, f.AppliedAt, f.LastCleanShutdown, f.Reverted, f.Result, f.History,
-            new TuneNvapi(range is not null, failure, range?.Deltas, range), Run(), RevertTask.IsRegistered(), FlightRecorder.HasLastCrash, TuneStateStore.FilePath)
+        return new TuneStatus(f.Enabled, f.State, f.Baseline, f.Candidate, f.AppliedAt, f.Reverted, f.Result, f.History,
+            new TuneNvapi(range is not null, failure, range?.Deltas, range), Run(), FlightRecorder.HasLastCrash, TuneStateStore.FilePath)
         {
-            RevertTaskProblem = RevertTask.Problem,
             Problem = Problem(),
+            EstimateMinutes = TuneTiming.EstimateMinutes(TuneRunKind.Hunt, null, f.Vendor is not null),
         };
     }
 
@@ -137,7 +141,7 @@ internal sealed class TuneSupervisor
 
     private string? Problem() =>
         !_ownsMachine ? "another collector on this machine (another user's session) holds the tune state; Tune is read-only here"
-        : !_reconciled ? "the start-of-session pass has not run yet"
+        : !_reconciled ? "the revert-at-start pass has not run yet"
         : _store.Problem;
 
     public async Task<(int Status, string Refusal)> TryStartAsync(TuneStartRequest request)
@@ -156,17 +160,12 @@ internal sealed class TuneSupervisor
             return (Conflict, tdr);
         if (Active)
             return (Conflict, "a tune run is already going");
-        var state = _store.Current.State;
-        if (state == TuneRollback.Validating)
-            return (Conflict, "a kept result is on the card: revert it, or reboot once so a clean boot promotes it, before another run");
-        if (state == TuneRollback.Pending)
-            return (Conflict, "the state file says a candidate is still applied and could not be reverted; POST /tune/revert first");
+        if (_store.Current.State == TuneRollback.Pending)
+            return (Conflict, "the state file says a rung is still applied and could not be reverted; POST /tune/revert first");
         if (Cooldown() is { } cooling)
             return (Conflict, cooling);
         if (FamilyGpuLock.HeldBy() is { } holder)
             return (Conflict, holder);
-        if (VendorToolRunning() is { } tool)
-            return (Conflict, $"{tool} is running; its profile timers would fight the hunt for the same clock offsets. Close it for the run (its settings stay applied)");
         foreach (var name in GpuUsers)
             if (Running(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase)))
                 return (Conflict, $"{name}.exe is running (a bench or a load run): wait for it to finish");
@@ -183,7 +182,7 @@ internal sealed class TuneSupervisor
             {
                 if (_run is { EndedAt: null })
                     return (Conflict, "a tune run is already going");
-                if (_store.Current.State is TuneRollback.Validating or TuneRollback.Pending)
+                if (_store.Current.State == TuneRollback.Pending)
                     return (Conflict, "the state changed while the start was being checked; read it again");
                 try
                 {
@@ -194,11 +193,17 @@ internal sealed class TuneSupervisor
                     return (Conflict, $"the family's gpu.lock could not be taken: {e.Message}");
                 }
                 if (_store.Current.State == TuneRollback.Reverted)
-                    _store.KnownGood("a new run starts: the last crash's revert is acknowledged");
-                run = new TuneRunContext(Guid.NewGuid().ToString("N")[..IdLength], request.EffectiveKind) { MaxCandidates = request.MaxCandidates is > 0 and var cap ? cap : null };
+                    _store.Idle("a new run starts: the last crash's revert is acknowledged");
+                run = new TuneRunContext(Guid.NewGuid().ToString("N")[..IdLength], request.EffectiveKind)
+                {
+                    MaxCandidates = request.MaxCandidates is > 0 and var cap ? cap : null,
+                    VendorSlider = request.Vendor,
+                    CoreCapMhz = request.CoreCapMhz is > 0 and var coreCap ? coreCap : null,
+                    MemCapMhz = request.MemCapMhz is > 0 and var memCap ? memCap : null,
+                };
                 _run = run;
             }
-            _log.Write($"tune run {run.Id}: {run.Kind} start requested");
+            _log.Write($"tune run {run.Id}: {run.Kind} start requested{(run.CoreCapMhz is { } cc ? $", never above {cc} MHz core" : "")}{(run.MemCapMhz is { } mc ? $", never above {mc} MHz memory" : "")}");
             _ = _hunt.RunAsync(run);
             return (StatusCodes.Status200OK, "");
         }
@@ -222,14 +227,6 @@ internal sealed class TuneSupervisor
         return null;
     }
 
-    private static string? VendorToolRunning()
-    {
-        foreach (var name in VendorTools)
-            if (Running(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase)))
-                return name;
-        return null;
-    }
-
     private static bool Running(Func<string, bool> nameMatches)
     {
         var found = false;
@@ -250,39 +247,9 @@ internal sealed class TuneSupervisor
             if (_run is not { State: TuneRunState.Running } run)
                 return (false, "no tune run is going");
             run.Cancel.Cancel();
-            return (true, "stopping: the worker is killed and the baseline restored");
+            return (true, "stopping: the worker is killed and the card left as found");
         }
     }
-
-    /// <summary>Puts a validated result on the card and leaves it there as VALIDATING until
-    /// the next boot; a clean shutdown and a clean boot promote it (<see cref="TuneStateMachine"/>).
-    /// The offsets are not re-applied after that boot: the export text is what persists.</summary>
-    public (bool Ok, string Message) Keep() => Mutate(() =>
-    {
-        if (Active)
-            return (false, "a run is going; wait for it to end");
-        var f = _store.Current;
-        if (!f.Enabled)
-            return (false, "Tune is not enabled: turn it on in Settings first");
-        if (f.State != TuneRollback.KnownGood)
-            return (false, $"the state is {f.State}, not KNOWN_GOOD");
-        if (f.Result is not { Validated: true } result)
-            return (false, "no validated result: run a hunt, then a validate run, first");
-        if (result.Baseline != f.Baseline)
-            return (false, "the result was measured from a different baseline than the card runs now; run the hunt again");
-        if (VendorToolRunning() is { } tool)
-            return (false, $"{tool} is running; its profile timers would overwrite the kept offsets. Close it first");
-        if (!_store.Pending(result.Deltas, "keeping the validated result"))
-            return (false, $"the state file at {TuneStateStore.FilePath} could not be written; nothing was applied");
-        if (!NvapiPstates.ApplyDeltas(result.Deltas, out var status))
-        {
-            NvapiPstates.ApplyDeltas(f.Baseline!, out var restore);
-            _store.KnownGood($"keep failed ({status}); baseline re-applied: {restore}");
-            return (false, $"the driver refused the result: {status}");
-        }
-        _store.Validating(result.Deltas, $"kept: {status}. On the card until the next boot; a clean shutdown and a clean boot promote it to known-good");
-        return (true, "the result is on the card until the next boot; a clean shutdown and a clean boot make it the known-good (the offsets are not re-applied after that: the export text is what persists)");
-    });
 
     /// <summary>Whatever of ours is on the card comes off; a crash revert is acknowledged.</summary>
     public (bool Ok, string Message) Revert()
@@ -297,16 +264,16 @@ internal sealed class TuneSupervisor
             var f = _store.Current;
             switch (f.State)
             {
-                case TuneRollback.Validating or TuneRollback.Pending when f.Baseline is { } baseline:
+                case TuneRollback.Pending when f.Baseline is { } baseline:
                     if (!NvapiPstates.ApplyDeltas(baseline, out var status))
                         return (false, $"the driver refused the baseline: {status}");
-                    _store.KnownGood($"reverted by the user: {status}");
+                    _store.Idle($"reverted by the user: {status}");
                     return (true, $"baseline restored: {status}");
-                case TuneRollback.Validating or TuneRollback.Pending:
-                    _store.KnownGood("acknowledged by the user: the file had no baseline to restore, so nothing was applied (a vendor tool's offsets are left as they are)");
+                case TuneRollback.Pending:
+                    _store.Idle("acknowledged by the user: the file had no baseline to restore, so nothing was applied (a vendor tool's offsets are left as they are)");
                     return (true, "acknowledged: the file named no baseline, so nothing was written to the card");
                 case TuneRollback.Reverted:
-                    _store.KnownGood("the crash revert is acknowledged");
+                    _store.Idle("the crash revert is acknowledged");
                     return (true, "acknowledged; the baseline was already restored at start");
                 default:
                     return (false, "nothing of Tune's is applied");
@@ -315,8 +282,8 @@ internal sealed class TuneSupervisor
     }
 
     /// <summary>Enable records the warning's acknowledgement (plan section 27a: date, app
-    /// version, GPU) and registers the logon revert task; disable takes anything of ours off
-    /// the card first, then removes the task, so Tune off means nothing left behind.</summary>
+    /// version, GPU); disable takes anything of ours off the card first, so Tune off means
+    /// nothing left behind.</summary>
     public (bool Ok, string Message) SetEnabled(TuneEnableRequest request) =>
         request.Enabled ? Mutate(() => Enable(request)) : Mutate(Disable, evenWithProblem: true);
 
@@ -324,38 +291,34 @@ internal sealed class TuneSupervisor
     {
         var gpu = _sources.NvmlSampler?.Latest.FirstOrDefault()?.Name ?? "unknown GPU";
         var note = $"Tune enabled; warning acknowledged {request.AcknowledgedAt ?? DateTimeOffset.UtcNow.ToString("O")}, app {request.AppVersion ?? "unknown"}, GPU {gpu}";
-        if (!_store.SetEnabled(true, note))
-            return (false, $"the state file at {TuneStateStore.FilePath} could not be written");
-        var registered = RevertTask.Register(_log.Write);
-        return (true, registered
-            ? "Tune enabled; the logon revert task is registered"
-            : $"Tune enabled, but {RevertTask.Problem ?? "the logon revert task could not be registered"}; a hard hang is reverted only at the next app start");
+        return _store.SetEnabled(true, note)
+            ? (true, "Tune enabled")
+            : (false, $"the state file at {TuneStateStore.FilePath} could not be written");
     }
 
     // Disable works even when the file cannot be trusted, minus the apply: the flag comes
-    // off and the task goes, but a baseline from an untrusted file is never written to the card.
+    // off, but a baseline from an untrusted file is never written to the card.
     private (bool Ok, string Message) Disable()
     {
         if (Active)
             return (false, "a run is going; stop it before disabling Tune");
         var f = _store.Current;
-        if (f.State is TuneRollback.Validating or TuneRollback.Pending && f.Baseline is { } baseline)
+        if (f.State == TuneRollback.Pending && f.Baseline is { } baseline)
         {
             if (_store.Problem is { } problem)
                 _log.Write($"tune: disable leaves the card as it is: the file's baseline is not trusted ({problem})");
             else if (!NvapiPstates.ApplyDeltas(baseline, out var status))
-                return (false, $"cannot disable with a result still applied: the driver refused the baseline: {status}");
+                return (false, $"cannot disable with a rung still applied: the driver refused the baseline: {status}");
             else
-                _store.KnownGood($"reverted on disable: {status}");
+                _store.Idle($"reverted on disable: {status}");
         }
         _store.SetEnabled(false, "Tune disabled");
-        var removed = RevertTask.Remove(_log.Write);
-        return (true, removed ? "Tune disabled; the logon revert task is removed" : "Tune disabled, but the logon revert task could not be removed (schtasks failed); it is harmless with nothing pending");
+        return (true, "Tune disabled");
     }
 
-    // Keep, Revert and SetEnabled share the start's lock and its preconditions: this
-    // collector owns the state, the start-of-session pass has attributed any crash, and
-    // (except for a disable) the file can be trusted.
+    // Revert and SetEnabled share the start's lock and its preconditions: this collector
+    // owns the state, the revert-at-start pass has attributed any crash, and (except for a
+    // disable) the file can be trusted.
     private (bool Ok, string Message) Mutate(Func<(bool Ok, string Message)> action, bool evenWithProblem = false)
     {
         if (!_ownsMachine || !_reconciled)
@@ -373,54 +336,117 @@ internal sealed class TuneSupervisor
         }
     }
 
-    /// <summary>The copy-pasteable Afterburner / GPU Tweak value set (plan section 16).</summary>
+    /// <summary>The value set to type into the vendor tool (plan section 16): our units,
+    /// the sliders' units, the clocks it was measured from, and one line saying the card
+    /// was left as found.</summary>
     public TuneExport? Export()
     {
         if (_store.Current.Result is not { } r)
             return null;
-        var core = r.Deltas.CoreKhz / 1000;
-        var mem = r.Deltas.MemKhz / 1000;
-        var baseline = new PstateDeltas(r.Baseline.CoreKhz / 1000, r.Baseline.MemKhz / 1000);
         var date = DateTimeOffset.TryParse(r.FoundAt, null, System.Globalization.DateTimeStyles.RoundtripKind, out var at) ? at.ToLocalTime().ToString("yyyy-MM-dd") : r.FoundAt[..10];
-        var certified = r.Promoted ? ", validated 5 min heavy + 2 min transient, and kept through a clean shutdown and a clean boot"
-            : r.Validated ? $", validated 5 min heavy + 2 min transient{(r.ThrottledFraction is > TuneLadder.ThrottledFractionLimit and var t ? $" (power- or thermal-limited {t:P0} of the time at your fan curve)" : "")}"
-            : ", not yet validated";
-        var clocks = r.ReferenceSmMhz is { } sm && r.ReferenceMemMhz is { } mm
-            ? $"Measured with the card at core {sm} / memory {mm} MHz under load with nothing of Strata Tune's applied; an OC a vendor tool applies by another route (VF points) is inside those clocks, not in the baseline above."
-            : "The clocks under load during the reference run were not recorded.";
-        var text = $"""
-            Strata Tune {r.Kind} result, {date} ({r.Confidence} confidence{certified})
-              GPU core clock offset:    {core:+0;-0;+0} MHz
-              Memory clock offset:      {mem:+0;-0;+0} MHz
-            {(r.Deltas == r.Baseline ? "No rung above the baseline could be certified, so these are the baseline values, not a finding." : "These are absolute offsets to type into MSI Afterburner or ASUS GPU Tweak III.")}
-            They were measured from a baseline of core {baseline.CoreMhz:+0;-0;+0} / memory {baseline.MemMhz:+0;-0;+0} MHz (the P0 offsets the driver reported when the hunt started); a different baseline or a driver update means a new hunt.
-            {clocks}
-            Fans were on your own curve throughout: Strata Tune does not control them. Offsets applied by Strata Tune do not survive a reboot; this text is what persists.
-            """;
-        return new TuneExport(core, mem, baseline, text, r.Validated, r.Confidence, r.FoundAt);
+        return new TuneExport(r.Certified, VendorUnits.Slider(r.Certified), r.Vendor is { } v ? VendorUnits.Total(v, r.Certified) : null, r.BaselineHeld, r.HeldAtCertified, r.FirstFailure, ExportText(r, date), r.Confidence, r.FoundAt)
+        {
+            Vendor = r.Vendor,
+            Score = r.Official,
+            AsFound = r.AsFound,
+            Rungs = r.Rungs,
+            HoldsNow = r.HoldsNow,
+        };
+    }
+
+    /// <summary>Mirrored in src/analysis/tune.ts exportText, where it is tested.</summary>
+    public static string ExportText(TuneResult r, string date)
+    {
+        var c = r.Certified;
+        var v = VendorUnits.Slider(c);
+        // A vendor tune was reproduced through our route and climbed from; a non-zero baseline
+        // without one is a tune applied by our own route (the driver reads it back); a zero
+        // baseline is the card as found, stock or not.
+        var found = r.Vendor is { } vendor ? $"your tune (core +{vendor.CoreMhz} / memory +{vendor.MemMhz} on the slider)"
+            : r.Baseline.CoreMhz != 0 || r.Baseline.MemMhz != 0 ? $"your tune (P0 core +{r.Baseline.CoreMhz} / memory +{r.Baseline.MemMhz})"
+            : "the card as found";
+        var held = r.BaselineHeld is { } b && r.HeldAtCertified is { } h
+            ? $"{found} holds {b.SmMhz} / {b.MemMhz}; certified +{c.CoreMhz} core / +{c.MemMhz} memory on top → {h.SmMhz} / {h.MemMhz}"
+            : $"certified +{c.CoreMhz} core / +{c.MemMhz} memory on top of {found}";
+        var failure = r.FirstFailure is { } f
+            ? $"; first {(f.Reason == TuneStopReason.Hash ? "silent error" : f.Reason == TuneStopReason.DeviceLost ? "driver reset" : "regression")} at +{f.OffsetMhz} {f.Ladder.ToString().ToLowerInvariant()} (stage {f.Stage})"
+            : "";
+        var finding = c.CoreMhz == 0 && c.MemMhz == 0
+            ? "Nothing above the card as found could be certified; these are not values to type anywhere."
+            : "Type these into your vendor tool; Strata Tune left the card as it found it.";
+        // Labelled by what the user does with each pair (the page's value set uses the same words): the whole tune to type first, the slider-unit step on top of the user's own second.
+        var slider = r.Vendor is { } vt
+            ? $"Type into GPU Tweak / Afterburner: core +{VendorUnits.Total(vt, c).CoreMhz}, memory +{VendorUnits.Total(vt, c).MemMhz} (your +{vt.CoreMhz} / +{vt.MemMhz} plus core +{v.CoreMhz}, memory +{v.MemMhz} on top in slider units; their memory slider counts the effective rate, twice ours)"
+            : $"Type into GPU Tweak / Afterburner: core +{v.CoreMhz}, memory +{v.MemMhz} (their memory slider counts the effective rate, twice ours)";
+        var left = r.Vendor is not null
+            ? $"Nothing changed voltage, power limits or fans; your tune was put back through the driver's P0 offsets (core +{r.Baseline.CoreMhz} / memory +{r.Baseline.MemMhz} NVML MHz), so press Apply in the vendor tool once if it shows something else now; a driver update or a different tune means a new hunt."
+            : "Nothing changed voltage, power limits or fans, and the P0 offsets are back where they were; a driver update or a different tune means a new hunt.";
+        var lines = new List<string>
+        {
+            $"Strata Tune headroom, {date} ({r.Confidence.ToString().ToLowerInvariant()} confidence; core / memory clocks in NVML MHz under load)",
+            $"{held}{failure}",
+        };
+        if (ScoreLine(r) is { } score)
+            lines.Add(score);
+        // One line per ladder stop, so a file that says "+0 core" also says why (the top of the
+        // clock table, a cap, a check that stopped the ladder), not only when a stage failed.
+        foreach (var stop in r.Stops)
+            lines.Add($"{stop.Ladder.ToString().ToLowerInvariant()} ladder ended: {stop.Note}");
+        lines.Add(slider);
+        lines.Add(finding);
+        lines.Add(HoldsNowLine(r));
+        lines.Add(left);
+        return string.Join('\n', lines);
+    }
+
+    /// <summary>"11,930 points at +45 / +60: +1.1 % over your current tune, +19 % over a
+    /// reference 5090" (plan section 16); the as-found score alone when nothing above it was
+    /// certified; nothing before the as-found run has scored.</summary>
+    public static string? ScoreLine(TuneResult r)
+    {
+        if (r.AsFound?.Score is not { } found)
+            return null;
+        var c = r.Certified;
+        if (r.Official?.Score is { } official)
+            return $"{official.Points:N0} points at +{c.CoreMhz} / +{c.MemMhz}: {TuneScoring.PercentOver(official.Points, found.Points):+0.0;-0.0} % over your current tune ({found.Points:N0}), {TuneScoring.PercentOver(official.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % over a reference 5090 ({TuneScoring.ReferencePoints:N0}){(r.Official.SteppedDown ? "; the official run passed one fine step below the ladders' rungs" : "")}";
+        return $"{found.Points:N0} points as found: {TuneScoring.PercentOver(found.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % over a reference 5090 ({TuneScoring.ReferencePoints:N0}){(r.Official is not null ? $"; the official run of the certified pair failed ({r.Official.Note})" : "")}";
+    }
+
+    /// <summary>Plan section 16, rule 4: what the card holds now against as found, and "re-apply
+    /// in your vendor tool" when they differ by more than 1 %.</summary>
+    public static string HoldsNowLine(TuneResult r)
+    {
+        if (r.HoldsNow is not { } now)
+            return r.BaselineHeld is { } b0
+                ? $"The card was not measured after the restore (the run was stopped or ended early); as found it held {b0.SmMhz} / {b0.MemMhz}: check the vendor tool shows your tune."
+                : "The card was not measured after the restore; check the vendor tool shows your tune.";
+        if (r.BaselineHeld is not { } b)
+            return $"The card holds {now.SmMhz} / {now.MemMhz} now.";
+        return TuneLadder.HoldsDiffer(b, now)
+            ? $"The card holds {now.SmMhz} / {now.MemMhz} now; as found {b.SmMhz} / {b.MemMhz}: re-apply in your vendor tool."
+            : $"The card holds {now.SmMhz} / {now.MemMhz} now; as found {b.SmMhz} / {b.MemMhz} (the same within 1 %).";
     }
 
     /// <summary>The collector is stopping, or dying: the worker dies, the baseline goes back
     /// on the card now (not when the async loop gets to it, and again if the loop's own
-    /// restore failed), and the file records a clean exit. Idempotent, so the shutdown
-    /// route, ProcessExit and an unhandled exception can all call it.</summary>
+    /// restore failed), and a rung still pending is marked as left by an orderly stop, so
+    /// the next start does not call it a hang. Idempotent, so the shutdown route,
+    /// ProcessExit and an unhandled exception can all call it.</summary>
     public void Abort()
     {
         TuneRunContext? run;
         lock (_gate)
             run = _run;
-        if (run is not null && (run.State == TuneRunState.Running || (run.Applied && !run.Restored)))
-        {
-            run.Cancel.Cancel();
-            TuneHunt.KillWorker(run);
-            _hunt.Restore(run);
-            _recorder.Stop(keepFile: !run.Restored);
-            FamilyGpuLock.Release();
-        }
-        // A quit before the start-of-session pass ran must not turn a crash's VALIDATING into
-        // a clean one: the next start would promote the candidate that took the machine down.
-        // A collector that does not own the state never writes the file at all.
+        if (run is null || (run.State != TuneRunState.Running && (!run.Applied || run.Restored)))
+            return;
+        run.Cancel.Cancel();
+        TuneHunt.KillWorker(run);
+        // Before the restore, whose retries may outlast the exit deadline: the marker says
+        // this exit was known about, whatever the driver then does.
         if (_reconciled && _ownsMachine)
-            _store.MarkCleanShutdown();
+            _store.OrderlyStop();
+        _hunt.Restore(run);
+        _recorder.Stop(keepFile: !run.Restored);
+        FamilyGpuLock.Release();
     }
 }

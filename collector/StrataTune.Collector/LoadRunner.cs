@@ -12,10 +12,12 @@ namespace StrataTune.Collector;
 /// its exit code is reported as is: 0 ok, 3 no hardware GPU, 10 device lost. The fillrate
 /// kind starts the bench beside this exe instead (--fillrate --json), samples the GPU the
 /// same way, and keeps the bench's result line, so the pixel rate and the SM clock it was
-/// measured at travel together (the missing-ROPs cross-check, plan section 8).</summary>
+/// measured at travel together (the missing-ROPs cross-check, plan section 8). POST
+/// /load/{id}/cancel (plan section 17c) kills the process and marks the run cancelled.</summary>
 internal sealed class LoadRunner(Sources sources, string workerPath, string benchPath, Log log)
 {
     public enum Start { Started, Busy, Rejected }
+    public enum Cancel { Cancelled, NotRunning, NotFound }
 
     private const int MaxSeconds = 120;
     private const int KeepRuns = 8;
@@ -23,6 +25,8 @@ internal sealed class LoadRunner(Sources sources, string workerPath, string benc
     private static readonly TimeSpan SamplePeriod = TimeSpan.FromMilliseconds(500);
     // A worker that has not exited this long after its own deadline is stuck on the GPU.
     private static readonly TimeSpan Grace = TimeSpan.FromSeconds(20);
+    // A cancel answers once the process is gone, or after this: the plan's "idle within 2 s".
+    private static readonly TimeSpan CancelWait = TimeSpan.FromSeconds(2);
 
     private readonly Lock _gate = new();
     private readonly List<ActiveRun> _runs = [];
@@ -91,6 +95,46 @@ internal sealed class LoadRunner(Sources sources, string workerPath, string benc
             return _runs.FirstOrDefault(r => r.Id == id)?.Snapshot();
     }
 
+    /// <summary>Stop (plan section 17c): the run is marked cancelled first, so a start that
+    /// follows is not refused as busy, then the worker or bench is killed with its tree and
+    /// waited for, bounded, so the answer means the GPU is free. <see cref="RunAsync"/> sees
+    /// the exit and keeps the mark; a process not yet started when the mark lands is killed
+    /// as it comes up.</summary>
+    public Cancel TryCancel(string id, out LoadRun? run)
+    {
+        ActiveRun? active;
+        Process? process;
+        lock (_gate)
+        {
+            active = _runs.FirstOrDefault(r => r.Id == id);
+            if (active is null)
+            {
+                run = null;
+                return Cancel.NotFound;
+            }
+            if (active.State != LoadRunState.Running)
+            {
+                run = active.Snapshot();
+                return Cancel.NotRunning;
+            }
+            active.State = LoadRunState.Cancelled;
+            active.QpcEnd = Stopwatch.GetTimestamp();
+            process = active.Process;
+        }
+        Kill(process);
+        try
+        {
+            process?.WaitForExit(CancelWait);
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+        }
+        log.Write($"load {id}: cancelled");
+        lock (_gate)
+            run = active.Snapshot();
+        return Cancel.Cancelled;
+    }
+
     /// <summary>Kills a worker still running when the service stops, so no elevated GPU load
     /// outlives the UI.</summary>
     public void Abort()
@@ -98,15 +142,18 @@ internal sealed class LoadRunner(Sources sources, string workerPath, string benc
         lock (_gate)
         {
             foreach (var run in _runs.Where(r => r.State == LoadRunState.Running))
-            {
-                try
-                {
-                    run.Process?.Kill(entireProcessTree: true);
-                }
-                catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
-                {
-                }
-            }
+                Kill(run.Process);
+        }
+    }
+
+    private static void Kill(Process? process)
+    {
+        try
+        {
+            process?.Kill(entireProcessTree: true);
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
         }
     }
 
@@ -149,6 +196,8 @@ internal sealed class LoadRunner(Sources sources, string workerPath, string benc
             info.ArgumentList.Add(heartbeat);
         }
         log.Write($"load {run.Id}: {kind} for {run.Seconds} s, {Program(run.Kind)} {exe}");
+        // Plan section 17c: a two-minute load or bench must not be cut by the sleep timer; released on every way out below.
+        KeepAwake.Hold($"load {run.Id}");
 
         try
         {
@@ -156,7 +205,12 @@ internal sealed class LoadRunner(Sources sources, string workerPath, string benc
             Sample(run);
             using var process = Process.Start(info) ?? throw new InvalidOperationException("the worker did not start");
             lock (_gate)
+            {
                 run.Process = process;
+                // Stopped between the idle sample and the start: the mark is already on the run.
+                if (run.State == LoadRunState.Cancelled)
+                    Kill(process);
+            }
             // Both pipes are drained so a chatty worker can never block on a full pipe.
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
@@ -184,12 +238,16 @@ internal sealed class LoadRunner(Sources sources, string workerPath, string benc
             lock (_gate)
             {
                 run.ExitCode = process.ExitCode;
-                run.QpcEnd = Stopwatch.GetTimestamp();
-                run.State = ok ? LoadRunState.Done : LoadRunState.Failed;
-                run.FillRate = fillRate;
-                run.Error = ok ? null
-                    : process.ExitCode == 0 ? "the bench exited 0 without its result line"
-                    : $"{Program(run.Kind)} exited {process.ExitCode}: {error}";
+                // A cancelled run keeps its mark: the kill's exit code is not a failure of the worker.
+                if (run.State != LoadRunState.Cancelled)
+                {
+                    run.QpcEnd = Stopwatch.GetTimestamp();
+                    run.State = ok ? LoadRunState.Done : LoadRunState.Failed;
+                    run.FillRate = fillRate;
+                    run.Error = ok ? null
+                        : process.ExitCode == 0 ? "the bench exited 0 without its result line"
+                        : $"{Program(run.Kind)} exited {process.ExitCode}: {error}";
+                }
             }
             var count = run.Kind == LoadKind.Cpu ? $"{run.CpuSamples.Count} CPU samples" : $"{run.Samples.Count} GPU samples";
             log.Write($"load {run.Id}: exit {process.ExitCode}, {count}{(error.Length > 0 ? $", stderr: {error}" : "")}");
@@ -198,16 +256,24 @@ internal sealed class LoadRunner(Sources sources, string workerPath, string benc
         {
             lock (_gate)
             {
-                run.State = LoadRunState.Failed;
-                run.QpcEnd = Stopwatch.GetTimestamp();
-                run.Error = e.Message;
+                if (run.State != LoadRunState.Cancelled)
+                {
+                    run.State = LoadRunState.Failed;
+                    run.QpcEnd = Stopwatch.GetTimestamp();
+                    run.Error = e.Message;
+                }
             }
             log.Write($"load {run.Id}: failed: {e.Message}");
         }
         finally
         {
+            KeepAwake.Release($"load {run.Id}");
             lock (_gate)
                 run.Process = null;
+            // The bench takes the family's gpu.lock in its own process and a kill skips its
+            // release, so the lock would sit there under a dead pid; HeldBy clears exactly that.
+            if (run.Kind == LoadKind.FillRate)
+                FamilyGpuLock.HeldBy();
             try
             {
                 File.Delete(heartbeat);

@@ -53,8 +53,9 @@
 /* Panels: 1 px border, lighter surface, no shadow. */
 .rp-panel { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 14px 16px; min-width: 0; }
 .rp-panel > .label { margin-bottom: 10px; }
-.rp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
-@media (max-width: 800px) { .rp-grid { grid-template-columns: 1fr; } }
+/* Two columns only where two panels of tables fit; two sheets side by side on a 1920 screen are 960 px each and stack. */
+.rp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 1000px) { .rp-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* Verdict */
 .rp-verdict { border-left-width: 3px; }
@@ -143,3 +144,28 @@
 @media (max-width: 640px) { .rp-bench-table th:nth-child(2), .rp-bench-table td:nth-child(2) { display: none; } }
 
 .rp-foot { color: var(--subtle); font-size: 11px; padding-top: 4px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* Score sheet (plan §16 'Save as .html'): the share card scales with the page, the stat tables carry avg and max columns. */
+.rp-card-panel { padding: 0; overflow: hidden; background: var(--bg); }
+.rp-card { display: block; width: 100%; height: auto; }
+.rp-stats td:nth-child(2), .rp-stats td:nth-child(3) { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; text-align: right; }
+.rp-stats td:nth-child(2) { width: 9rem; }
+.rp-stats td:nth-child(3) { width: 12rem; }
+.rp-stats .sub { color: var(--subtle); font-family: var(--sans); font-size: 11px; margin-left: 6px; }
+.rp-shares { margin-top: 10px; color: var(--muted); font-size: 12px; }
+.rp-shares .label { display: inline; margin-right: 6px; }
+.rp-note { color: var(--muted); font-size: 12px; max-width: 70ch; }
+.rp-sub-label { margin-top: 12px; margin-bottom: 6px; }
+.rp-line { color: var(--text); font-size: 13px; max-width: 90ch; margin-bottom: 4px; }
+.rp-rungs th { text-align: left; padding: 0 16px 6px 0; font-weight: 500; white-space: nowrap; }
+.rp-rungs td { padding-right: 16px; }
+.rp-rungs td:last-child { padding-right: 0; }
+.rp-rungs td.figure { white-space: nowrap; }
+.rp-rungs tr.stop td { color: var(--muted); font-size: 12px; }
+.rp-why { color: var(--subtle); font-size: 11px; margin-top: 2px; max-width: 40ch; }
+/* The hardware line is prose (a 68-character board name, a driver, a Windows build): it wraps inside its panel, never clipped and never wider than the column (plan §17a). */
+.rp-hardware { table-layout: fixed; }
+.rp-hardware td:first-child { width: 7.5rem; }
+.rp-hardware td:last-child { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.rp-validity td:last-child { text-align: left; font-family: var(--sans); white-space: normal; color: var(--muted); }
+.rp-validity td:last-child .figure { margin-right: 6px; }

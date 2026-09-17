@@ -16,6 +16,8 @@ const BUCKET: Record<Bucket, { label: string; tone: Tone }> = {
 interface Props {
   rows: ViewRow[];
   vramBytes: number;
+  /** The RAM the CPU-only rows are measured against (plan 17d row 1). */
+  ramBytes: number;
   /** The VRAM figures are live (collector connected), so "loads now" means something. */
   liveVram: boolean;
   freeDiskBytes: number | null;
@@ -101,7 +103,7 @@ export const ModelList: React.FC<Props> = (p) => {
       <div className={`${grid} py-1 border-b border-studio-border text-[10px] text-studio-subtle`}>
         <span className="label">model · ollama pull tag</span>
         <span className="flex items-center gap-1.5">
-          <span className="label">required VRAM</span> <Tag kind="estimated" />
+          <span className="label">{p.rows.some((r) => r.cpuOnly) ? 'required RAM' : 'required VRAM'}</span> <Tag kind="estimated" />
         </span>
         <span className="flex items-center gap-1.5">
           <span className="label">verdict · tok/s</span> <Tag kind="estimated" />
@@ -129,13 +131,17 @@ export const ModelList: React.FC<Props> = (p) => {
               </div>
 
               <div className="min-w-0">
-                <Meter value={r.requiredBytes} max={barMax} tick={p.vramBytes} tickLabel={`VRAM ${gib(p.vramBytes, 0)}`} tone={b.tone} title={`${gib(r.requiredBytes)} of ${gib(p.vramBytes, 0)} VRAM`} />
+                {r.cpuOnly ? (
+                  <Meter value={r.requiredBytes} max={p.ramBytes * 1.25} tick={p.ramBytes} tickLabel={`RAM ${gib(p.ramBytes, 0)}`} tone={r.bucket === 'no' ? 'bad' : 'idle'} title={`${gib(r.requiredBytes)} of ${gib(p.ramBytes, 0)} RAM, shared with the desktop`} />
+                ) : (
+                  <Meter value={r.requiredBytes} max={barMax} tick={p.vramBytes} tickLabel={`VRAM ${gib(p.vramBytes, 0)}`} tone={b.tone} title={`${gib(r.requiredBytes)} of ${gib(p.vramBytes, 0)} VRAM`} />
+                )}
                 <div className="flex justify-between gap-2 text-[10px] text-studio-subtle mt-0.5 figure">
                   <span>
-                    {gib(r.requiredBytes)} <span className="text-studio-subtle/70">of {gib(p.vramBytes, 0)}</span>
+                    {gib(r.requiredBytes)} <span className="text-studio-subtle/70">of {r.cpuOnly ? `${gib(p.ramBytes, 0)} RAM` : gib(p.vramBytes, 0)}</span>
                   </span>
                   <span>
-                    {r.headroomBytes >= 0 ? `${gib(r.headroomBytes)} free` : `${gib(-r.headroomBytes)} over`}
+                    {r.cpuOnly ? (r.bucket === 'no' ? 'more than RAM can hold' : 'from RAM') : r.headroomBytes >= 0 ? `${gib(r.headroomBytes)} free` : `${gib(-r.headroomBytes)} over`}
                     {p.liveVram && r.bucket !== 'no' && !r.fitsNow && (
                       <span className="ml-1.5 text-amber-400/80" title="Another app holds video memory right now; the verdict judges the card's total">
                         · VRAM busy now
@@ -146,10 +152,10 @@ export const ModelList: React.FC<Props> = (p) => {
               </div>
 
               <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                <Pill tone={b.tone}>{b.label}</Pill>
+                <Pill tone={r.cpuOnly && r.bucket === 'slow' ? 'idle' : b.tone}>{r.cpuOnly && r.bucket === 'slow' ? 'Runs on the CPU' : b.label}</Pill>
                 {r.tokPerSec !== null && r.bucket !== 'no' ? (
                   <span className="figure text-mini whitespace-nowrap">
-                    {r.bucket === 'slow' && r.tokPerSecOffloaded !== null ? (
+                    {r.bucket === 'slow' && r.tokPerSecOffloaded !== null && !r.cpuOnly ? (
                       <>
                         <span className="text-studio-muted">{tokS(r.tokPerSec)}</span>
                         <span className="text-studio-subtle"> → </span>
@@ -192,7 +198,11 @@ export const ModelList: React.FC<Props> = (p) => {
         })}
       </div>
       <footer className="px-3 py-2 border-t border-studio-border text-[10px] text-studio-subtle flex flex-wrap gap-x-4 gap-y-1">
-        <span>Required = the pulled file + KV cache at this context + 1.6 GB of reserves; tight below 1.5 GiB of headroom.</span>
+        {p.rows.some((r) => r.cpuOnly) ? (
+          <span>No discrete GPU: every model streams from RAM on the CPU, paced by the RAM bus; a discrete GPU is what changes this. Required = the pulled file + KV cache at this context + reserves, against RAM.</span>
+        ) : (
+          <span>Required = the pulled file + KV cache at this context + 1.6 GB of reserves; tight below 1.5 GiB of headroom.</span>
+        )}
         <span>
           Download sizes vs {p.freeDiskBytes === null ? 'free space unknown' : `${gib(p.freeDiskBytes, 0)} free on ${p.diskLabel}`}
           {p.freeDiskBytes !== null && (

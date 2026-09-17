@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Gauge } from 'lucide-react';
+import { Gauge, Square } from 'lucide-react';
 import type { GpuBench } from '../../api';
 import { STREAM_EFFICIENCY } from '../../analysis/advisor';
 import { openExternal } from '../../support';
@@ -9,7 +9,7 @@ import { PsuForm, psuOf } from './PsuForm';
 import { Stat, Tag, type Provenance } from './Tag';
 import { percent, tops } from './format';
 import { PRECISIONS, type GpuSpecView, type Precision } from './rows';
-import { memGbpsOf, type HeldClocks, type ThisCard } from './thisCard';
+import { MEM_GBPS_PER_MHZ, NVML_MEM_RATE_FACTOR, memClockMhzOf, memGbpsOf, type HeldClocks, type ThisCard } from './thisCard';
 
 /** The worker's 3 s sweep plus the matmul runs, measured at under 4 s on the dev box; the bar only paces expectation, the result ends it. */
 const MEASURE_EXPECTED_S = 5;
@@ -22,6 +22,10 @@ interface Props {
   spec: GpuSpecView | null;
   /** The driver's word on the card in the slot; null standalone, when only the reference row exists. */
   card: ThisCard | null;
+  /** No discrete GPU (plan 17d row 1): the card explains CPU-only inference from the RAM bus instead of a GPU spec. */
+  integrated?: boolean;
+  /** The RAM bus figure the CPU-only estimate runs on (the header shows the same). */
+  ramBandwidthGBs?: number;
   /** The most recent clocks seen under load, against the record `card` carries (useHeldClocks). */
   latest: HeldClocks | null;
   npuTops: number | null;
@@ -31,7 +35,10 @@ interface Props {
   measuring: boolean;
   canMeasure: boolean;
   error: string;
+  /** The last Measure was stopped (plan section 17c): said in one muted line, the earlier figures standing. */
+  stopped?: boolean;
   onMeasure: () => void;
+  onStop?: () => void;
 }
 
 const LABEL: Record<Precision, string> = { fp4: 'FP4', fp8: 'FP8', int8: 'INT8', int4: 'INT4', fp16: 'FP16', bf16: 'BF16', tf32: 'TF32' };
@@ -40,6 +47,26 @@ const unitOf = (p: Precision) => (p.startsWith('int') ? 'TOPS' : 'TFLOPS');
 const grouped = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: v >= 100 ? 0 : 1 });
 const gbps = (v: number) => `${v.toFixed(1)} Gbps`;
 const gb = (v: number) => `${v.toFixed(0)} GB/s`;
+/**
+ * The offset a memory tune reads as, in both conventions people meet (plan section 10, the
+ * MEMORY CLOCK tile): GPU-Z's clock (NVML ÷ 8 on GDDR7 / GDDR6X, ÷ 4 on GDDR6) and the GPU
+ * Tweak / Afterburner slider, which counts the effective rate; sign-aware, "at reference" when
+ * there is none. On the dev box 2001 − 1750 = +251 MHz in GPU-Z's clock is about +4016 on the slider.
+ */
+const offsetMhz = (mhz: number, reference: number, gbpsPerMhz: number) => {
+  if (mhz === reference) return 'at reference';
+  const gpuz = mhz - reference;
+  const slider = Math.round(gpuz * gbpsPerMhz * NVML_MEM_RATE_FACTOR / 2);
+  return `${gpuz > 0 ? '+' : '−'}${Math.abs(gpuz)} MHz in GPU-Z's clock (${gpuz > 0 ? '+' : '−'}${Math.abs(slider)} on the GPU Tweak slider)`;
+};
+
+/** What the card says instead of a spec when the GPU has no reference row or the machine has no discrete GPU: user words, never a file to edit. */
+export function noSpecText(integrated: boolean, ramBandwidthGBs: number | undefined, hasDriverBandwidth: boolean): string {
+  if (integrated) {
+    return `No discrete GPU: models run on the CPU from RAM${ramBandwidthGBs ? `, paced by the RAM bus at about ${ramBandwidthGBs.toFixed(0)} GB/s (dual-channel DDR5 puts a 4B model at a few tokens a second)` : ''}. A discrete GPU is what changes this.`;
+  }
+  return `No reference figures for this GPU yet; the estimates use ${hasDriverBandwidth ? "the driver's own bandwidth (the memory clock the card holds times its bus width)" : 'a measurement (press Measure) once one exists'}.`;
+}
 
 /** One provenance tag on the title when every figure in the section shares it, so the narrow stats stay on one line. */
 const Section: React.FC<{ title: string; tag?: Provenance; tagTitle?: string; children: React.ReactNode }> = ({ title, tag, tagTitle, children }) => (
@@ -52,7 +79,8 @@ const Section: React.FC<{ title: string; tag?: Provenance; tagTitle?: string; ch
   </div>
 );
 
-const Progress: React.FC = () => {
+/** The pacing bar with its Stop beside it from the first second (plan section 17c). */
+const Progress: React.FC<{ onStop?: () => void }> = ({ onStop }) => {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const started = Date.now();
@@ -62,11 +90,17 @@ const Progress: React.FC = () => {
   const pct = Math.min(elapsed / MEASURE_EXPECTED_S, 0.95) * 100;
   return (
     <div className="space-y-1">
-      <div className="flex justify-between text-[10px] text-studio-subtle">
+      <div className="flex items-center gap-3 text-[10px] text-studio-subtle">
         <span>Bandwidth sweep, then matmul…</span>
-        <span className="figure">
+        <span className="flex-1" />
+        <span className="figure whitespace-nowrap">
           {elapsed.toFixed(0)} / ~{MEASURE_EXPECTED_S} s
         </span>
+        {onStop && (
+          <button className="btn h-6 bg-rose-500/15 text-rose-300 hover:text-rose-200" onClick={onStop} title="Kills the worker mid-sweep (Escape)">
+            <Square size={12} /> Stop
+          </button>
+        )}
       </div>
       <div className="relative h-1.5 rounded-full bg-studio-border">
         <div className="absolute inset-y-0 left-0 rounded-full bg-studio-accent transition-[width] duration-200 ease-linear" style={{ width: `${pct.toFixed(1)}%` }} />
@@ -92,10 +126,13 @@ function headline(spec: GpuSpecView): { value: number; precision: Precision; spa
  * Plan section 10: tensor and shader peaks scale with the SM clock at a fixed unit count, so
  * this card's figure is the reference peak x (the clock it holds under load / the reference
  * boost), and by the shader ratio too when NVAPI counts fewer than the reference. Null when
- * no held clock is known: the driver's ceiling is the VF-curve top, never the headline.
+ * no held clock is known: the driver's ceiling is the VF-curve top, never the headline. Null
+ * too while the only clock seen is below the reference boost (polish 3 item 8: the seen clock
+ * when it beats the boost, else the advertised figure): a memory-bound stream copy holds the
+ * SM at 1192 MHz on the dev box, which says nothing about what a compute load would get.
  */
 function ownScale(spec: GpuSpecView, card: ThisCard | null): { factor: number; mhz: number; unitRatio: number } | null {
-  if (card?.seenSmMhz == null) return null;
+  if (card?.seenSmMhz == null || card.seenSmMhz < spec.tiles.boostMhz) return null;
   const shaders = card.units?.shaders;
   const unitRatio = shaders != null && shaders < spec.tiles.shadingUnits ? shaders / spec.tiles.shadingUnits : 1;
   return { factor: (card.seenSmMhz / spec.tiles.boostMhz) * unitRatio, mhz: card.seenSmMhz, unitRatio };
@@ -175,6 +212,8 @@ export const StatsCard: React.FC<Props> = (p) => {
         : below(measured?.heldMemMhz)
           ? `Earlier this card held ${gbps(recordGbps)}${cardBandwidth !== null ? ` (${gb(cardBandwidth)})` : ''}; this run held ${gbps(memGbpsOf(measured!.heldMemMhz!))} — the memory offset was not applied then (vendor tool closed?).`
           : null;
+  // The MEMORY CLOCK tile in the GPU-Z convention beside the Gbps one (plan section 10); null skips it for a memory type without a rule.
+  const memClockMhz = c?.memMhz != null && t ? memClockMhzOf(c.memMhz, t.vramType) : null;
   const precisions = PRECISIONS.filter((x) => p.spec?.tops[x] !== undefined || p.spec?.sparse[x] !== undefined);
   const lead = p.spec ? headline(p.spec) : null;
   const scale = p.spec ? ownScale(p.spec, c) : null;
@@ -246,11 +285,11 @@ export const StatsCard: React.FC<Props> = (p) => {
                 label="boost"
                 value={c.seenSmMhz !== null ? `${c.seenSmMhz} MHz` : 'run a load to measure'}
                 tag="this card"
-                sub={`${c.seenSmMhz !== null ? 'held under load · ' : ''}reference ${t.baseMhz ?? '—'} / ${t.boostMhz}${c.ceilingSmMhz !== null ? ` · driver ceiling ${c.ceilingSmMhz}` : ''}`}
-                title={`${c.seenSmMhz !== null ? `The highest SM clock this card has held under load; Measure, Calibrate or a game shows it.` : 'The SM clock this card holds under load shows after Measure, Calibrate or a game.'} Reference design base / boost beneath${c.ceilingSmMhz !== null ? ", then the driver's VF-curve top, which every card of this model reports and no card runs at" : ''}.`}
+                sub={`${c.seenSmMhz !== null ? (c.seenSmMhz < t.boostMhz ? 'held in a memory-bound run; a compute load shows the boost · ' : 'held under load · ') : ''}reference ${t.baseMhz !== null ? `${t.baseMhz} / ` : ''}${t.boostMhz}${c.ceilingSmMhz !== null ? ` · driver ceiling ${c.ceilingSmMhz}` : ''}`}
+                title={`${c.seenSmMhz !== null ? `The highest SM clock this card has held under load; Measure, Calibrate or a game shows it.${c.seenSmMhz < t.boostMhz ? ' Below the reference boost it came from a memory-bound run (a stream copy holds the SM clock low) or a ramp, not from compute; the figures above keep the advertised clock until a compute load is seen.' : ''}` : 'The SM clock this card holds under load shows after Measure, Calibrate or a game.'} Reference design base / boost beneath${c.ceilingSmMhz !== null ? ", then the driver's VF-curve top, which every card of this model reports and no card runs at" : ''}.`}
               />
             ) : (
-              <Tile label="base / boost" value={t.baseMhz !== null ? `${t.baseMhz}/${t.boostMhz}` : `—/${t.boostMhz}`} title={t.baseMhz === null ? 'The vendor page prints no base clock' : 'MHz, reference design'} />
+              <Tile label={t.baseMhz !== null ? 'base / boost' : 'boost'} value={t.baseMhz !== null ? `${t.baseMhz}/${t.boostMhz}` : `${t.boostMhz}`} title={t.baseMhz === null ? 'The vendor page prints no base clock' : 'MHz, reference design'} />
             )}
             {c?.memGbps != null ? (
               <Tile
@@ -263,21 +302,32 @@ export const StatsCard: React.FC<Props> = (p) => {
             ) : (
               <Tile label="memory" value={`${t.memoryGbps} Gbps`} />
             )}
-            {cardBandwidth !== null ? (
-              <Tile label="bandwidth" value={gb(cardBandwidth)} tag="this card" sub={`reference ${specBandwidth !== null ? gb(specBandwidth) : '—'}`} title="Memory data rate x bus width / 8, from this card's own clock" />
+            {memClockMhz !== null ? (
+              <Tile
+                label="memory clock"
+                value={`${memClockMhz} MHz`}
+                tag="this card"
+                sub={t.memoryClockMhz !== null ? `reference ${t.memoryClockMhz} MHz · ${offsetMhz(memClockMhz, t.memoryClockMhz, MEM_GBPS_PER_MHZ[t.vramType])}` : 'no reference clock in the table'}
+                title={`${c!.memSource === 'held' ? 'The memory clock this card holds under load' : "The driver's memory clock ceiling plus any offset in force; measure to see the clock the card holds under load"}, in the MHz GPU-Z and GPU Tweak print (NVML's figure ÷ ${MEM_GBPS_PER_MHZ[t.vramType] / NVML_MEM_RATE_FACTOR} for ${t.vramType}); the reference clock and the offset a tune reads as beneath`}
+              />
             ) : (
-              <Tile label="bandwidth" value={specBandwidth !== null ? gb(specBandwidth) : '—'} />
+              !c && t.memoryClockMhz !== null && <Tile label="memory clock" value={`${t.memoryClockMhz} MHz`} title="Reference design memory clock as GPU-Z and GPU Tweak print it" />
+            )}
+            {cardBandwidth !== null ? (
+              <Tile label="bandwidth" value={gb(cardBandwidth)} tag="this card" sub={specBandwidth !== null ? `reference ${gb(specBandwidth)}` : 'no reference figure'} title="Memory data rate x bus width / 8, from this card's own clock" />
+            ) : (
+              <Tile label="bandwidth" value={specBandwidth !== null ? gb(specBandwidth) : 'no figure'} />
             )}
             {c?.tdpW != null ? (
               <Tile
-                label="TDP"
+                label={t.tgpRangeW ? 'TGP' : 'TDP'}
                 value={`${c.tdpW.toFixed(0)} W`}
                 tag="this card"
-                sub={`${c.limitW !== null && c.limitW < c.tdpW ? `set to ${c.limitW.toFixed(0)} W now · ` : ''}${c.sliderMaxW !== null ? `slider up to ${c.sliderMaxW.toFixed(0)} W · ` : ''}reference ${t.tdpW} W`}
-                title="The board's default power limit as the driver reports it: what this card is built for. The slider's top when it goes higher, and the reference design's TDP, beneath."
+                sub={`${c.limitW !== null && c.limitW < c.tdpW ? `set to ${c.limitW.toFixed(0)} W now · ` : ''}${c.sliderMaxW !== null ? `${t.tgpRangeW ? 'Dynamic Boost' : 'slider'} up to ${c.sliderMaxW.toFixed(0)} W · ` : ''}${t.tgpRangeW ? `laptop makers set ${t.tgpRangeW[0]}–${t.tgpRangeW[1]} W` : `reference ${t.tdpW} W`}`}
+                title={t.tgpRangeW ? 'The TGP this laptop runs the card at, as the driver reports it; Dynamic Boost can add to it, and the range laptop makers choose from is beneath.' : "The board's default power limit as the driver reports it: what this card is built for. The slider's top when it goes higher, and the reference design's TDP, beneath."}
               />
             ) : (
-              <Tile label="TDP" value={`${t.tdpW} W`} />
+              <Tile label={t.tgpRangeW ? 'TGP' : 'TDP'} value={t.tgpRangeW ? `${t.tgpRangeW[0]}–${t.tgpRangeW[1]} W` : `${t.tdpW} W`} title={t.tgpRangeW ? 'The TGP range laptop makers choose from; the driver reports the one this laptop runs at' : undefined} />
             )}
             <Tile
               label="PSU"
@@ -300,7 +350,7 @@ export const StatsCard: React.FC<Props> = (p) => {
           </div>
         </div>
       ) : (
-        <p className="text-mini text-studio-muted">Not in gpus.json: could not determine. Add a row to src/data/gpus.json.</p>
+        <p className="text-mini text-studio-muted">{noSpecText(!!p.integrated, p.ramBandwidthGBs, cardBandwidth !== null)}</p>
       )}
 
       <div className="grid gap-x-6 gap-y-4 grid-cols-1 md:grid-cols-[1.2fr_1.4fr_1fr] pt-2">
@@ -319,7 +369,7 @@ export const StatsCard: React.FC<Props> = (p) => {
                   <Stat
                     key={key}
                     label={LABEL[key]}
-                    value={dense !== undefined ? tops(own(dense)) : '—'}
+                    value={dense !== undefined ? tops(own(dense)) : 'not published'}
                     unit={unitOf(key)}
                     muted={dense === undefined}
                     note={scale && dense !== undefined ? `${note} · reference ${tops(dense)}${sparse !== undefined ? ` / ${tops(sparse)}` : ''}` : note}
@@ -329,79 +379,76 @@ export const StatsCard: React.FC<Props> = (p) => {
               <Stat label="FP32 shader" value={tops(own(p.spec.fp32Tflops))} unit="TFLOPS" note={scale ? `not a tensor figure · reference ${tops(p.spec.fp32Tflops)}` : 'not a tensor figure'} />
             </div>
           ) : (
-            <p className="text-mini text-studio-muted">{p.spec ? 'No tensor figures published for this GPU.' : 'Not in gpus.json: could not determine.'}</p>
+            <p className="text-mini text-studio-muted">{p.spec ? 'No tensor figures published for this GPU.' : p.integrated ? 'No tensor cores: an integrated GPU runs no local model faster than the CPU does.' : 'No reference tensor figures for this GPU yet.'}</p>
           )}
           {scale && <p className="text-[10px] text-studio-subtle">This card at {scale.mhz} MHz held under load; the reference figures are at {t!.boostMhz} MHz. An estimate, not a benchmark.</p>}
           {p.npuTops !== null && <Stat label="NPU" value={tops(p.npuTops)} unit="TOPS" note="vendor figure for the CPU's NPU" />}
         </Section>
 
         <Section title="Memory bandwidth">
-          <div className="grid grid-cols-3 gap-x-4 gap-y-2">
-            <Stat
-              label="Spec"
-              value={specBandwidth !== null ? specBandwidth.toFixed(0) : '—'}
-              unit="GB/s"
-              kind={specBandwidth !== null ? 'spec' : undefined}
-              muted={specBandwidth === null}
-              note={specBandwidth === null ? (p.spec ? 'could not determine: nobody publishes a figure' : 'could not determine: not in gpus.json') : 'reference design'}
-            />
-            <Stat
-              label="This card"
-              value={cardBandwidth !== null ? cardBandwidth.toFixed(0) : '—'}
-              unit="GB/s"
-              kind={cardBandwidth !== null ? 'this card' : undefined}
-              muted={cardBandwidth === null}
-              note={
-                cardBandwidth !== null
-                  ? `${gbps(c!.memGbps!)} × ${busBits}-bit${cardVsRef !== 0 ? ` · ${percent(cardVsRef)} vs reference` : ''}`
-                  : p.card
-                    ? 'no memory clock ceiling from the driver'
-                    : "needs the collector's live clocks"
-              }
-            />
-            <Stat
-              label="Measured"
-              value={measured ? measured.bandwidthGBs.toFixed(0) : '—'}
-              unit="GB/s"
-              kind={measured ? 'measured' : undefined}
-              muted={!measured}
-              note={
-                measured
-                  ? gap !== null
-                    ? `${percent(gap)} of ${ceilingName} · ${percent(gapVsCopy!)} vs expected copy`
-                    : 'no ceiling to compare'
-                  : p.bench
-                    ? `bench.json is from ${p.bench.device}, not this GPU`
-                    : 'not measured yet'
-              }
-            />
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+            {p.integrated ? (
+              <Stat label="RAM bus" value={p.ramBandwidthGBs ? p.ramBandwidthGBs.toFixed(0) : 'unknown'} unit="GB/s" kind="spec" note="what a model streams from with no discrete GPU: the configured DIMM speed and channel count" />
+            ) : (
+              <Stat
+                label="Spec"
+                value={specBandwidth !== null ? specBandwidth.toFixed(0) : 'no figure'}
+                unit={specBandwidth !== null ? 'GB/s' : undefined}
+                kind={specBandwidth !== null ? 'spec' : undefined}
+                muted={specBandwidth === null}
+                note={specBandwidth === null ? (p.spec ? 'nobody publishes a figure' : 'no reference row for this GPU yet') : 'reference design'}
+              />
+            )}
+            {!p.integrated && (
+              <Stat
+                label="This card"
+                value={cardBandwidth !== null ? cardBandwidth.toFixed(0) : 'not read'}
+                unit={cardBandwidth !== null ? 'GB/s' : undefined}
+                kind={cardBandwidth !== null ? (c!.memSource === 'held' ? 'measured' : 'this card') : undefined}
+                muted={cardBandwidth === null}
+                note={
+                  cardBandwidth !== null
+                    ? `${gbps(c!.memGbps!)} × ${busBits}-bit${cardVsRef !== 0 ? ` · ${percent(cardVsRef)} vs reference` : ''}${c!.memSource === 'held' ? '' : ' · driver ceiling; run a load to measure'}`
+                    : p.card
+                      ? 'no memory clock ceiling from the driver'
+                      : "needs the collector's live clocks"
+                }
+              />
+            )}
           </div>
-          {ceiling !== null && (
+          {/* The stream copy is evidence for the figure above, not a rival figure: a copy kernel reaches ~80 % of any bus. */}
+          {measured ? (
             <p className="text-[10px] text-studio-subtle">
-              A stream copy reaches ~{(STREAM_EFFICIENCY * 100).toFixed(0)} % of {ceilingName}: <span className="figure">{expectedCopy!.toFixed(0)}</span> GB/s expected.
-              {measured?.bandwidthMedianGBs != null && (
+              Stream copy <span className="figure">{measured.bandwidthGBs.toFixed(0)}</span> GB/s
+              {gap !== null && (
                 <>
                   {' '}
-                  Best of N; median <span className="figure">{measured.bandwidthMedianGBs.toFixed(0)}</span> GB/s · {when(measured)}.
+                  · {(100 + gap).toFixed(0)} % of {ceilingName} (a copy kernel reaches ~{(STREAM_EFFICIENCY * 100).toFixed(0)} %)
                 </>
               )}
-              {measured &&
-                (runBandwidth !== null
-                  ? ` Judged against the ${gbps(memGbpsOf(measured.heldMemMhz!))} the card held while the sweep ran, so a tune never reads as above spec and a tune not applied never reads as a throttled card; well below expected means a throttled or shared card.`
-                  : cardBandwidth !== null
-                    ? ' Judged against the clock this card holds, so a tune never reads as above spec; well below expected means a throttled or shared card.'
-                    : ' Above expected means the memory runs over the reference clock, below means a throttled or shared card.')}
+              {measured.bandwidthMedianGBs != null && (
+                <>
+                  {' '}
+                  · median <span className="figure">{measured.bandwidthMedianGBs.toFixed(0)}</span>
+                </>
+              )}
+              {' '}
+              · {when(measured)}.
+              {gapVsCopy !== null && gapVsCopy < -10 && ' Well below the expected copy: a throttled or shared card during the sweep.'}
             </p>
+          ) : (
+            <p className="text-[10px] text-studio-subtle">{p.bench ? `bench.json is from ${p.bench.device}, not this GPU.` : 'Not measured yet: Measure runs a stream copy to confirm the bus.'}</p>
           )}
           {notApplied && <p className="text-[10px] text-studio-subtle">{notApplied}</p>}
           {p.measuring ? (
-            <Progress />
+            <Progress onStop={p.onStop} />
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
               <button className="btn btn-accent" disabled={!p.canMeasure} onClick={p.onMeasure} title={p.canMeasure ? 'Runs the worker bandwidth and matmul kernels (about 5 s)' : 'Needs the app: the worker runs from Electron'}>
                 <Gauge size={13} /> {measured ? 'Measure again' : 'Measure'}
               </button>
               {p.error && <span className="text-mini text-rose-300">{p.error}</span>}
+              {p.stopped && !p.error && <span className="text-mini text-studio-subtle">Stopped; {measured ? 'the earlier measurement stands' : 'nothing was measured'}.</span>}
             </div>
           )}
         </Section>
@@ -410,8 +457,8 @@ export const StatsCard: React.FC<Props> = (p) => {
           <div className="grid grid-cols-2 gap-x-4 gap-y-2">
             <Stat
               label="FP32"
-              value={measured ? tops(measured.matmulTflopsFp32) : '—'}
-              unit="TFLOPS"
+              value={measured ? tops(measured.matmulTflopsFp32) : 'not measured'}
+              unit={measured ? 'TFLOPS' : undefined}
               kind={measured ? 'measured' : undefined}
               muted={!measured}
               note={
@@ -430,8 +477,8 @@ export const StatsCard: React.FC<Props> = (p) => {
             />
             <Stat
               label="FP16 storage"
-              value={measured?.matmulTflopsFp16 != null ? tops(measured.matmulTflopsFp16) : '—'}
-              unit="TFLOPS"
+              value={measured?.matmulTflopsFp16 != null ? tops(measured.matmulTflopsFp16) : 'not measured'}
+              unit={measured?.matmulTflopsFp16 != null ? 'TFLOPS' : undefined}
               kind={measured?.matmulTflopsFp16 != null ? 'measured' : undefined}
               muted={measured?.matmulTflopsFp16 == null}
               note="half storage, float maths on the shader cores: not a tensor-core figure, so the tensor figures above do not apply"

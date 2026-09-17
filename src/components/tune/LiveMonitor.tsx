@@ -14,8 +14,8 @@ import { fanState } from '../monitor/fans';
 import { vendorOf, gpuTitle } from '../monitor/vendors';
 import { useSettings } from '../useSettings';
 import { systemPower } from '../../analysis/power';
-import { GPU_IDLE, hasAny, hasBit, IDLE_HINT, SLOWDOWN, SW_POWER_CAP, THERMAL_OR_BRAKE } from '../../analysis/nvmlBits';
-import { pair, signed } from './wire';
+import { GPU_IDLE, hasAny, hasBit, IDLE_HINT, POWER_BRAKE, SLOWDOWN, SW_POWER_CAP, THERMAL, THERMAL_OR_BRAKE } from '../../analysis/nvmlBits';
+import { pair, rungsOf, signed } from './wire';
 
 interface Props {
   index: SensorIndex;
@@ -33,20 +33,37 @@ const percent = (x: number) => `${x.toFixed(0)} %`;
 const gib = (mib: number) => `${(mib / 1024).toFixed(1)} GiB`;
 const mmss = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-const Fact: React.FC<{ label: string; value: React.ReactNode; tone?: Tone }> = ({ label, value, tone }) => (
-  <div className="flex items-baseline justify-between gap-3 min-w-0">
-    <span className="label truncate">{label}</span>
-    <span className={`figure text-[12px] whitespace-nowrap ${tone === 'bad' ? 'text-rose-400' : tone === 'warn' ? 'text-amber-400' : 'text-studio-text'}`}>{value}</span>
+/** A numeric fact keeps its one line; a sentence (the last event, a run's closing words) wraps under its label, never past the panel (plan 17a, workflow 13b). */
+const Fact: React.FC<{ label: string; value: React.ReactNode; tone?: Tone; wrap?: boolean }> = ({ label, value, tone, wrap }) => (
+  <div className={`flex ${wrap ? 'flex-col items-start gap-0.5' : 'items-baseline justify-between gap-3'} min-w-0`}>
+    <span className="label whitespace-nowrap">{label}</span>
+    <span className={`figure text-[12px] ${wrap ? 'whitespace-normal break-words min-w-0' : 'whitespace-nowrap'} ${tone === 'bad' ? 'text-rose-400' : tone === 'warn' ? 'text-amber-400' : 'text-studio-text'}`}>{value}</span>
   </div>
 );
+
+/**
+ * The validity pill's words (workflow 13d): the power cap is the normal state of a heavy load
+ * on a capped card and reads neutral; heat or the board's power brake is the cooler or the
+ * board limiting the clock, amber, never "invalid"; the collector's own verdict (thermal bits
+ * on more than 5 % of the sustained samples) says the same in the past tense.
+ */
+export function validityPill(running: boolean, reasons: number, verdict: TuneRun['validity'] | null): { tone: Tone; text: string } {
+  if (!running) return { tone: 'idle', text: 'no test' };
+  if (hasAny(reasons, THERMAL)) return { tone: 'warn', text: 'thermal limit — the cooler, not the clock' };
+  if (hasAny(reasons, POWER_BRAKE)) return { tone: 'warn', text: 'power brake — the board, not the clock' };
+  if (verdict === 'throttled') return { tone: 'warn', text: 'thermal limit during this rung — the cooler, not the clock' };
+  if (hasBit(reasons, SW_POWER_CAP)) return { tone: 'info', text: 'on the power cap · normal' };
+  return { tone: 'ok', text: 'clean' };
+}
 
 /**
  * The live monitor during a test (plan 16): the Monitor page's own bars, pills and
  * helpers over the same 2 Hz ticks, arranged for the question a hunt asks — is the
  * card getting the clock it was asked for, and is anything but the silicon limiting
  * it. Plain DOM at 2 Hz, every bar the shared Bar (plan 17c). The validity pill
- * turns red the moment a throttle bit shows during a ceiling hunt, from the live
- * bits or from the collector's verdict, whichever comes first.
+ * turns red the moment a thermal or power-brake bit shows during a run, from the
+ * live bits or from the collector's verdict, whichever comes first; the power cap is
+ * named, never red (plan 16, the user's 600 W budget).
  */
 export const LiveMonitor: React.FC<Props> = ({ index, tick, ring, snapshot, status, run }) => {
   const settings = useSettings();
@@ -77,14 +94,13 @@ export const LiveMonitor: React.FC<Props> = ({ index, tick, ring, snapshot, stat
   const totalMax = Math.max(totalHigh * 1.2, 400);
 
   const running = run?.state === 'running';
-  // The validity gate is the core ceiling hunt's (plan 16): the memory sweep is judged on
-  // its passes' spread and the validate run expects limits at the user's fan curve.
-  const hunting = running && run.kind === 'core';
+  // The validity pill (plan 16, 'the power cap is the normal state'): heat or the board's
+  // power brake is the cooler or the board limiting the clock (the collector ends the ladder
+  // on it: TuneLadder.ThermalBits, the same bits); the power cap is named for what it is,
+  // because every heavy load on a capped card sits on it and the hash, the top-of-curve
+  // clock and the throughput decide the rung.
   const reasons = gpu?.clocksEventReasons.raw ?? 0;
-  const throttlingNow = hunting && hasAny(reasons, SLOWDOWN);
-  const invalid = (hunting && run.validity === 'throttled') || throttlingNow;
-  const invalidText = hunting && run.validity === 'throttled' ? 'throttled during the run' : 'throttling during the ceiling hunt';
-  const limited = running && !hunting && run.validity === 'throttled';
+  const validity = validityPill(running, reasons, running ? run.validity : null);
 
   // What the hunt asks the driver for: the clock the card held during the reference phase
   // at the baseline, plus the candidate's core offset (the offsets are 1:1 with the SM
@@ -167,20 +183,21 @@ export const LiveMonitor: React.FC<Props> = ({ index, tick, ring, snapshot, stat
   const bars = gpu ? gpuBars(gpu) : null;
 
   // The test-state block lists what has a value (plan 17a: absent facts collapse, no wall of dashes).
-  const facts: { label: string; value: React.ReactNode; tone?: Tone }[] = [];
+  const facts: { label: string; value: React.ReactNode; tone?: Tone; wrap?: boolean }[] = [];
   if (run && running) {
     if (run.candidate) facts.push({ label: 'Candidate', value: pair(run.candidate) });
-    facts.push({ label: 'Ladder', value: `${run.phase} · rung ${run.candidates.length + 1}` });
+    // Counted within the ladder under test, so the number matches the tiles the user is looking at.
+    facts.push({ label: 'Ladder', value: run.ladder ? `${run.phase} · ${run.ladder} rung ${rungsOf(run.candidates, run.ladder, [run.asFound]).filter((c) => c.deltas.coreKhz !== (status?.baseline?.coreKhz ?? 0) || c.deltas.memKhz !== (status?.baseline?.memKhz ?? 0)).length + 1}` : run.phase });
     if (run.pattern) facts.push({ label: 'Pattern', value: `${run.pattern} · ${mmss(run.patternElapsedS)} of ${mmss(run.patternSeconds)}` });
     facts.push({ label: 'Elapsed', value: mmss(run.elapsedS) });
     facts.push({ label: 'Errors', value: run.deviceLostCount > 0 ? `${run.errorCount} · ${run.deviceLostCount} device lost` : run.errorCount, tone: run.errorCount > 0 || run.deviceLostCount > 0 ? 'bad' : undefined });
     if (run.bandwidthGBs !== null) facts.push({ label: 'Bandwidth', value: `${run.bandwidthGBs.toFixed(0)} GB/s${run.bestBandwidthGBs !== null ? ` (best ${run.bestBandwidthGBs.toFixed(0)})` : ''}` });
-    if (run.lastEvent) facts.push({ label: 'Last', value: run.lastEvent });
+    if (run.lastEvent) facts.push({ label: 'Last', value: run.lastEvent, wrap: true });
   } else if (status?.candidate) {
     facts.push({ label: 'On the card', value: pair(status.candidate) });
   }
   // A run that ended keeps its closing sentence here (why it stopped, or what it found) until the next one starts.
-  if (run && !running) facts.push({ label: `Last run · ${run.state}`, value: run.error ?? run.lastEvent, tone: run.state === 'failed' ? 'bad' : undefined });
+  if (run && !running) facts.push({ label: `Last run · ${run.state}`, value: run.error ?? run.lastEvent, tone: run.state === 'failed' ? 'bad' : undefined, wrap: true });
 
   return (
     <Panel kind="Live monitor" title={gpu ? gpuTitle(gpu) : undefined} vendor={gpu ? vendor : undefined} aside={gpu && <span className="figure text-[12px] text-studio-muted truncate">driver {gpu.driver}</span>}>
@@ -223,8 +240,8 @@ export const LiveMonitor: React.FC<Props> = ({ index, tick, ring, snapshot, stat
               </Pill>
             ))}
             <span className="flex-1" />
-            <Pill tone={invalid ? 'bad' : limited ? 'warn' : running ? 'ok' : 'idle'} title="A ceiling hunt measures the silicon only while nothing else limits the clock (plan 16); the memory sweep and the validate run expect limits and are judged otherwise">
-              {invalid ? `invalid: ${invalidText}` : limited ? 'power-limited (expected here; the hash decides)' : running ? 'valid' : 'no test'}
+            <Pill tone={validity.tone} title="A thermal limit or the board's power brake ends the ladder as the cooler's or the board's limit, not the clock's (plan 16); a power cap is the normal state of a heavy load on a capped card, and the hash, the top-of-curve clock and the throughput decide the rung">
+              {validity.text}
             </Pill>
           </div>
           <div className="rounded border border-studio-border bg-studio-bg/40 px-3 py-2 space-y-1">

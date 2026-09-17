@@ -68,7 +68,7 @@ internal sealed class Options
 
         if (options.Verb == "--ladder" && (options.Pattern is null || options.Seconds == 0 || options.Expect is null))
         {
-            throw new ArgumentException("--ladder needs --pattern heavy|light|transient, --seconds N and --expect HEX from --reference");
+            throw new ArgumentException("--ladder needs --pattern variable|sustained, --seconds N and --expect HEX from --reference");
         }
 
         return options;

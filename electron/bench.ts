@@ -5,7 +5,7 @@
  * collector; the result is cached per GPU and driver in bench.json because a
  * card's bandwidth does not change until the driver does.
  */
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -68,8 +68,8 @@ export interface OllamaList {
 
 export interface BenchError {
   error: string;
-  /** Nothing answers on :11434: the page shows the plan's install line instead of an error. */
-  code?: 'ollama-absent';
+  /** 'ollama-absent': nothing answers on :11434, the page shows the plan's install line instead of an error. 'cancelled': the user's Stop (plan section 17c), not a failure. */
+  code?: 'ollama-absent' | 'cancelled';
 }
 
 const OLLAMA = 'http://127.0.0.1:11434';
@@ -151,9 +151,13 @@ function parseBenchLine(stdout: string, driver: string | null): GpuBench | null 
   return null;
 }
 
-function runWorker(exe: string): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+/** The worker child while Measure runs, so Stop can end it; null between runs. */
+let benchChild: ChildProcess | null = null;
+
+function runWorker(exe: string): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean; cancelled: boolean }> {
   return new Promise((resolve) => {
     const child = spawn(exe, ['--bench', '--json'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    benchChild = child;
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -165,15 +169,23 @@ function runWorker(exe: string): Promise<{ code: number | null; stdout: string; 
       timedOut = true;
       child.kill();
     }, BENCH_TIMEOUT_MS);
-    child.on('error', (e) => {
+    const done = (code: number | null, err = '') => {
       clearTimeout(timer);
-      resolve({ code: -1, stdout, stderr: stderr + e.message, timedOut });
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
-    });
+      const cancelled = benchChild === null;
+      if (benchChild === child) benchChild = null;
+      resolve({ code, stdout, stderr: stderr + err, timedOut, cancelled });
+    };
+    child.on('error', (e) => done(-1, e.message));
+    child.on('close', (code) => done(code));
   });
+}
+
+/** Stop (plan section 17c): kills the worker mid-sweep; the pending Measure answers 'cancelled'. No-op between runs. */
+function cancelBench(): void {
+  const child = benchChild;
+  if (!child) return;
+  benchChild = null;
+  child.kill();
 }
 
 let inFlight: Promise<GpuBench | BenchError> | null = null;
@@ -212,6 +224,7 @@ async function doBenchGpu(driver: string | null, collector: CollectorClient | nu
   const running = runWorker(exe);
   const held = await heldDuring(collector, running);
   const run = await running;
+  if (run.cancelled) return { error: 'Measurement stopped', code: 'cancelled' };
   if (run.timedOut) return { error: `The GPU benchmark did not finish within ${BENCH_TIMEOUT_MS / 1000} s` };
   const firstErr = run.stderr.trim().split(/\r?\n/)[0] || '';
   if (run.code === 3) return { error: 'No hardware GPU: the worker was given the software rasteriser (WARP)' };
@@ -230,15 +243,20 @@ function ollamaError(e: unknown): BenchError {
   const cause = (e as { cause?: { code?: string } }).cause;
   if (cause?.code === 'ECONNREFUSED') return { error: 'Ollama is not running', code: 'ollama-absent' };
   if (e instanceof Error && e.name === 'TimeoutError') return { error: 'Ollama did not answer in time' };
+  if (e instanceof Error && e.name === 'AbortError') return { error: 'Timing stopped', code: 'cancelled' };
   return { error: e instanceof Error ? e.message : String(e) };
 }
 
-async function ollamaJson<T>(route: string, body?: unknown, timeoutMs = 10_000): Promise<T> {
+/** The generation in flight, so Stop can abort it; Ollama ends the decode when the request goes away. */
+let generation: AbortController | null = null;
+
+async function ollamaJson<T>(route: string, body?: unknown, timeoutMs = 10_000, abort?: AbortSignal): Promise<T> {
+  const timeout = AbortSignal.timeout(timeoutMs);
   const res = await fetch(`${OLLAMA}${route}`, {
     method: body === undefined ? 'GET' : 'POST',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs)
+    signal: abort ? AbortSignal.any([abort, timeout]) : timeout
   });
   if (!res.ok) {
     const text = (await res.text().catch(() => '')).trim();
@@ -262,11 +280,14 @@ async function benchOllama(model: string): Promise<OllamaBench | BenchError> {
     load_duration?: number;
     total_duration?: number;
   }
+  const controller = new AbortController();
+  generation = controller;
   try {
     const g = await ollamaJson<Generate>(
       '/api/generate',
       { model, prompt: PROMPT, stream: false, options: { num_predict: PREDICT_TOKENS }, keep_alive: KEEP_ALIVE },
-      GENERATE_TIMEOUT_MS
+      GENERATE_TIMEOUT_MS,
+      controller.signal
     );
     if (!g.eval_count || !g.eval_duration) return { error: `${model} generated nothing to time` };
     const perSec = (count: number | undefined, ns: number | undefined) => (count && ns ? count / (ns / 1e9) : 0);
@@ -279,7 +300,15 @@ async function benchOllama(model: string): Promise<OllamaBench | BenchError> {
     };
   } catch (e) {
     return ollamaError(e);
+  } finally {
+    if (generation === controller) generation = null;
   }
+}
+
+/** Stop (plan section 17c): aborts the timed generation; the pending Calibrate answers 'cancelled'. No-op between runs. */
+function cancelOllama(): void {
+  generation?.abort();
+  generation = null;
 }
 
 async function ollamaList(): Promise<OllamaList | BenchError> {
@@ -314,5 +343,7 @@ async function ollamaList(): Promise<OllamaList | BenchError> {
 export function registerAdvisorIpc(ipcMain: IpcMain, collector: () => CollectorClient | null) {
   ipcMain.handle('bench:gpu', (_e, req: BenchGpuRequest) => (req.run ? benchGpu(req.driver, collector()) : usable(readCache(), req.driver)));
   ipcMain.handle('bench:ollama', (_e, model: string) => benchOllama(model));
+  ipcMain.handle('bench:cancelGpu', () => cancelBench());
+  ipcMain.handle('bench:cancelOllama', () => cancelOllama());
   ipcMain.handle('ollama:list', () => ollamaList());
 }

@@ -4,6 +4,7 @@ import { api, ipcErrorMessage } from '../api';
 import { updateSettings, useSettings } from './useSettings';
 import { TuneWarning } from './tune/TuneWarning';
 import { markEnableFailed } from './tune/enableRetry';
+import { rememberedSnapshot } from './monitor/cache';
 
 interface Props {
   isOpen: boolean;
@@ -13,11 +14,12 @@ interface Props {
 /**
  * App settings, from Help → Settings. The per-page facts (the CPU limit, the PSU,
  * panel names) live on their pages; this holds the one switch that changes what
- * the app may do: Tune, behind its warning (plan 17). Accepting flips the flag and
- * asks the collector to register the revert-at-logon task, with the acknowledgement's
- * date (plan 27a); turning it off removes both. Only the checkbox itself toggles: a
- * click on the description must not switch Tune off without a word. The Tune page
- * retries the collector call once if it could not go through from here.
+ * the app may do: the Headroom hunt on the Tune page, behind its warning (plan 17,
+ * 27a). Accepting flips the flag and sends the acknowledgement (date, app version; the
+ * collector adds the GPU name) to the tune log; turning it off takes anything of
+ * Tune's off the card. Only the checkbox itself toggles: a click on the description
+ * must not switch it off without a word. The Tune page retries the collector call once
+ * if it could not go through from here.
  */
 export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const settings = useSettings();
@@ -40,18 +42,10 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     setNote('');
     api?.tune
       .enable(on, acknowledgedAt ?? undefined)
-      .then((s) =>
-        setNote(
-          on
-            ? s.revertTaskRegistered
-              ? 'The revert-at-logon task is registered.'
-              : `The logon task is not registered: ${s.revertTaskProblem ?? 'schtasks failed'}. A hard hang would be reverted only at the next app start.`
-            : "Nothing of Tune's is left on the card; the revert-at-logon task is removed."
-        )
-      )
+      .then(() => setNote(on ? 'Headroom is on; the acknowledgement is in the tune log.' : "Headroom is off; nothing of Tune's is left on the card."))
       .catch((e) => {
         if (on) markEnableFailed();
-        setNote(`${on ? 'Registering' : 'Removing'} the logon task did not go through: ${ipcErrorMessage(e)}${on ? '. The Tune page retries it once.' : ''}`);
+        setNote(`The collector did not take the ${on ? 'acknowledgement' : 'switch-off'}: ${ipcErrorMessage(e)}${on ? '. The Tune page retries it once.' : ''}`);
       });
   };
 
@@ -76,10 +70,11 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
               />
               <div className="space-y-1">
                 <label htmlFor="enable-tune" className="block text-mini font-medium text-studio-text cursor-pointer">
-                  Enable Tune (writes to the GPU)
+                  Headroom hunt (tests small clock offsets on the GPU)
                 </label>
                 <p className="text-micro text-studio-subtle leading-relaxed">
-                  Shows the Tune page, which finds your card's clock headroom by writing offsets to it. Off by default; a warning explains what can happen before it turns on.
+                  Turns on the Headroom section of the Tune page: it finds how far your card's clocks go, scores each step and hands you the values for your vendor tool; the card is
+                  left as it was found. Off by default; a warning says what happens before it turns on.
                   {settings.tuneAcceptedWarningAt && settings.enableTune && ` Accepted ${new Date(settings.tuneAcceptedWarningAt).toLocaleDateString()}.`}
                 </p>
                 {note && <p className="text-micro text-studio-muted">{note}</p>}
@@ -93,6 +88,7 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
       </div>
       <TuneWarning
         isOpen={warning}
+        laptop={!!rememberedSnapshot()?.chassis.isLaptop}
         onClose={() => setWarning(false)}
         onAccept={() => {
           setWarning(false);

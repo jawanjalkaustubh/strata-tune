@@ -50,7 +50,14 @@ export const BoardPanel: React.FC<Props> = ({ index, tick, ring, snapshot, panel
   const tjmax = cpuLimits(cpuName).tjmax;
   const isCpuTemp = (name: string) => /\bCPU\b/i.test(name) && !/socket/i.test(name);
 
-  if (!layout.rails.length && !layout.temps.length && !layout.fans.length) return null;
+  // No super-IO or embedded controller in the tree (a laptop): said in one line, never a panel that vanishes without a word (plan 17d).
+  if (!layout.rails.length && !layout.temps.length && !layout.fans.length) {
+    return (
+      <Panel kind="Board" title={boardName(snapshot)} nameKey={BOARD_KEY} vendor={vendor} {...panel}>
+        <p className="text-mini text-studio-muted">No board sensors on this machine: the library found no super-IO chip or embedded controller to read rails, board temperatures or fan headers from.</p>
+      </Panel>
+    );
+  }
 
   const v = (id?: string) => (id === undefined ? undefined : tick.sensors[id]);
   const hist = (id: string) => ring.series((t) => t.sensors[id]);

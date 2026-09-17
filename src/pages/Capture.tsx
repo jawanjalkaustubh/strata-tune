@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, FileDown, FolderOpen } from 'lucide-react';
+import { ArrowLeft, FileDown, FolderOpen, Table2 } from 'lucide-react';
 import { api, ipcErrorMessage, type SessionListItem } from '../api';
 import type { Report } from '../report/report-types';
+import type { ScoreSheet } from '../report/score-types';
+import { benchSheet } from '../report/sheet';
+import { deviceClass } from '../analysis/tune';
 import { ReportView } from '../report/ReportView';
 import { CaptureBar } from '../components/capture/CaptureBar';
 import { LiveFrames } from '../components/capture/LiveFrames';
@@ -14,6 +17,8 @@ import { cachedSensorMeta } from '../components/monitor/cache';
 interface Analysed {
   report: Report;
   notes: string[];
+  /** A bench run's comparison sheet (plan section 16 'Save as .html'): its GPU timeline as avg / max tables beside a headroom sheet's; null for a game capture. */
+  sheet: ScoreSheet | null;
 }
 
 /** The gap between two background analyses, so the page stays responsive while older sessions fill in. */
@@ -80,7 +85,8 @@ export const Capture: React.FC = () => {
       // Let the line above paint before the analysis holds the thread.
       await new Promise((r) => setTimeout(r, 0));
       const { report, verdict } = analyse(session, version, meta);
-      const result: Analysed = { report, notes: session.notes };
+      const sheet = report.session.bench ? benchSheet(session, report, { snapshot: session.snapshot, gpu: session.snapshot?.gpus[0], version, deviceClass: session.snapshot ? deviceClass(session.snapshot) : null, psu: { watts: null, rating: null } }) : null;
+      const result: Analysed = { report, notes: session.notes, sheet };
       analysed.current.set(id, result);
       await api.sessions.setVerdict(id, verdict).catch(() => undefined);
       refresh();
@@ -155,6 +161,14 @@ export const Capture: React.FC = () => {
       await api!.sessions.exportHtml(report);
     });
 
+  const exportSheet = (id: string) =>
+    run(id, async () => {
+      const { sheet } = await ensureAnalysed(id);
+      if (!sheet) return;
+      setWorking('Saving the comparison sheet…');
+      await api!.sessions.exportSheet(sheet);
+    });
+
   const deleteSession = (id: string) =>
     run(id, async () => {
       await api!.sessions.delete(id);
@@ -195,6 +209,11 @@ export const Capture: React.FC = () => {
             <button className="btn" onClick={() => exportSession(open)} disabled={busyId === open}>
               <FileDown size={13} /> Export HTML
             </button>
+            {current.sheet && (
+              <button className="btn" onClick={() => exportSheet(open)} disabled={busyId === open} title="One self-contained .html with the bench's clocks, temperatures and power as avg / max tables, to compare with a headroom sheet">
+                <Table2 size={13} /> Comparison sheet
+              </button>
+            )}
             <button className="btn" onClick={() => reveal(open)}>
               <FolderOpen size={13} /> Folder
             </button>

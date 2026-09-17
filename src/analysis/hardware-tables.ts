@@ -27,8 +27,10 @@ export interface GpuSpec {
   /** null when neither the vendor nor TechPowerUp publishes a figure: the page then shows "could not determine" and tok/s waits for a measurement. */
   bandwidthGBs: number | null;
   boostMhz: number;
-  /** TGP (NVIDIA), Typical Board Power (AMD) or TBP (Intel). */
+  /** TGP (NVIDIA), Typical Board Power (AMD) or TBP (Intel); on a laptop part the top of the TGP range. */
   tdpW: number;
+  /** Laptop parts only (plan 17d row 2): the TGP range the laptop maker chooses from, as NVIDIA's laptop compare page lists it. */
+  tgpRangeW?: [number, number];
   /** Dense TOPS (TFLOPS for the float formats) per precision; `sparse` the 2:1 structured-sparsity figure where the vendor quotes one. */
   tops: Partial<Record<TensorPrecision, number>> & { sparse: Partial<Record<TensorPrecision, number>> };
   /** The vendor published only the sparse headline and the dense figures here are half of it, so the card tags them derived rather than spec. */
@@ -50,6 +52,8 @@ export interface GpuSpec {
   busBits: number;
   /** Effective memory data rate; bandwidth = memoryGbps x busBits / 8. */
   memoryGbps: number;
+  /** The memory clock as GPU-Z, GPU Tweak and the cited page print it (1750 MHz on the 5090); null when the cited page's figure would contradict memoryGbps. */
+  memoryClockMhz: number | null;
   tpuUrl: string;
   notes: string;
   source: string;
@@ -83,7 +87,7 @@ export const GPU_SPECS: GpuSpec[] = gpus as GpuSpec[];
 
 const GPU_ROWS = GPU_SPECS.map((spec) => ({ spec, regex: new RegExp(spec.pattern, 'i') }));
 
-/** Laptop parts share desktop names with different memory and power; they need their own rows before they get a spec. */
+/** Laptop parts share desktop names with different memory and power: a mobile name matches only a Laptop row, a desktop name never does. */
 const MOBILE = /laptop|mobile|max-q/i;
 
 /** A card's NVML total is a little under its nominal size (32607 MiB on a 32 GiB 5090); a variant off by more than this is a different card. */
@@ -99,8 +103,8 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export function lookupGpu(name: string, vramMiB?: number): GpuSpec | null {
   const exact = GPU_SPECS.find((g) => g.name.toLowerCase() === name.trim().toLowerCase());
   if (exact) return exact;
-  if (MOBILE.test(name)) return null;
-  const hits = GPU_ROWS.filter((r) => r.regex.test(name)).map((r) => r.spec);
+  const mobile = MOBILE.test(name);
+  const hits = GPU_ROWS.filter((r) => MOBILE.test(r.spec.name) === mobile && r.regex.test(name)).map((r) => r.spec);
   if (hits.length === 0) return null;
   if (vramMiB === undefined) return hits[0];
   const vramGiB = vramMiB / 1024;

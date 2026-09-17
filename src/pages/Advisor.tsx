@@ -59,6 +59,8 @@ export const Advisor: React.FC = () => {
   const [stored, setStored] = useState<Record<string, Measurement>>(loadMeasurements);
   const [calibrating, setCalibrating] = useState<string | null>(null);
   const [calibrateError, setCalibrateError] = useState('');
+  /** Stop pressed on a run (plan section 17c): said once, in place of a result, until the next run. */
+  const [stopped, setStopped] = useState<'measure' | 'calibrate' | null>(null);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [contextTokens, setContextTokens] = useState(DEFAULT_CONTEXT);
   const [filter, setFilter] = useState<string | null>(null);
@@ -141,12 +143,15 @@ export const Advisor: React.FC = () => {
     if (!api || measuring) return;
     setMeasuring(true);
     setBenchError('');
+    setStopped(null);
     const stop = watch();
     const r = await api.advisor.benchGpu({ driver: facts.driver, run: true });
     const ok = !!r && !('error' in r);
     stop(ok);
-    if (r && 'error' in r) setBenchError(r.error);
-    else if (r) setBench(r);
+    if (r && 'error' in r) {
+      if (r.code === 'cancelled') setStopped('measure');
+      else setBenchError(r.error);
+    } else if (r) setBench(r);
     setMeasuring(false);
   };
 
@@ -154,17 +159,36 @@ export const Advisor: React.FC = () => {
     if (!api || calibrating) return;
     setCalibrating(model);
     setCalibrateError('');
+    setStopped(null);
     const stop = watch();
     const r = await api.advisor.benchOllama(model);
     stop(!('error' in r));
-    if ('error' in r) setCalibrateError(`${model}: ${r.error}`);
-    else {
+    if ('error' in r) {
+      if (r.code === 'cancelled') setStopped('calibrate');
+      else setCalibrateError(`${model}: ${r.error}`);
+    } else {
       const next = { ...stored, [model]: { ...r, device: facts.gpuName, driver: facts.driver } };
       setStored(next);
       saveMeasurements(next);
     }
     setCalibrating(null);
   };
+
+  // Stop (plan section 17c): the worker is killed or the generation aborted; the pending call answers 'cancelled'.
+  const stopMeasure = () => void api?.advisor.cancelBenchGpu();
+  const stopCalibrate = () => void api?.advisor.cancelBenchOllama();
+
+  // Escape stops whichever run is going, the same as its button.
+  useEffect(() => {
+    if (!measuring && calibrating === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (measuring) stopMeasure();
+      if (calibrating !== null) stopCalibrate();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [measuring, calibrating]);
 
   // Merged over what storage holds now: the PSU form and the Monitor write their own fields in between.
   const setFactor = (calibrationFactor: number | null) => {
@@ -183,7 +207,7 @@ export const Advisor: React.FC = () => {
         <CollectorStatusPill state={status} />
         <span className="flex-1" />
         <span className="flex items-center gap-1.5 text-mini text-studio-muted figure">
-          VRAM {gib(facts.vramBytes, 0)} · RAM {gib(facts.ramBytes, 0)}
+          {facts.integrated ? 'no discrete GPU' : `VRAM ${gib(facts.vramBytes, 0)}`} · RAM {gib(facts.ramBytes, 0)}
           {facts.freeDiskBytes !== null && ` · ${diskLabel} ${gib(facts.freeDiskBytes, 0)} free`}
           <Tag kind={summaryKind} title={facts.source === 'collector' ? 'From the collector snapshot' : 'From gpus.json and the inputs beside the picker'} />
           <span>· RAM bus {facts.ramBandwidthGBs.toFixed(0)} GB/s</span>
@@ -206,6 +230,8 @@ export const Advisor: React.FC = () => {
         gpuColour={vendorOf(facts.gpuName).colour}
         spec={spec}
         card={card}
+        integrated={facts.integrated}
+        ramBandwidthGBs={facts.ramBandwidthGBs}
         latest={latest}
         npuTops={npuTopsOf(facts.cpuName)}
         bench={bench}
@@ -213,7 +239,9 @@ export const Advisor: React.FC = () => {
         measuring={measuring}
         canMeasure={!!api}
         error={benchError}
+        stopped={stopped === 'measure'}
         onMeasure={measure}
+        onStop={stopMeasure}
       />
 
       <Calibration
@@ -226,6 +254,8 @@ export const Advisor: React.FC = () => {
         measurements={measurements}
         calibrating={calibrating}
         calibrateError={calibrateError}
+        stopped={stopped === 'calibrate'}
+        onStop={stopCalibrate}
         factor={factor}
         defaultFactor={DEFAULT_FACTOR}
         factorIsSet={settings.calibrationFactor !== null}
@@ -240,6 +270,7 @@ export const Advisor: React.FC = () => {
       <ModelList
         rows={shown}
         vramBytes={facts.vramBytes}
+        ramBytes={facts.ramBytes}
         liveVram={facts.source === 'collector'}
         freeDiskBytes={facts.freeDiskBytes}
         diskLabel={diskLabel}
@@ -249,7 +280,7 @@ export const Advisor: React.FC = () => {
         tags={ALL_TAGS}
         filter={filter}
         onFilter={setFilter}
-        bandwidthKnown={bandwidthGBs !== null}
+        bandwidthKnown={bandwidthGBs !== null || facts.integrated}
       />
     </div>
   );

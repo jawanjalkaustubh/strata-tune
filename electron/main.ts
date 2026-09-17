@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import * as path from 'path';
+import * as os from 'os';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { CollectorClient } from './collector';
@@ -7,6 +8,8 @@ import { registerAdvisorIpc } from './bench';
 import { registerHistoryIpc } from './history';
 import { CaptureController, registerCaptureIpc } from './capture';
 import { registerTuneIpc } from './tune';
+import { legalFilePaths, registerAboutIpc } from './about';
+import { acceptanceFile, legalStatus, registerLegalIpc } from './legal';
 import { GameMode } from './game-mode';
 import type { CollectorState } from '../src/api';
 import type { LoadKind, Tick } from '../src/collector-types';
@@ -175,6 +178,7 @@ function registerCollectorIpc(c: CollectorClient) {
   ipcMain.handle('collector:gpu', () => c.gpu());
   ipcMain.handle('collector:hogs', (_e, seconds: number) => c.hogs(seconds));
   ipcMain.handle('collector:load', (_e, kind: LoadKind, seconds: number) => c.load(kind, seconds));
+  ipcMain.handle('collector:cancelLoad', () => c.cancelLoad());
   // A tick subscriber is a live session: the Monitor must keep its 2 Hz while a game is in front.
   ipcMain.on('collector:subscribe', () => {
     ticksWanted = true;
@@ -368,6 +372,7 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       registerAdvisorIpc(ipcMain, () => collector);
       registerCapture();
       registerHistoryIpc(ipcMain);
+      registerAboutIpc(ipcMain, () => collector);
       createWindow();
       // One UAC prompt per app start (plan section 5). A decline is a state the
       // Audit page shows with a Retry, not a failure of the app.
@@ -376,7 +381,14 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       registerTuneIpc(ipcMain, collector, (channel, payload) => {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
       });
-      collector.start().catch((e) => console.error('[collector] start failed:', e));
+      // Plan section 27a, first launch: the collector waits until DISCLAIMER.md's current
+      // version has been accepted once (electron/legal.ts keeps the record beside the handshake).
+      const disclaimer = legalFilePaths({ isPackaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath }).disclaimer;
+      const acceptance = acceptanceFile(path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune'));
+      const startCollector = () => collector?.start().catch((e) => console.error('[collector] start failed:', e));
+      registerLegalIpc(ipcMain, disclaimer, acceptance, startCollector);
+      if (legalStatus(disclaimer, acceptance).ok) startCollector();
+      else console.log('[legal] the disclaimer has not been accepted for its current version; the collector waits for I understand');
     })
     .catch((e) => fatal('Startup failed', e));
 

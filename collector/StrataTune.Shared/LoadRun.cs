@@ -18,6 +18,8 @@ public enum LoadRunState
     [JsonStringEnumMemberName("running")] Running,
     [JsonStringEnumMemberName("done")] Done,
     [JsonStringEnumMemberName("failed")] Failed,
+    /// <summary>Stopped through POST /load/{id}/cancel (plan section 17c): the process was killed, the samples taken until then are kept, and no error is recorded.</summary>
+    [JsonStringEnumMemberName("cancelled")] Cancelled,
 }
 
 public sealed record LoadRunRequest(LoadKind Kind, int Seconds);

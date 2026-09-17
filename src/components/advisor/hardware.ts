@@ -10,6 +10,8 @@ export interface HardwareFacts {
   gpuName: string;
   /** The driver's facts for the card in the slot (power limits, clocks, ceilings): what "this card" means on the stats card. null standalone. */
   gpu: GpuFacts | null;
+  /** The collector lists no discrete GPU (plan 17d row 1): models run on the CPU from RAM, and the page says a discrete GPU is what changes it. */
+  integrated: boolean;
   cpuName: string | null;
   driver: string | null;
   vramBytes: number;
@@ -45,8 +47,9 @@ export function factsFromSnapshot(s: StaticSnapshot, freeRam: number | null, mod
   const mts = s.ram.modules.some((m) => m.configuredMts > 0);
   return {
     source: 'collector',
-    gpuName: gpu?.name ?? 'No NVML GPU',
+    gpuName: gpu?.name ?? 'Integrated graphics (no discrete GPU)',
     gpu: gpu ?? null,
+    integrated: !gpu,
     cpuName: s.cpu.name,
     driver: s.gpuDriver.version || gpu?.driver || null,
     vramBytes: (gpu?.vram.totalMiB ?? 0) * MIB,
@@ -73,6 +76,7 @@ export function factsFromPicker(p: PickerChoice, vramGiB: number): HardwareFacts
     source: 'picker',
     gpuName: p.gpuName,
     gpu: null,
+    integrated: false,
     cpuName: null,
     driver: null,
     vramBytes: vramGiB * GIB,

@@ -63,6 +63,8 @@ export interface ViewRow {
   contextCapped: boolean;
   /** Would load right now against free VRAM (and RAM); false while another app holds the card. */
   fitsNow: boolean;
+  /** No discrete GPU (plan 17d row 1): the row runs on the CPU from RAM at the RAM bus's rate, and the verdict says so instead of "runs slowly". */
+  cpuOnly: boolean;
   downloadBytes: number;
   fitsOnDisk: boolean;
   /** The analysis row behind this one, so bestFor can run on what advise() returned. */
@@ -89,9 +91,13 @@ export interface GpuSpecView {
     vramType: string;
     busBits: number;
     memoryGbps: number;
+    /** The reference memory clock in the GPU-Z convention, for the MEMORY CLOCK tile; null when the table has none. */
+    memoryClockMhz: number | null;
     baseMhz: number | null;
     boostMhz: number;
     tdpW: number;
+    /** Laptop parts: the TGP range the laptop maker chooses from; null on a desktop card. */
+    tgpRangeW: [number, number] | null;
     suggestedPsuW: number | null;
   };
   source: string;
@@ -124,9 +130,11 @@ export function gpuSpecOf(name: string, vramMiB?: number): GpuSpecView | null {
       vramType: g.vramType,
       busBits: g.busBits,
       memoryGbps: g.memoryGbps,
+      memoryClockMhz: g.memoryClockMhz,
       baseMhz: g.baseMhz,
       boostMhz: g.boostMhz,
       tdpW: g.tdpW,
+      tgpRangeW: g.tgpRangeW ?? null,
       suggestedPsuW: g.suggestedPsuW
     },
     source: g.source
@@ -163,7 +171,7 @@ interface AdviseArgs {
 }
 
 /** The analysis estimates at its default factor; tok/s is linear in it, so the calibrated factor is one scale. */
-function toView(r: AdvisorRow, scale: number | null): ViewRow {
+function toView(r: AdvisorRow, scale: number | null, cpuOnly = false): ViewRow {
   return {
     key: r.quant.tag,
     name: r.model.name,
@@ -180,31 +188,44 @@ function toView(r: AdvisorRow, scale: number | null): ViewRow {
     moe: r.model.activeParamsB < r.model.paramsB,
     contextCapped: r.contextCapped,
     fitsNow: r.fitsNow,
+    cpuOnly,
     downloadBytes: r.downloadBytes,
     fitsOnDisk: r.fitsOnDisk,
     source: r
   };
 }
 
+/**
+ * Every model against this machine. With no discrete GPU (plan 17d row 1) the whole model
+ * streams from RAM: the analysis runs with no VRAM and the RAM bus as the bandwidth, so every
+ * row that fits in RAM comes out "slow" (fully spilled, paced by the RAM bus) and is relabelled
+ * as running on the CPU; the tok/s figure is the plan's CPU-only estimate (dual-channel DDR5
+ * at about 80 GB/s puts a 4B model at a few tokens a second).
+ */
 export function adviseRows({ facts, bandwidthGBs, contextTokens, factor }: AdviseArgs): ViewRow[] {
+  const cpuOnly = facts.integrated;
   const rows = advise({
     vramBytes: facts.vramBytes,
     vramFreeBytes: facts.vramFreeBytes,
     ramBytes: facts.ramBytes,
     ramFreeBytes: facts.ramFreeBytes,
-    gpuBandwidthGBs: bandwidthGBs ?? 0,
+    gpuBandwidthGBs: cpuOnly ? facts.ramBandwidthGBs : (bandwidthGBs ?? 0),
     ramBandwidthGBs: facts.ramBandwidthGBs,
     freeDiskBytes: facts.freeDiskBytes,
     contextTokens,
     models: MODELS
   });
-  return rows.map((r) => toView(r, bandwidthGBs === null ? null : factor / CALIBRATION_FACTOR));
+  const scale = cpuOnly || bandwidthGBs !== null ? factor / CALIBRATION_FACTOR : null;
+  return rows.map((r) => toView(r, scale, cpuOnly));
 }
 
-/** The analysis's own pick per use, mapped back to the view row by pull tag. */
+/** The analysis's own pick per use, mapped back to the view row by pull tag; on the CPU, the largest model per use that fits in RAM at all (nothing runs fast there). */
 export function bestRows(rows: ViewRow[]): Record<UseTag, ViewRow | null> {
   const byTag = new Map(rows.map((r) => [r.pullTag, r]));
   const source = rows.map((r) => r.source);
+  if (rows.some((r) => r.cpuOnly)) {
+    return Object.fromEntries(USE_TAGS.map((tag) => [tag, rows.find((r) => r.bucket === 'slow' && !r.contextCapped && r.tags.includes(tag)) ?? null])) as Record<UseTag, ViewRow | null>;
+  }
   return Object.fromEntries(USE_TAGS.map((tag) => [tag, byTag.get(bestFor(source, tag)?.quant.tag ?? '') ?? null])) as Record<UseTag, ViewRow | null>;
 }
 

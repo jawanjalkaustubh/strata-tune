@@ -25,4 +25,5 @@ namespace StrataTune.Shared;
 [JsonSerializable(typeof(TuneStartRequest))]
 [JsonSerializable(typeof(TuneEnableRequest))]
 [JsonSerializable(typeof(TuneExport))]
+[JsonSerializable(typeof(Timers))]
 public sealed partial class WireJson : JsonSerializerContext;

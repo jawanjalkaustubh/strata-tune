@@ -18,11 +18,13 @@ import type { CollectorClient } from './collector';
 import { DEFAULT_ALLOWLIST, type GameMode, type GameModeState } from './game-mode';
 import { curate, type ProcessInfo, type ProcessPick } from './picker';
 import { availability, PresentMonHost, type PresentMonAvailability, type PresentMonExit } from './presentmon';
+import { hold, release } from './keepAwake';
 import * as sessions from './sessions';
 import type { CaptureSession, FrameRow, GpuSample } from '../src/analysis/session-types';
 import type { HogsResult, SensorRow, StaticSnapshot, Tick } from '../src/collector-types';
-import { exportReport, reportFileName } from '../src/report/export';
-import type { Report } from '../src/report/report-types';
+import { exportReportFile, reportFileNameOf } from '../src/report/export';
+import type { Report, ReportFile } from '../src/report/report-types';
+import type { ScoreSheet } from '../src/report/score-types';
 
 export type { PresentMonAvailability } from './presentmon';
 export type { SessionListItem } from './sessions';
@@ -198,6 +200,9 @@ export class CaptureController extends EventEmitter {
 
   private set(patch: Partial<CaptureState>): void {
     this.state = { ...this.state, ...patch };
+    // Plan 17c: the machine stays awake while a capture runs or saves, and never past that (the display is not held).
+    if (this.state.status === 'capturing' || this.state.status === 'saving') hold('capture');
+    else release('capture');
     this.emit('state', this.state);
   }
 
@@ -487,6 +492,7 @@ export function registerCaptureIpc(ipc: IpcMain, controller: CaptureController, 
   ipc.handle('sessions:trashCount', () => sessions.trashCount());
   ipc.handle('sessions:emptyTrash', (e: IpcMainInvokeEvent) => emptyTrash(e));
   ipc.handle('sessions:exportHtml', (e: IpcMainInvokeEvent, data: Report) => exportHtml(e, data));
+  ipc.handle('sessions:exportSheet', (e: IpcMainInvokeEvent, sheet: ScoreSheet) => exportHtml(e, { kind: 'score', sheet }));
   controller.on('state', (s: CaptureState) => send('capture:state', s));
   controller.on('frames', (f: CaptureFrames) => send('capture:frames', f));
 }
@@ -513,17 +519,17 @@ async function emptyTrash(e: IpcMainInvokeEvent): Promise<number | null> {
 /** The single-file renderer from npm run build:report, beside dist/ in dev and in the package alike. */
 const reportTemplate = () => path.join(app.getAppPath(), 'dist-report', 'report-template.html');
 
-/** Plan section 19: the built template with the report JSON in its slot, saved where the user says. Resolves the path, or null when cancelled. */
-async function exportHtml(e: IpcMainInvokeEvent, data: Report): Promise<string | null> {
+/** Plan section 19: the built template with the report JSON in its slot (a stutter report or a score sheet), saved where the user says. Resolves the path, or null when cancelled. */
+async function exportHtml(e: IpcMainInvokeEvent, data: ReportFile): Promise<string | null> {
   let template: string;
   try {
     template = fs.readFileSync(reportTemplate(), 'utf-8');
   } catch {
     throw new Error('The report template is not built: run npm run build:report');
   }
-  const html = exportReport(data.report, data.session, template);
+  const html = exportReportFile(data, template);
   const win = BrowserWindow.fromWebContents(e.sender);
-  const options = { title: 'Export report', defaultPath: path.join(app.getPath('downloads'), reportFileName(data.session)), filters: [{ name: 'HTML report', extensions: ['html'] }] };
+  const options = { title: data.kind === 'score' ? 'Save comparison sheet' : 'Export report', defaultPath: path.join(app.getPath('downloads'), reportFileNameOf(data)), filters: [{ name: 'HTML report', extensions: ['html'] }] };
   const r = await (win ? dialog.showSaveDialog(win, options) : dialog.showSaveDialog(options));
   if (r.canceled || !r.filePath) return null;
   fs.writeFileSync(r.filePath, html, 'utf-8');

@@ -12,6 +12,7 @@
  * classifier's own account of itself (plan §11a), and the file keeps its case numbers.
  */
 import type { BenchCheck, BenchCheckRow } from '../analysis/session-types';
+import type { ScoreSheet } from './score-types';
 
 export type { BenchCheck, BenchCheckRow };
 
@@ -115,7 +116,20 @@ export interface SessionSummary {
   appVersion?: string;
 }
 
+/** A stutter or bench report (plan §11, §11a); a file written before 2026-09-16 has no `kind`. */
 export interface Report {
+  kind?: 'stutter';
   report: StutterReport;
   session: SessionSummary;
 }
+
+/** The comparison sheet of a scored run (plan §16 'Save as .html'): src/report/score-types.ts. */
+export interface ScoreReportFile {
+  kind: 'score';
+  sheet: ScoreSheet;
+}
+
+/** What the one template renders: ReportFileView switches on `kind`. */
+export type ReportFile = Report | ScoreReportFile;
+
+export const isScoreReport = (r: ReportFile): r is ScoreReportFile => r.kind === 'score';

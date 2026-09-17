@@ -72,8 +72,17 @@ describe('Monitor panels render the dev box', () => {
     expect(noSnapshot.cpu).toContain('Tctl');
     const meta = devboxMeta().filter((m) => !/12VHPWR/.test(m.name));
     expect(render(devbox(), meta).gpu).not.toContain('12V-2x6');
+    // No NVML card: the dev box's own iGPU node stands in (plan 17d row 1), headed by its library name, no NVML-shaped rows.
     const tick = devboxTick();
     tick.gpu = [];
-    expect(render(devbox(), devboxMeta(), tick).gpu).toContain('no NVML GPU');
+    const igpu = render(devbox(), devboxMeta(), tick).gpu;
+    expect(igpu).toContain('AMD Radeon(TM) Graphics');
+    expect(igpu).toContain('integrated · no discrete card');
+    expect(igpu).toContain('Core clock');
+    expect(igpu).not.toContain('12V-2x6');
+    expect(igpu).not.toContain('Requested');
+    // No GPU node of any kind: one sentence.
+    const none = render(devbox(), devboxMeta().filter((m) => !/^Gpu/i.test(m.hardwareType)), tick).gpu;
+    expect(none).toContain('No GPU sensors on this machine');
   });
 });

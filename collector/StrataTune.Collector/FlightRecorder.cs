@@ -31,6 +31,7 @@ internal sealed class FlightRecorder
     private readonly Action<string> _log;
     private DateTimeOffset _lastFlush = DateTimeOffset.MinValue;
     private bool _active;
+    private TelemetryWindow? _window;
 
     public FlightRecorder(Action<string> log) => _log = log;
 
@@ -94,9 +95,30 @@ internal sealed class FlightRecorder
         }
     }
 
+    /// <summary>A scored run starts: every sample from here to <see cref="EndWindow"/> goes
+    /// into its per-component summary (plan section 16, the .html sheet's tables).</summary>
+    public void BeginWindow(TelemetryIds ids)
+    {
+        lock (_gate)
+            _window = new TelemetryWindow(ids);
+    }
+
+    /// <summary>The summary of the samples since <see cref="BeginWindow"/>, or null when none was open.</summary>
+    public TelemetrySummary? EndWindow()
+    {
+        lock (_gate)
+        {
+            var summary = _window?.Result();
+            _window = null;
+            return summary;
+        }
+    }
+
     public void Sample(long qpc, GpuFacts? gpu, CpuSample? cpu, SensorRow row)
     {
         var now = DateTimeOffset.UtcNow;
+        lock (_gate)
+            _window?.Add(gpu, cpu, row);
         var sensors = new Dictionary<string, float>();
         foreach (var (id, value) in row.Values)
             if (SensorPrefixes.Any(id.StartsWith))

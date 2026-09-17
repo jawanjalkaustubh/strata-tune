@@ -1,10 +1,13 @@
 import type { SupportLinks } from './support';
-import type { FlightLine, GpuFacts, HogsResult, LoadKind, LoadRun, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, Tick, TuneExport, TuneRun, TuneStatus } from './collector-types';
+import type { FlightLine, GpuFacts, HogsResult, LoadKind, LoadRun, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, PstateDeltas, Tick, Timers, TuneExport, TuneRun, TuneRunKind, TuneStatus } from './collector-types';
 import type { BenchError, BenchGpuRequest, GpuBench, OllamaBench, OllamaList } from '../electron/bench';
 import type { CaptureFrames, CaptureState, ProcessPick, SessionListItem } from '../electron/capture';
 import type { CaptureSession } from './analysis/session-types';
 import type { Report } from './report/report-types';
+import type { ScoreSheet } from './report/score-types';
 import type { HistoryEntry } from './analysis/history';
+import type { AboutSystem, DirectXInfo, LegalTexts, SaveFileRequest } from '../electron/about';
+import type { LegalStatus } from '../electron/legal';
 
 export type { BenchError, BenchGpuRequest, GpuBench, OllamaBench, OllamaInstalled, OllamaList } from '../electron/bench';
 export type { BenchSummary, CaptureFrames, CaptureState, CaptureStatus, PickGroup, ProcessInfo, ProcessPick, SessionListItem } from '../electron/capture';
@@ -14,6 +17,10 @@ export interface AdvisorApi {
   /** run false answers from the bench.json cache (null when nothing usable); run true measures and caches. */
   benchGpu(req: BenchGpuRequest): Promise<GpuBench | BenchError | null>;
   benchOllama(model: string): Promise<OllamaBench | BenchError>;
+  /** Stop (plan section 17c): kills the worker mid-sweep; the pending benchGpu answers { error, code: 'cancelled' }. */
+  cancelBenchGpu(): Promise<void>;
+  /** Stop: aborts the timed generation; the pending benchOllama answers { error, code: 'cancelled' }. */
+  cancelBenchOllama(): Promise<void>;
   ollamaList(): Promise<OllamaList | BenchError>;
 }
 
@@ -38,6 +45,8 @@ export interface CollectorApi {
   hogs(seconds: number): Promise<HogsResult>;
   /** Resolves once the run is done or failed; the main process polls the collector. */
   load(kind: LoadKind, seconds: number): Promise<LoadRun>;
+  /** Stop (plan section 17c): cancels the load run in flight, so the pending load() resolves with state 'cancelled'; answers whether one was cancelled. */
+  cancelLoad(): Promise<boolean>;
   subscribe(): void;
   unsubscribe(): void;
   onTick(cb: (tick: Tick) => void): () => void;
@@ -66,6 +75,8 @@ export interface SessionsApi {
   setVerdict(id: string, verdict: string): Promise<void>;
   reveal(id: string): Promise<void>;
   exportHtml(data: Report): Promise<string | null>;
+  /** The comparison sheet of a scored run (plan section 16) through the same template and save dialog. */
+  exportSheet(sheet: ScoreSheet): Promise<string | null>;
   trashCount(): Promise<number>;
   emptyTrash(): Promise<number | null>;
 }
@@ -76,6 +87,12 @@ export interface HistoryApi {
   add(entry: HistoryEntry): Promise<HistoryEntry[]>;
 }
 
+/** The user's "never test above" clocks for a hunt (plan section 16), absent fields meaning no cap. */
+export interface TuneCaps {
+  coreCapMhz?: number;
+  memCapMhz?: number;
+}
+
 /**
  * OC auto-tune (electron/tune.ts, plan section 16). Every write answers the whole
  * TuneStatus; a refusal rejects with the collector's reason. Run events are pushed
@@ -83,14 +100,12 @@ export interface HistoryApi {
  */
 export interface TuneApi {
   state(): Promise<TuneStatus>;
-  /** On registers the revert-at-logon task and records the warning's acknowledgement (`acknowledgedAt`); off takes anything of Tune's off the card and removes it. */
+  /** On records the warning's acknowledgement (`acknowledgedAt`); off takes anything of Tune's off the card first. */
   enable(enabled: boolean, acknowledgedAt?: string): Promise<TuneStatus>;
-  /** `enabled` is this side's setting, checked beside the collector's file flag so neither can start a hunt alone. */
-  start(kind: 'core' | 'memory', enabled: boolean): Promise<TuneStatus>;
-  validate(): Promise<TuneStatus>;
+  /** `enabled` is this side's setting, checked beside the collector's file flag so neither can start a hunt alone; 'hunt' is memory then core, each from the card as found; `vendor` is what the user's vendor tool shows (core MHz, memory in the slider's units), needed when a tune of the tool's is on the card. */
+  start(kind: TuneRunKind, enabled: boolean, vendor?: PstateDeltas, caps?: TuneCaps): Promise<TuneStatus>;
   stop(): Promise<TuneStatus>;
-  /** A validated result goes on the card as VALIDATING; a clean shutdown and a start promote it. */
-  keep(): Promise<TuneStatus>;
+  /** Takes anything of Tune's off the card now, or acknowledges a crash revert. */
   revert(): Promise<TuneStatus>;
   /** Null until a hunt has a result. */
   export(): Promise<TuneExport | null>;
@@ -99,6 +114,26 @@ export interface TuneApi {
   subscribe(): void;
   unsubscribe(): void;
   onRun(cb: (run: TuneRun) => void): () => void;
+}
+
+/** The About hub (electron/about.ts, plan section 17 'About'): reads only, plus a save dialog for the tools' files. */
+export interface AboutApi {
+  system(): Promise<AboutSystem>;
+  /** Cached per Windows build; the first call runs dxdiag, about 20 s. */
+  directx(): Promise<DirectXInfo>;
+  /** LICENSE, DISCLAIMER.md and THIRD-PARTY-NOTICES.md verbatim from the bundled files (plan 27a). */
+  legal(): Promise<LegalTexts>;
+  /** GET /timers; with `traceSeconds` the collector runs powercfg's energy trace to name who holds the timer. */
+  timers(traceSeconds?: number): Promise<Timers>;
+  /** Asks where to save and writes the file; resolves the path, or null when cancelled. */
+  saveFile(req: SaveFileRequest): Promise<string | null>;
+  openLogs(): Promise<void>;
+}
+
+/** First launch (electron/legal.ts, plan 27a): the disclaimer's acceptance record; accept writes it for the current version and starts the collector that waited. */
+export interface LegalApi {
+  status(): Promise<LegalStatus>;
+  accept(): Promise<LegalStatus>;
 }
 
 /** What electron/preload.cjs exposes as window.strata. Keep the two in step. */
@@ -116,6 +151,8 @@ export interface StrataApi {
   sessions: SessionsApi;
   history: HistoryApi;
   tune: TuneApi;
+  about: AboutApi;
+  legal: LegalApi;
 }
 
 declare global {

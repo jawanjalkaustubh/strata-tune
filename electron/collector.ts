@@ -28,6 +28,7 @@ const ROUTES = {
   hogs: (seconds: number, excludePid: number) => `/procs/hogs?seconds=${seconds}&excludePid=${excludePid}`,
   load: '/load',
   loadRun: (id: string) => `/load/${encodeURIComponent(id)}`,
+  loadCancel: (id: string) => `/load/${encodeURIComponent(id)}/cancel`,
   stream: '/stream',
   shutdown: '/shutdown'
 };
@@ -338,17 +339,43 @@ export class CollectorClient extends EventEmitter {
     return this.get<HogsResult>(ROUTES.hogs(seconds, process.pid), seconds * 1000 + 15_000);
   }
 
-  /** Starts a worker run and polls it to completion so the renderer sees one call, one result. */
+  /** The run being polled by load(), so a Stop from the renderer knows which one to cancel. */
+  private activeLoad: string | null = null;
+
+  /** Starts a worker run and polls it to completion so the renderer sees one call, one result; a cancelled run resolves as such, never throws. */
   async load(kind: LoadKind, seconds: number): Promise<LoadRun> {
     const request: LoadRunRequest = { kind, seconds };
     let run = await this.post<LoadRun>(ROUTES.load, request);
-    const deadline = Date.now() + seconds * 1000 + 30_000;
-    while (run.state === 'running' && Date.now() < deadline) {
-      await delay(500);
-      run = await this.get<LoadRun>(ROUTES.loadRun(run.id));
+    this.activeLoad = run.id;
+    try {
+      const deadline = Date.now() + seconds * 1000 + 30_000;
+      while (run.state === 'running' && Date.now() < deadline) {
+        await delay(500);
+        run = await this.get<LoadRun>(ROUTES.loadRun(run.id));
+      }
+    } finally {
+      this.activeLoad = null;
     }
     if (run.state === 'running') throw new Error(`Load run ${run.id} did not finish within ${seconds + 30} s`);
     return run;
+  }
+
+  /**
+   * Stop (plan section 17c): cancels the run load() is polling, if any. The collector kills
+   * the worker or bench and answers once it is gone, so load() resolves as cancelled on its
+   * next poll. Answers whether a run was cancelled; a run that ended on its own meanwhile
+   * (409) counts as none.
+   */
+  async cancelLoad(): Promise<boolean> {
+    const id = this.activeLoad;
+    if (!id) return false;
+    try {
+      await this.post<LoadRun>(ROUTES.loadCancel(id), undefined);
+      return true;
+    } catch (e) {
+      if (/answered 409/.test((e as Error).message)) return false;
+      throw e;
+    }
   }
 
   // -------------------------------------------------------------- SSE

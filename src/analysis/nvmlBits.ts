@@ -11,8 +11,12 @@ export const HW_THERMAL_SLOWDOWN = 0x40;
 export const HW_POWER_BRAKE = 0x80;
 /** Newer than the public header; on Blackwell (driver 616.92) it reads as idle / not loaded. */
 export const IDLE_HINT = 0x400;
-/** The card is protecting itself: heat, or the board's power brake. */
-export const THERMAL_OR_BRAKE = HW_SLOWDOWN | SW_THERMAL_SLOWDOWN | HW_THERMAL_SLOWDOWN | HW_POWER_BRAKE;
+/** Heat: the software and hardware thermal slowdowns. */
+export const THERMAL = SW_THERMAL_SLOWDOWN | HW_THERMAL_SLOWDOWN;
+/** The board's brake: the external power-brake signal and the hardware slowdown it engages. */
+export const POWER_BRAKE = HW_SLOWDOWN | HW_POWER_BRAKE;
+/** The card is protecting itself: heat, or the board's power brake. The one set the collector ends a ladder on (TuneLadder.ThermalBits, src/analysis/tune.ts THERMAL_BITS). */
+export const THERMAL_OR_BRAKE = THERMAL | POWER_BRAKE;
 /** Any reason the clocks are held below what the boost governor would give. */
 export const SLOWDOWN = SW_POWER_CAP | THERMAL_OR_BRAKE;
 

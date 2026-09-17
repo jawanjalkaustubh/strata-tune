@@ -1,6 +1,6 @@
 # Strata Tune — disclaimer
 
-Version 1 · 2026-09-16 · applies to every build of Strata Tune
+Version 2 · 2026-09-17 · applies to every build of Strata Tune
 
 Strata Tune is free software by Kaustubh Jawanjal ("the author"). By installing or using it
 you accept the terms below. If you do not accept them, do not use the app.
@@ -25,10 +25,13 @@ Strata Tune is free; nothing was paid and nothing can be refunded.
 
 - The monitoring, audit, capture and advisor features **change nothing** on your machine.
   They read sensors and run measured workloads.
-- **Tune** is off by default and sits behind a warning. When you enable it, the app applies
-  only the changes you allow. Overclocking, undervolting, and changing power limits, voltages
-  or fan curves can crash the machine, lose unsaved work in other programs, shorten the life
-  of or permanently damage components, and **may void your hardware warranty**.
+- **Headroom** (the Tune page's hunt) is off by default and sits behind a warning. It tests
+  small clock offsets on your graphics card for minutes at a time and always puts the card
+  back as it found it; it never changes a voltage, a power limit or a fan curve, and it writes
+  nothing to the CPU. The values it finds are yours to apply in your card vendor's tool. A
+  test can still crash the driver or the machine and lose unsaved work in other programs, and
+  any overclock you then apply yourself can crash the machine, shorten the life of or
+  permanently damage components, and **may void your hardware warranty**.
 - The stress workloads push the GPU and CPU to their limits by design. A machine with a
   marginal cooler, power supply or overclock may hang or reboot during a run.
 

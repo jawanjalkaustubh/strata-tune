@@ -113,6 +113,9 @@ export interface GpuFacts {
    * under load is overclocked by a route the offsets do not report (a vendor tool, a VF
    * curve): the dev box reads offsets 0 / 0 and holds 3226 / 16032 MHz. A driver without
    * the export gives null for the whole block; a field the card does not answer is null alone.
+   * The memory offset is what the driver says, counted on the effective data rate like the
+   * vendor sliders (a +2036 NVML MHz P0 delta reads +4072 here); thisCard.ts nvmlMemOffsetMhz
+   * halves it before it meets an NVML clock.
    */
   clockOffsets: { smMhz: number | null; memMhz: number | null; maxClockSmMhz: number | null; maxClockMemMhz: number | null } | null;
   /**
@@ -121,7 +124,7 @@ export interface GpuFacts {
    * reads as 0. Null without nvapi64.dll or the interface. Optional because saved snapshots
    * from before 2026-09-16 have no such key; the live wire always carries it.
    */
-  pstateDeltas?: { coreMhz: number; memMhz: number } | null;
+  pstateDeltas?: PstateDeltas | null;
   /**
    * Unit counts NVML never reports, read once per session through NVAPI (the way GPU-Z and
    * HWiNFO read them) and matched to this device by PCI bus. `shaders`
@@ -229,7 +232,8 @@ export interface LoadRun {
   id: string;
   kind: LoadKind;
   seconds: number;
-  state: 'running' | 'done' | 'failed';
+  /** 'cancelled' is Stop (POST /load/{id}/cancel, plan section 17c): the process was killed, the samples taken until then are kept, no error is recorded. */
+  state: 'running' | 'done' | 'failed' | 'cancelled';
   /** Worker exit code once finished; 0 ok, 3 no hardware GPU, 10 device lost. */
   exitCode: number | null;
   qpcStart: number;
@@ -265,20 +269,49 @@ export interface Tick {
 // ---- OC auto-tune (plan section 16): GET /tune/state, the SSE 'tune' event, the state file ----
 
 /**
- * The rollback state machine. PENDING is on disk before any apply; VALIDATING is a kept
- * result waiting for one clean shutdown and a start; KNOWN_GOOD is the only state in which
- * nothing of Tune's is on the card; REVERTED says the last start found a candidate applied
- * without a clean shutdown and put the baseline back.
+ * The state machine as trimmed on 2026-09-16: IDLE (nothing of Tune's is on the card) →
+ * PENDING (a rung is on the card; on disk before the apply) → IDLE. REVERTED is only the
+ * attribution shown after a crash, which rung was on the card when the machine or the
+ * collector died, until the next run starts.
  */
-export type TuneRollback = 'KNOWN_GOOD' | 'PENDING' | 'VALIDATING' | 'REVERTED';
-export type TuneRunKind = 'core' | 'memory' | 'validate';
+export type TuneRollback = 'IDLE' | 'PENDING' | 'REVERTED';
+/** hunt is the memory ladder then the core ladder, each from the card as found; core and memory run one ladder alone. */
+export type TuneRunKind = 'hunt' | 'core' | 'memory';
+export type TuneLadderKind = 'core' | 'memory';
 export type TuneRunState = 'running' | 'done' | 'failed' | 'stopped';
-export type TunePattern = 'heavy' | 'light' | 'transient';
-export type TunePhase = 'reference' | 'coarse' | 'bisect' | 'sweep' | 'validate' | 'restore';
-/** Per candidate: 'invalid' means a throttle bit was set during the heavy pattern, so the rung proves nothing. */
+/**
+ * The two halves of a rung (plan section 16, 'a rung is a minute of realistic load'): variable
+ * is 30 s of heavy bursts 2–4 s apart with light or idle gaps, hash-checked on every burst;
+ * sustained is 30 s of full load, hash-checked on every dispatch, whose throughput and
+ * closing stream pass are the rung's score.
+ */
+export type TunePattern = 'variable' | 'sustained';
+/**
+ * reference is the stock hash; as-found the two-minute scored run of the card with nothing
+ * written; vendor the user's tune written through our route; climb and bisect the rungs;
+ * official the two-minute scored run of the certified pair; restore puts the baseline back;
+ * holds-now reads what the card holds after that.
+ */
+export type TunePhase = 'reference' | 'as-found' | 'vendor' | 'climb' | 'bisect' | 'official' | 'restore' | 'holds-now';
+/** Per rung: 'invalid' means the rung says nothing about the silicon (the cooler limited it, the repeats disagreed, another tool wrote the offsets). */
 export type TuneVerdict = 'stable' | 'unstable' | 'invalid' | 'device-lost';
+/** 'throttled' is a thermal-limit bit under the sustained half (the cooler is the limit); a power cap is the normal state and never sets it. */
 export type TuneValidity = 'ok' | 'throttled' | 'unknown';
 export type TuneConfidence = 'high' | 'medium' | 'low';
+/**
+ * Why a ladder ended: hash, throughput / bandwidth and device-lost are the failure ladder's
+ * stages 1–3; thermal is the cooler; inconsistent a scored run whose repeats disagreed;
+ * foreign-tune a vendor tool's tune found on the card before anything was written (our
+ * route would replace it, so nothing was) with no value entered for it; vendor-mismatch a
+ * value entered that the card as found does not bear out (also before anything was
+ * written); additivity a first rung the driver did not add on top of the card as found;
+ * driver-max and ceiling the driver's offset range and clock ceiling; cap the request's
+ * rung limit; top-of-table a core ladder whose offsets move neither the top of the curve, the
+ * sustained clock nor the throughput (plan section 16: the card already runs at the top of its
+ * clock table, certified +0 core, a result and not a failure); user-cap the user's own
+ * "never test above" clock.
+ */
+export type TuneStopReason = 'hash' | 'throughput' | 'bandwidth' | 'device-lost' | 'thermal' | 'inconsistent' | 'foreign-tune' | 'vendor-mismatch' | 'additivity' | 'driver-max' | 'ceiling' | 'cap' | 'top-of-table' | 'user-cap';
 
 /** NVAPI's P0 frequency deltas in kHz (exact, what a revert restores) with the MHz pair the page shows. */
 export interface TuneDeltas {
@@ -288,11 +321,109 @@ export interface TuneDeltas {
   memMhz: number;
 }
 
+/**
+ * A core / memory pair in MHz, exactly the C# PstateDeltas record: P0 offsets as NVAPI reports
+ * them, a result's certified offsets, or a vendor tool's values in its slider's units
+ * (src/analysis/tune.ts vendorSlider / vendorDeltas convert between ours and theirs).
+ */
+export interface PstateDeltas {
+  coreMhz: number;
+  memMhz: number;
+}
+
+/** The clocks NVML saw the card hold under the sustained half. */
+export interface HeldClocks {
+  smMhz: number;
+  memMhz: number;
+}
+
+/**
+ * A rung's or a scored run's points on the fixed scale of plan section 16 (a reference RTX
+ * 5090 at reference clocks = 10,000, half compute and half bandwidth; the constants and their
+ * arithmetic are in src/analysis/tune.ts): the total, its two halves, and the measured
+ * figures they came from.
+ */
+export interface TuneScore {
+  points: number;
+  computePoints: number;
+  bandwidthPoints: number;
+  throughputGsps: number;
+  bandwidthGBs: number;
+}
+
+/** Average and peak of one telemetry figure over a scored run's samples. */
+export interface TelemetryStat {
+  avg: number;
+  max: number;
+}
+
+/**
+ * The GPU over a scored run, from the flight recorder's 2 Hz samples: what the .html comparison
+ * sheet tabulates (plan section 16). A figure this card does not report is null and the sheet
+ * leaves its row out; `limitShare` is the share of samples under each decoded NVML limit reason.
+ */
+export interface GpuTelemetry {
+  coreMhz: TelemetryStat;
+  memMhz: TelemetryStat;
+  coreC: TelemetryStat;
+  hotspotC: TelemetryStat | null;
+  memoryJunctionC: TelemetryStat | null;
+  boardW: TelemetryStat;
+  powerCapW: number;
+  limitShare: Record<string, number>;
+  fanPercent: TelemetryStat | null;
+}
+
+/** The CPU over the same samples; null on a box where the library does not read the CPU (no PawnIO, ARM64). */
+export interface CpuTelemetry {
+  effectiveMhz: TelemetryStat | null;
+  packageW: TelemetryStat | null;
+  tctlC: TelemetryStat | null;
+}
+
+export interface TelemetrySummary {
+  samples: number;
+  seconds: number;
+  gpu: GpuTelemetry | null;
+  cpu: CpuTelemetry | null;
+}
+
+/**
+ * A scored run: the as-found card (two minutes, nothing written) or the official run of the
+ * certified pair. `repeats` is how many times the 60 s shape ran; `score` is null when the run
+ * failed a stage; `held` the peak clocks under the sustained halves, `topSmMhz` under the
+ * variable halves; `steppedDown` marks an official run re-run one fine step lower after a failure.
+ */
+export interface ScoredRun {
+  deltas: TuneDeltas;
+  repeats: number;
+  verdict: TuneVerdict;
+  score: TuneScore | null;
+  held: HeldClocks | null;
+  topSmMhz: number | null;
+  note: string;
+  telemetry: TelemetrySummary | null;
+  steppedDown: boolean;
+  /** The sustained halves' mean SM clock: what a core offset moves on a power-capped card when the top of the curve cannot (plan section 16); optional because results saved before 2026-09-17 have no such key. */
+  meanSmMhz?: number | null;
+}
+
+/** How one ladder ended: the offset (MHz above the baseline P0 delta) it stopped at, the failure-ladder stage when the reason is one, and the sentence. */
+export interface TuneLadderStop {
+  ladder: TuneLadderKind;
+  reason: TuneStopReason;
+  offsetMhz: number;
+  stage: number | null;
+  note: string;
+}
+
 export interface TuneReverted {
   candidate: TuneDeltas;
   baseline: TuneDeltas;
   at: string;
   reason: string;
+  /** 4: a hard hang, the ladder's last stage. */
+  stage: number;
 }
 
 export interface TuneHistoryEntry {
@@ -303,37 +434,63 @@ export interface TuneHistoryEntry {
 }
 
 /**
- * What a finished hunt found, with the baseline it was measured from; `validated` flips after a
- * validate run passes, `promoted` when a kept result went through a clean shutdown and a clean
- * boot (the plan's known-good; the offsets are not re-applied after that boot). The reference
- * clocks are what NVML saw under load with nothing applied; `throttledFraction` is the share of
- * the validation's heavy samples with a limit bit set (a power-limited card passes and says so).
+ * What a finished hunt found. `deltas` are the certified P0 offsets (the baseline plus what
+ * each ladder certified; equal to the baseline when nothing above it held), `baseline` the
+ * P0 offsets the run climbed from and restored: the deltas read at the start, or the user's
+ * vendor tune written through our route when one was on the card (`vendor`, in the slider's
+ * units, null otherwise); `certified` their difference in MHz: what goes on top in the
+ * vendor tool. `baselineHeld` is the card as found under the sustained half before anything
+ * was written (a vendor tool's tune inside it), `heldAtCertified` the same clocks at the
+ * certified rungs; `firstFailure` the lowest rung that failed a ladder stage after the
+ * bisect; `stops` how each ladder ended. `asFound` is the two-minute scored run of the card
+ * before anything was written and `official` the same of the certified pair, the benchmark;
+ * `holdsNow` what the card held under a short sustained load after the restore, beside
+ * `baselineHeld` (plan section 16, rule 4); `rungs` every rung as tested, with its points.
  */
 export interface TuneResult {
   kind: TuneRunKind;
   deltas: TuneDeltas;
   baseline: TuneDeltas;
+  vendor: PstateDeltas | null;
+  baselineHeld: HeldClocks | null;
+  heldAtCertified: HeldClocks | null;
+  firstFailure: TuneLadderStop | null;
+  stops: TuneLadderStop[];
   bandwidthGBs: number | null;
   referenceHash: string;
   confidence: TuneConfidence;
-  validated: boolean;
   foundAt: string;
-  promoted: boolean;
-  referenceSmMhz: number | null;
-  referenceMemMhz: number | null;
-  throttledFraction: number | null;
+  certified: PstateDeltas;
+  asFound: ScoredRun | null;
+  official: ScoredRun | null;
+  holdsNow: HeldClocks | null;
+  rungs: TuneCandidate[];
 }
 
+/**
+ * One rung as tested. `held` is the sustained half's peak SM / memory clock; `topSmMhz` the
+ * peak SM clock under the variable half (the top of the curve, where a core offset shows
+ * without the power cap in the way); `throughputGsps` the sustained half's hash-kernel
+ * throughput, the figure a core rung must not lower; `throttledFraction` the share of
+ * sustained samples with any limit bit, shown because a power cap is normal, never a verdict;
+ * `score` the rung's points (null when it failed before its sustained half finished).
+ */
 export interface TuneCandidate {
+  ladder: TuneLadderKind;
   deltas: TuneDeltas;
   verdict: TuneVerdict;
-  /** Failure-ladder stage that tripped (1 hash, 2 bandwidth, 3 TDR); null for stable and invalid. */
+  /** Failure-ladder stage that tripped (1 hash, 2 throughput or bandwidth, 3 driver reset); null for stable and invalid. */
   stage: number | null;
   failedPattern: TunePattern | null;
+  held: HeldClocks | null;
+  topSmMhz: number | null;
+  throughputGsps: number | null;
   bandwidthGBs: number | null;
-  /** Share of the heavy pattern's samples with a power or thermal limit bit set. */
   throttledFraction: number;
   note: string;
+  score: TuneScore | null;
+  /** The sustained half's mean SM clock (the whole 30 s averaged), the second additivity signal when the top of the curve does not move; optional as above. */
+  meanSmMhz?: number | null;
 }
 
 /** The live run: GET /tune/state `run` and the SSE `tune` event at 2 Hz while Tune is enabled or a run is going. */
@@ -344,6 +501,7 @@ export interface TuneRun {
   startedAt: string;
   elapsedS: number;
   phase: TunePhase;
+  ladder: TuneLadderKind | null;
   candidate: TuneDeltas | null;
   stage: number | null;
   pattern: TunePattern | null;
@@ -353,11 +511,17 @@ export interface TuneRun {
   errorCount: number;
   bandwidthGBs: number | null;
   bestBandwidthGBs: number | null;
+  /** The card as found, known once the as-found scored run has run. */
+  baselineHeld: HeldClocks | null;
   validity: TuneValidity;
   lastEvent: string;
   candidates: TuneCandidate[];
   result: TuneResult | null;
   error: string | null;
+  /** Which repeat of the 60 s shape a scored run is on (1-based); 0 outside one. */
+  repeat: number;
+  /** The as-found scored run once it is done, before any ladder has a result. */
+  asFound: ScoredRun | null;
 }
 
 export interface TuneNvapi {
@@ -374,22 +538,19 @@ export interface TuneStatus {
   baseline: TuneDeltas | null;
   candidate: TuneDeltas | null;
   appliedAt: string | null;
-  lastCleanShutdown: string | null;
-  /** Set when a start found a crash: which candidate did it. */
+  /** Set when a start found a crash: which rung did it. */
   reverted: TuneReverted | null;
   result: TuneResult | null;
   history: TuneHistoryEntry[];
   nvapi: TuneNvapi;
   run: TuneRun | null;
-  /** The logon task 'Strata Tune revert-if-pending' exists. */
-  revertTaskRegistered: boolean;
   /** GET /tune/flight has a last-crash file. */
   flightAvailable: boolean;
   stateFile: string;
-  /** Why the logon task is not registered (this exe's folder is writable by others), or null. */
-  revertTaskProblem: string | null;
   /** What stops Tune altogether (the state folder could not be restricted, the file does not parse, another user's collector owns it), or null. */
   problem: string | null;
+  /** "About 16 minutes": what a full hunt takes on a typical card, shown before Start (src/analysis/tune.ts estimateMinutes refines it per kind). */
+  estimateMinutes: number;
 }
 
 /** POST /tune/enable: on, the warning's acknowledgement travels with it (plan section 27a). */
@@ -403,26 +564,55 @@ export interface TuneEnableRequest {
 export interface TuneStartRequest {
   kind: TuneRunKind;
   enabled: boolean;
-  /** At most this many candidates tried, then the run ends unconverged (a bounded smoke test); absent is unlimited. */
+  /** At most this many rungs tried per ladder (the baseline rung not counted), then the ladder ends unconverged (a bounded smoke test); absent is unlimited. */
   maxCandidates?: number;
+  /**
+   * What the user's vendor tool shows (plan section 16): core in MHz, memory in the slider's
+   * effective-rate units (src/analysis/tune.ts vendorForStart builds it from the settings). A
+   * tune found on the card by a route our P0 write would replace is reproduced through our
+   * route from this, climbed from and restored, never zeroed; without it such a card is
+   * refused before anything is written ('foreign-tune'); a value the card does not bear out
+   * is refused too ('vendor-mismatch').
+   */
+  vendor?: PstateDeltas;
+  /**
+   * "Never test above __ MHz" (plan section 16, the user's own caution for a night run): a rung
+   * whose predicted top-of-curve SM clock (core) or memory clock would exceed the cap is not
+   * written and the ladder ends with "stopped at your cap". Absent is no cap.
+   */
+  coreCapMhz?: number;
+  memCapMhz?: number;
 }
 
-/** GET /tune/export: the copy-pasteable Afterburner / GPU Tweak value set. */
+/** GET /tune/export: the value set to type into the vendor tool, in our units and in the sliders' units; `sliderTotal` is the whole tune to set when the hunt climbed on top of the user's vendor tune, null from stock. */
 export interface TuneExport {
-  coreMhz: number;
-  memMhz: number;
-  baseline: { coreMhz: number; memMhz: number };
+  certified: PstateDeltas;
+  vendorSlider: PstateDeltas;
+  sliderTotal: PstateDeltas | null;
+  baselineHeld: HeldClocks | null;
+  heldAtCertified: HeldClocks | null;
+  firstFailure: TuneLadderStop | null;
   text: string;
-  validated: boolean;
   confidence: TuneConfidence;
   measuredAt: string;
+  /** The vendor tool's own values the run climbed on top of (slider units), null from stock. */
+  vendor: PstateDeltas | null;
+  /** The official scored run of the certified pair: the benchmark and its telemetry for the .html sheet. */
+  score: ScoredRun | null;
+  /** The as-found card, scored the same way first. */
+  asFound: ScoredRun | null;
+  referencePoints: number;
+  /** Every rung as tested, with its points: the ladder as a score climb. */
+  rungs: TuneCandidate[];
+  /** What the card held after the restore, beside `baselineHeld`; null when the run did not get to measure it. */
+  holdsNow: HeldClocks | null;
 }
 
 export interface TuneHealth {
   state: TuneRollback;
   reverted: TuneReverted | null;
   runActive: boolean;
-  /** Set while a run's baseline could not be put back: the candidate may still be on the card. */
+  /** Set while a run's baseline could not be put back: the rung may still be on the card. */
   restoreFailure: string | null;
 }
 
@@ -434,3 +624,38 @@ export interface TuneHealth {
 export type FlightLine =
   | { kind: 'sample'; at: string; qpc: number; gpu: GpuFacts | null; cpu: { qpc: number; packageW: number | null; tctlC: number | null; avgEffectiveMhz: number | null; maxCoreMhz: number | null } | null; sensors: Record<string, number> }
   | { kind: 'event'; at: string; text: string; candidate: TuneDeltas | null; stage: number | null; pattern: TunePattern | null };
+
+// ---- Timers (plan sections 8 and 17): GET /timers, the About hub's Timers tool and the audit's timer-resolution rule ----
+
+/**
+ * One outstanding timer-resolution request as powercfg's energy trace lists it; `own` marks
+ * this app's own processes (Chromium raises the timer while it animates), so the audit never
+ * names Strata Tune as the background app.
+ */
+export interface TimerRequester {
+  pid: number;
+  name: string;
+  /** The image path with its drive letter when one maps, else the NT device path; null when the trace gave none. */
+  path: string | null;
+  periodMs: number | null;
+  own: boolean;
+}
+
+/**
+ * NtQueryTimerResolution in milliseconds, named by meaning: `coarsestMs` is NT's "minimum
+ * resolution" (15.625 ms, the platform default), `finestMs` its "maximum" (0.5 ms). All three
+ * are null only when the kernel call failed. `qpcSource` is inferred from the counter
+ * frequency Windows fixed at boot (10 MHz TSC, 14.318 MHz HPET, 3.5795 MHz ACPI PM timer);
+ * `qpcNote` says how far the inference goes. `requesters` is null unless `?trace=N` ran
+ * powercfg's energy report; an empty list after a trace means nobody holds the timer raised.
+ */
+export interface Timers {
+  currentMs: number | null;
+  finestMs: number | null;
+  coarsestMs: number | null;
+  qpcFrequency: number;
+  qpcSource: string;
+  qpcNote: string;
+  requesters: TimerRequester[] | null;
+  requestersNote: string | null;
+}

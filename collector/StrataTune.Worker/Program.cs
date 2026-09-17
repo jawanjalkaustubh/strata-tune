@@ -26,7 +26,7 @@ internal static class Program
           strata-tune-worker --bench [--json] [--seconds N] [--adapter LUID] [--heartbeat PATH]
           strata-tune-worker --cpu-load --seconds N [--threads T] [--heartbeat PATH]
           strata-tune-worker --reference [--json] [--adapter LUID] [--heartbeat PATH]
-          strata-tune-worker --ladder --pattern heavy|light|transient --seconds N --expect HEX [--adapter LUID] [--heartbeat PATH]
+          strata-tune-worker --ladder --pattern variable|sustained --seconds N --expect HEX [--adapter LUID] [--heartbeat PATH]
         --adapter takes a luid from --devices; without it the DXGI high-performance adapter is used.
         --elements is at most 536870912 (2 GiB of uint).
         """;

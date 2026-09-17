@@ -146,6 +146,12 @@ internal static class Serve
         Lhm.ReportNodeFailure = log.Write;
         Nvml.ReportOffsetsFailure = log.Write;
         Nvapi.Report = log.Write;
+        // The revert-if-pending pass is the first thing every start does (plan section 16):
+        // a rung a dead collector left on the card comes off before a port is bound or a
+        // sensor opened. An ordinary start only reads the file here.
+        var tune = new TuneSupervisor(sources, buffer, workerPath, log);
+        tune.RevertAtStart();
+        log.Write($"{T()} tune revert-at-start pass done");
 
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory });
         builder.Logging.ClearProviders();
@@ -159,16 +165,16 @@ internal static class Serve
             Buffer = buffer,
             Sources = sources,
             Loads = new LoadRunner(sources, workerPath, benchPath, log),
-            Tune = new TuneSupervisor(sources, buffer, workerPath, log),
+            Tune = tune,
             PawnIoUsable = pawnIo.Usable,
             Version = version,
             StartedAt = startedAt,
             StartedQpc = startedQpc,
             Stopping = app.Lifetime.ApplicationStopping,
         };
-        // The last-resort revert: if this process dies with a candidate on the card (a sampler
-        // thread's unhandled exception, the exit deadline, End Task), the baseline still goes
-        // back on the way out. Abort is idempotent, so the orderly stop below can call it too.
+        // The last-resort revert: if this process dies with a rung on the card (a sampler
+        // thread's unhandled exception, the exit deadline, a session end), the baseline still
+        // goes back on the way out. Abort is idempotent, so the orderly stop below can call it too.
         AppDomain.CurrentDomain.ProcessExit += (_, _) => state.Tune.Abort();
         AppDomain.CurrentDomain.UnhandledException += (_, _) => state.Tune.Abort();
         var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(TokenBytes));
@@ -248,9 +254,8 @@ internal static class Serve
             {
                 sources.Warming = false;
                 log.Write($"{T()} warm: every source has had its turn");
-                // After the sources, never before: a crash revert is an NVAPI write, and it must
-                // not sit between the handshake and the first tick on every ordinary start.
-                state.Tune.Reconcile();
+                // Off the start-up path: the NVAPI read for the log and a schtasks call.
+                state.Tune.AfterWarm();
             }
         });
         _ = WatchParentAsync();

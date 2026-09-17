@@ -10,6 +10,7 @@ import { systemPower, type SystemPower as Estimate } from '../../analysis/power'
 import { COMFORTABLE, PSU_TRANSIENT_NOTE, psuVerdict, wallWatts } from '../../analysis/psu';
 import { useSettings } from '../useSettings';
 import { PsuForm, psuBadge, psuOf } from '../advisor/PsuForm';
+import { NO_CAPS, type Caps } from './caps';
 
 interface Props {
   index: SensorIndex;
@@ -17,6 +18,27 @@ interface Props {
   ring: Ring;
   snapshot: StaticSnapshot | null;
   panel?: PanelChrome;
+  /** Plan 17d: on a laptop the PSU question is replaced by the battery's own line. */
+  caps?: Caps;
+}
+
+/** The battery as the library reads it (plan 17d: 'Monitor leads with CPU, battery and the board'): charge, the rate in or out, the estimated time left. */
+export function batteryLine(index: SensorIndex, tick: Tick): string | null {
+  const hw = index.hardware(/^Battery$/i);
+  if (!hw.length) return null;
+  const v = (type: 'Level' | 'Power' | 'TimeSpan', name: RegExp) => {
+    const id = index.find(hw, type, name)?.id;
+    const x = id ? tick.sensors[id] : undefined;
+    return typeof x === 'number' && Number.isFinite(x) ? x : undefined;
+  };
+  const charge = v('Level', /^Charge Level$/i);
+  const rate = v('Power', /^Charge\/Discharge Rate$/i);
+  const left = v('TimeSpan', /^Remaining Time/i);
+  const parts: string[] = [];
+  if (charge !== undefined) parts.push(`${charge.toFixed(0)} % charged`);
+  if (rate !== undefined && rate !== 0) parts.push(rate < 0 ? `discharging at ${Math.abs(rate).toFixed(1)} W` : `charging at ${rate.toFixed(1)} W`);
+  if (left !== undefined && left > 0 && (rate === undefined || rate < 0)) parts.push(`about ${Math.round(left / 60)} min left`);
+  return parts.length ? parts.join(' · ') : 'no reading yet';
 }
 
 /**
@@ -26,8 +48,9 @@ interface Props {
  * wall-side figure follows from the 80 PLUS curve, and the session's peak DC
  * against the rating answers "bigger PSU?" in one line once it passes 70 %.
  */
-export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, panel }) => {
+export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, panel, caps = NO_CAPS }) => {
   const psu = psuOf(useSettings());
+  const battery = caps.battery ? batteryLine(index, tick) : null;
   const ids = useMemo(() => {
     const cpu = index.hardware(/^cpu$/i);
     const io = index.hardware(/^(SuperIO|EmbeddedController)$/i);
@@ -90,18 +113,26 @@ export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, pane
         <span className={TONE.ok.text}>measured</span> {measured.map(part).join(' · ')} <span className="mx-1 text-studio-border-light">|</span>
         <span className="text-slate-400">estimated</span> {estimated.map(part).join(' · ')}
       </p>
-      <p className="text-micro text-studio-subtle pl-0.5 flex items-center gap-2 flex-wrap">
-        <span className="label">PSU</span>
-        <PsuForm />
-        {verdict && (
-          <span title={PSU_TRANSIENT_NOTE}>
-            {verdict.loadFraction > COMFORTABLE
-              ? verdict.sentence
-              : `headroom fine: peak ${sessionPeak.current.toFixed(0)} W DC this session, ${Math.round(verdict.loadFraction * 100)} % of the rating`}
-          </span>
-        )}
-        {!psu && <span>for the wall-side figure and the headroom verdict</span>}
-      </p>
+      {caps.laptop ? (
+        // A laptop has no PSU to set: the battery's line stands where the PSU question would be (plan 17d row 1).
+        <p className="text-micro text-studio-subtle pl-0.5 flex items-center gap-2 flex-wrap">
+          <span className="label">Battery</span>
+          <span>{battery ?? 'no battery sensor in the tree (on mains, or the library does not read this battery)'}</span>
+        </p>
+      ) : (
+        <p className="text-micro text-studio-subtle pl-0.5 flex items-center gap-2 flex-wrap">
+          <span className="label">PSU</span>
+          <PsuForm />
+          {verdict && (
+            <span title={PSU_TRANSIENT_NOTE}>
+              {verdict.loadFraction > COMFORTABLE
+                ? verdict.sentence
+                : `headroom fine: peak ${sessionPeak.current.toFixed(0)} W DC this session, ${Math.round(verdict.loadFraction * 100)} % of the rating`}
+            </span>
+          )}
+          {!psu && <span>for the wall-side figure and the headroom verdict</span>}
+        </p>
+      )}
     </Panel>
   );
 };

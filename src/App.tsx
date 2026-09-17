@@ -1,35 +1,43 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
 import { SupportLinks, EMPTY_SUPPORT, loadSupport } from './support';
-import { useSettings } from './components/useSettings';
 import { TitleBar } from './components/TitleBar';
 import { BottomBar, Page } from './components/BottomBar';
 import { AboutModal } from './components/AboutModal';
 import { SettingsModal } from './components/SettingsModal';
+import { DisclaimerModal } from './components/DisclaimerModal';
 import { useCollectorStatus, statusLabel } from './components/useCollectorStatus';
 import { captureStatusLabel, useCaptureState } from './components/capture/useCapture';
-import { onNavigate } from './components/navigate';
-import { Audit } from './pages/Audit';
+import { onNavigate, resolveTarget } from './components/navigate';
 import { Monitor } from './pages/Monitor';
 import { Capture } from './pages/Capture';
 import { Advisor } from './pages/Advisor';
 import { Tune } from './pages/Tune';
 
-const PAGES: Record<Page, React.FC> = { audit: Audit, monitor: Monitor, capture: Capture, advisor: Advisor, tune: Tune };
+/** Tune is the home page (plan 17): the audit on top, the Headroom hunt beneath it behind the settings switch. */
+export const HOME: Page = 'tune';
+
+const PAGES: Record<Page, React.FC> = { tune: Tune, monitor: Monitor, capture: Capture, advisor: Advisor };
 
 export const App: React.FC = () => {
-  const [page, setPage] = useState<Page>('audit');
-  // Live, not a startup copy: the Tune tab appears the moment Settings turns it on (plan 17).
-  const settings = useSettings();
+  const [page, setPage] = useState<Page>(HOME);
   const [support, setSupport] = useState<SupportLinks>(EMPTY_SUPPORT);
   const [version, setVersion] = useState('');
   const [showAbout, setShowAbout] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Plan 27a, first launch: DISCLAIMER.md with one button until its current version is accepted; the collector waits in the main process.
+  const [disclaimer, setDisclaimer] = useState<number | null>(null);
+  useEffect(() => {
+    api?.legal
+      .status()
+      .then((s) => setDisclaimer(s.ok ? null : s.version))
+      .catch(() => setDisclaimer(null));
+  }, []);
   const collector = useCollectorStatus();
   const capture = useCaptureState();
 
   // Cross-page links (the audit's PBO hint into the Monitor page's setting); the page picks up the rest.
-  useEffect(() => onNavigate((t) => setPage(t.page)), []);
+  useEffect(() => onNavigate((t) => setPage(resolveTarget(t).page)), []);
 
   // Each startup probe advances the splash; the last one dismisses it. The
   // collector handshake is deliberately not on this list: it waits on a UAC
@@ -67,9 +75,7 @@ export const App: React.FC = () => {
     ]).then(done, fail);
   }, []);
 
-  // A hidden page cannot stay selected if the flag is turned off between launches.
-  const current: Page = page === 'tune' && !settings.enableTune ? 'audit' : page;
-  const Current = PAGES[current];
+  const Current = PAGES[page];
 
   return (
     <div className="h-full flex flex-col bg-studio-bg text-studio-text">
@@ -77,9 +83,10 @@ export const App: React.FC = () => {
       <main className="flex-1 flex flex-col min-h-0 overflow-auto">
         <Current />
       </main>
-      <BottomBar page={current} onSelect={setPage} enableTune={settings.enableTune} status={[`Collector: ${statusLabel(collector)}`, captureStatusLabel(capture)].filter(Boolean).join(' · ')} />
+      <BottomBar page={page} onSelect={setPage} status={[`Collector: ${statusLabel(collector)}`, captureStatusLabel(capture)].filter(Boolean).join(' · ')} />
       <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} version={version} support={support} />
       <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
+      {disclaimer !== null && <DisclaimerModal version={disclaimer} onAccepted={() => setDisclaimer(null)} />}
     </div>
   );
 };

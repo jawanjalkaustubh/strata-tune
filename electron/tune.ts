@@ -8,16 +8,15 @@
  */
 import { app, type IpcMain } from 'electron';
 import type { CollectorClient } from './collector';
-import type { FlightLine, TuneEnableRequest, TuneExport, TuneRun, TuneRunKind, TuneStartRequest, TuneStatus } from '../src/collector-types';
+import type { TuneCaps } from '../src/api';
+import type { FlightLine, PstateDeltas, TuneEnableRequest, TuneExport, TuneRun, TuneRunKind, TuneStartRequest, TuneStatus } from '../src/collector-types';
 
 /** Every route in one place, so a rename on the collector side is a one-line change. */
 const ROUTES = {
   state: '/tune/state',
   enable: '/tune/enable',
   start: '/tune/start',
-  validate: '/tune/validate',
   stop: '/tune/stop',
-  keep: '/tune/keep',
   revert: '/tune/revert',
   export: '/tune/export',
   flight: '/tune/flight'
@@ -27,13 +26,25 @@ const ROUTES = {
 const WRITE_TIMEOUT_MS = 30_000;
 
 /**
- * STRATA_TUNE_MAX_CANDIDATES=n caps a hunt at n candidates: the bounded smoke test of the
- * ladder on a live card (the collector's TuneStartRequest.maxCandidates). Unset in
- * ordinary use, so the hunt runs to its ceiling.
+ * STRATA_TUNE_MAX_CANDIDATES=n caps each ladder at n rungs: the bounded smoke test of the
+ * hunt on a live card (the collector's TuneStartRequest.maxCandidates). Unset in ordinary
+ * use, so each ladder climbs to its first failure.
  */
 function maxCandidates(): number | undefined {
   const n = Number.parseInt(process.env.STRATA_TUNE_MAX_CANDIDATES ?? '', 10);
   return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/** A "never test above" clock is kept only as a positive integer MHz; anything else is no cap. */
+function capValue(cap: unknown): number | undefined {
+  return Number.isInteger(cap) && (cap as number) > 0 ? (cap as number) : undefined;
+}
+
+/** The renderer's vendor value, kept only when both numbers are finite integers (the collector halves the memory rate). */
+function vendorValue(vendor: unknown): PstateDeltas | undefined {
+  if (!vendor || typeof vendor !== 'object') return undefined;
+  const { coreMhz, memMhz } = vendor as Partial<PstateDeltas>;
+  return Number.isInteger(coreMhz) && Number.isInteger(memMhz) ? { coreMhz: coreMhz as number, memMhz: memMhz as number } : undefined;
 }
 
 export class TuneClient {
@@ -45,34 +56,28 @@ export class TuneClient {
 
   /**
    * On: the collector records the warning's acknowledgement (date from the click, this app's
-   * version; it adds the GPU name) and registers the logon revert task; off: it takes anything
-   * of Tune's off the card, then removes the task.
+   * version; it adds the GPU name); off: it takes anything of Tune's off the card first.
    */
   enable(enabled: boolean, acknowledgedAt?: string): Promise<TuneStatus> {
     const request: TuneEnableRequest = enabled ? { enabled, acknowledgedAt, appVersion: app.getVersion() } : { enabled };
     return this.c.post<TuneStatus>(ROUTES.enable, request, WRITE_TIMEOUT_MS);
   }
 
-  /** `enabled` is the renderer's own setting, checked beside the state file's flag so neither side can start a hunt alone. */
-  start(kind: Exclude<TuneRunKind, 'validate'>, enabled: boolean): Promise<TuneStatus> {
-    const request: TuneStartRequest = { kind, enabled, maxCandidates: maxCandidates() };
+  /**
+   * `enabled` is the renderer's own setting, checked beside the state file's flag so neither
+   * side can start a hunt alone. 'hunt' is the memory ladder then the core ladder, each from
+   * the card as found; 'core' and 'memory' run one ladder alone.
+   */
+  start(kind: TuneRunKind, enabled: boolean, vendor?: PstateDeltas, caps?: TuneCaps): Promise<TuneStatus> {
+    const request: TuneStartRequest = { kind, enabled, maxCandidates: maxCandidates(), vendor, coreCapMhz: capValue(caps?.coreCapMhz), memCapMhz: capValue(caps?.memCapMhz) };
     return this.c.post<TuneStatus>(ROUTES.start, request, WRITE_TIMEOUT_MS);
-  }
-
-  /** The second phase (plan 16): the found values replayed at the user's real fan curve, 5 min heavy and 2 min transient. */
-  validate(): Promise<TuneStatus> {
-    return this.c.post<TuneStatus>(ROUTES.validate, {}, WRITE_TIMEOUT_MS);
   }
 
   stop(): Promise<TuneStatus> {
     return this.c.post<TuneStatus>(ROUTES.stop, {}, WRITE_TIMEOUT_MS);
   }
 
-  /** Puts a validated result on the card as VALIDATING; a clean shutdown and a start promote it. */
-  keep(): Promise<TuneStatus> {
-    return this.c.post<TuneStatus>(ROUTES.keep, {}, WRITE_TIMEOUT_MS);
-  }
-
+  /** Takes anything of Tune's off the card now, or acknowledges a crash revert. */
   revert(): Promise<TuneStatus> {
     return this.c.post<TuneStatus>(ROUTES.revert, {}, WRITE_TIMEOUT_MS);
   }
@@ -120,10 +125,9 @@ export function registerTuneIpc(ipc: IpcMain, collector: CollectorClient, send: 
   let wanted = false;
   ipc.handle('tune:state', () => client.state());
   ipc.handle('tune:enable', (_e, enabled: boolean, acknowledgedAt?: string) => client.enable(!!enabled, typeof acknowledgedAt === 'string' ? acknowledgedAt : undefined));
-  ipc.handle('tune:start', (_e, kind: TuneRunKind, enabled: boolean) => client.start(kind === 'memory' ? 'memory' : 'core', !!enabled));
-  ipc.handle('tune:validate', () => client.validate());
+  ipc.handle('tune:start', (_e, kind: TuneRunKind, enabled: boolean, vendor?: PstateDeltas, caps?: TuneCaps) =>
+    client.start(kind === 'memory' || kind === 'core' ? kind : 'hunt', !!enabled, vendorValue(vendor), caps && typeof caps === 'object' ? caps : undefined));
   ipc.handle('tune:stop', () => client.stop());
-  ipc.handle('tune:keep', () => client.keep());
   ipc.handle('tune:revert', () => client.revert());
   ipc.handle('tune:export', () => client.export());
   ipc.handle('tune:flight', () => client.flight());

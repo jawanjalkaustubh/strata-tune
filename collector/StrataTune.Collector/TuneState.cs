@@ -1,18 +1,19 @@
+using System.Text;
 using System.Text.Json;
 using StrataTune.Shared;
 
 namespace StrataTune.Collector;
 
-/// <summary>Plan section 16's rollback state machine, persisted to
+/// <summary>Plan section 16's state machine, persisted to
 /// %ProgramData%\Strata Tune\tune-state.json. The rule that matters: the file says PENDING
-/// with the candidate <em>before</em> the driver is asked to apply it, so whatever the
-/// machine does next, the next start (or the logon task) knows exactly what was on the
-/// card. Every write is a temp file and a rename, and every writer learns whether the disk
-/// took it, because a candidate must never reach the card while the disk still says
-/// KNOWN_GOOD. The folder is created with an ACL that lets standard users read but only
-/// administrators write, and the ACL is checked and repaired at every start (an installer,
-/// an older build or a standard user may have created it first), because an elevated
-/// process acting on this file must not be steerable from medium integrity.</summary>
+/// with the rung <em>before</em> the driver is asked to apply it, so whatever the
+/// machine does next, the next start knows exactly what was on the card. Every write is a
+/// temp file and a rename, and every writer learns whether the disk took it, because a
+/// rung must never reach the card while the disk still says IDLE. The folder is created
+/// with an ACL that lets standard users read but only administrators write, and the ACL is
+/// checked and repaired at every start (an installer, an older build or a standard user
+/// may have created it first), because the elevated collector applies the baseline this
+/// file names, and that must not be steerable from medium integrity.</summary>
 internal sealed class TuneStateStore
 {
     public const string FolderName = "Strata Tune";
@@ -22,8 +23,12 @@ internal sealed class TuneStateStore
     public static readonly string FilePath = Path.Combine(Root, "tune-state.json");
     private static readonly string BadCopyPath = FilePath + ".bad";
 
-    private static readonly TuneFile Empty = new(false, TuneRollback.KnownGood, null, null, null, false, null, null, null, []);
+    private static readonly TuneFile Empty = new(false, TuneRollback.Idle, null, null, null, false, null, null, []);
     private static ReadOnlySpan<byte> Utf8Bom => [0xEF, 0xBB, 0xBF];
+    // The Phase 8 build spelled the idle state KNOWN_GOOD and kept a result on the card as
+    // VALIDATING; a file it wrote is read as IDLE, and a kept result as PENDING so the
+    // start takes it off the card (the fields that build kept are skipped by the parser).
+    private static readonly (string From, string To)[] LegacySpellings = [("\"KNOWN_GOOD\"", "\"IDLE\""), ("\"VALIDATING\"", "\"PENDING\"")];
 
     private readonly Lock _gate = new();
     private readonly Action<string> _log;
@@ -71,7 +76,18 @@ internal sealed class TuneStateStore
             ReadOnlySpan<byte> bytes = File.ReadAllBytes(FilePath);
             if (bytes.StartsWith(Utf8Bom))
                 bytes = bytes[Utf8Bom.Length..];
-            return JsonSerializer.Deserialize(bytes, WireJson.Default.TuneFile);
+            var text = Encoding.UTF8.GetString(bytes);
+            foreach (var (from, to) in LegacySpellings)
+                text = text.Replace(from, to);
+            var file = JsonSerializer.Deserialize(text, WireJson.Default.TuneFile);
+            // A list written as null (an older build's file, a hand-edited one) reads as empty:
+            // the start cooldown and the result's stops must never trip over it.
+            return file is null ? null : file with
+            {
+                History = file.History ?? [],
+                DeviceLosses = file.DeviceLosses ?? [],
+                Result = file.Result is { } r ? r with { Stops = r.Stops ?? [], Rungs = r.Rungs ?? [] } : null,
+            };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -98,38 +114,33 @@ internal sealed class TuneStateStore
         State = TuneRollback.Pending,
         Candidate = candidate,
         AppliedAt = Now(),
-        BootAt = BootRecord.BootedAtIso,
+        OrderlyStop = false,
     }, note, candidate);
 
-    public bool KnownGood(string note) => Update(f => f with { State = TuneRollback.KnownGood, Candidate = null }, note);
-
-    public bool Validating(TuneDeltas candidate, string note) => Update(f => f with
-    {
-        State = TuneRollback.Validating,
-        Candidate = candidate,
-        AppliedAt = Now(),
-        BootAt = BootRecord.BootedAtIso,
-    }, note, candidate);
+    public bool Idle(string note) => Update(f => f with { State = TuneRollback.Idle, Candidate = null, OrderlyStop = false }, note);
 
     public bool Reverted(TuneReverted reverted) => Update(f => f with
     {
         State = TuneRollback.Reverted,
         Candidate = null,
+        OrderlyStop = false,
         Reverted = reverted,
     }, $"reverted to baseline: {reverted.Reason}", reverted.Candidate);
 
-    public bool Baseline(TuneDeltas baseline, string note) => Update(f => f with { Baseline = baseline }, note);
+    /// <summary>The collector is exiting through a known path with a rung still PENDING:
+    /// whatever its restore manages in the seconds it has, the next start must not call
+    /// this a hang.</summary>
+    public bool OrderlyStop() => Update(f => f.State == TuneRollback.Pending ? f with { OrderlyStop = true } : f, null);
 
-    public bool Result(TuneResult result) => Update(f => f with { Result = result }, $"result: core {result.Deltas.CoreKhz / 1000} MHz, memory {result.Deltas.MemKhz / 1000} MHz, {result.Confidence} confidence{(result.Validated ? ", validated" : "")}{(result.Promoted ? ", promoted" : "")}");
+    /// <summary>The revert target, with the vendor tool's values it reproduces (slider units)
+    /// when it is the user's tune written through our route, so the revert at the next
+    /// start restores the tune and says so, never 0 (plan section 16, rule 1).</summary>
+    public bool Baseline(TuneDeltas baseline, PstateDeltas? vendor, string note) => Update(f => f with { Baseline = baseline, Vendor = vendor }, note);
+
+    public bool Result(TuneResult result) => Update(f => f with { Result = result }, $"result: certified +{result.Certified.CoreMhz} core / +{result.Certified.MemMhz} memory MHz on top of the card as found, {result.Confidence} confidence");
 
     /// <summary>A device loss, remembered across runs and collector restarts for the start cooldown.</summary>
     public bool DeviceLost() => Update(f => f with { DeviceLosses = [.. f.DeviceLosses.TakeLast(KeepDeviceLosses - 1), Now()] }, null);
-
-    /// <summary>The start of a session: whatever the last one left, this one has not shut down cleanly yet.</summary>
-    public bool MarkRunning() => Update(f => f with { CleanShutdown = false, BootAt = BootRecord.BootedAtIso }, null);
-
-    /// <summary>The orderly exit. Only an exit that went through here counts; a crash never reaches it.</summary>
-    public bool MarkCleanShutdown() => Update(f => f with { CleanShutdown = true, LastCleanShutdown = Now(), BootAt = BootRecord.BootedAtIso }, null);
 
     private bool Update(Func<TuneFile, TuneFile> change, string? note, TuneDeltas? candidate = null)
     {
@@ -170,7 +181,7 @@ internal sealed class TuneStateStore
 
     // Administrators and SYSTEM write, everyone reads; inheritance from %ProgramData% (which
     // lets Users create files) is cut, since a user-writable state file would let a
-    // standard user tell the logon revert task which values to apply as administrator.
+    // standard user tell the elevated collector which baseline to apply at its next start.
     private static void EnsureRoot()
     {
         if (!Directory.Exists(Root))
@@ -185,111 +196,65 @@ internal static class TuneRollbackSpelling
     /// <summary>The wire spelling, for log lines and console output that a person reads beside the JSON.</summary>
     public static string Wire(this TuneRollback state) => state switch
     {
-        TuneRollback.KnownGood => "KNOWN_GOOD",
+        TuneRollback.Idle => "IDLE",
         TuneRollback.Pending => "PENDING",
-        TuneRollback.Validating => "VALIDATING",
         _ => "REVERTED",
     };
 }
 
-/// <summary>What a start knows beyond the file: whether this is the boot the file was
-/// written in, whether Windows logged a dirty shutdown since the value went on the card
-/// (null: the log could not be asked), and whether the card still holds the candidate
-/// (null: NVAPI could not read it).</summary>
-internal sealed record StartFacts(bool SameBoot, bool? UnexpectedShutdown, bool? OnCard);
-
-/// <summary>What a start (the collector's, or the logon task's) does with the file it
-/// finds. Pure, so the TypeScript side can mirror and test the same table:
-/// PENDING → revert (a run that never finished, clean shutdown or not: a candidate that
-/// reached a start was never certified); VALIDATING without a clean shutdown → revert (the
-/// machine died with a kept result applied); VALIDATING in the same boot → nothing (it is
-/// still on the card, or the driver dropped it, in which case → forget); VALIDATING from a
-/// later boot → promote only when the shutdown was clean <em>and</em> the System log shows
-/// no dirty shutdown since it was applied, else → revert; a log that could not be asked →
-/// forget (neither blamed nor certified). Promotion never touches the baseline: the P0
-/// deltas did not survive the boot, so the card is back at whatever it boots with.</summary>
+/// <summary>What a start does with the file it finds. Pure, so the TypeScript side can
+/// mirror and test the same table: PENDING with a rung → revert (a rung that reached a
+/// start was never certified), called a hard hang (stage 4, the flight file kept) unless
+/// the collector marked its exit path on the way out; anything else → nothing. A reboot
+/// clears P0 deltas by itself, so the revert is only for a collector that died without
+/// the machine going down.</summary>
 internal static class TuneStateMachine
 {
-    public enum StartAction { None, Revert, Promote, Forget }
+    public enum StartAction { None, Revert }
 
-    public static (StartAction Action, string Reason) AtStart(TuneFile file, StartFacts facts) => file.State switch
+    public static (StartAction Action, bool Hang, string Reason) AtStart(TuneFile file) => file.State switch
     {
-        TuneRollback.Pending when file.Candidate is null => (StartAction.None, "PENDING without a candidate: nothing was applied"),
-        TuneRollback.Pending => (StartAction.Revert, file.CleanShutdown
-            ? "a hunt was applying this candidate when the collector last exited; the run never finished"
-            : "the machine did not shut down cleanly while this candidate was applied (a hard hang, stage 4)"),
-        TuneRollback.Validating when file.Candidate is null => (StartAction.None, "VALIDATING without a candidate: nothing was applied"),
-        TuneRollback.Validating when !file.CleanShutdown => (StartAction.Revert, "the machine did not shut down cleanly while this kept result was applied"),
-        TuneRollback.Validating when facts.SameBoot => facts.OnCard == false
-            ? (StartAction.Forget, "the driver no longer holds the kept result (a driver reset or reload took it off); nothing is promoted")
-            : (StartAction.None, "the kept result is on the card until this boot ends; a clean boot after a clean shutdown promotes it"),
-        TuneRollback.Validating => facts.UnexpectedShutdown switch
-        {
-            true => (StartAction.Revert, "the System log records a dirty shutdown (Kernel-Power 41 / EventLog 6008) after this kept result went on the card"),
-            false => (StartAction.Promote, "a clean shutdown, no dirty shutdown in the System log, and a new boot: the kept result is known-good"),
-            null => (StartAction.Forget, "the System log could not be checked, so the kept result is neither blamed nor certified"),
-        },
-        _ => (StartAction.None, "nothing pending"),
+        TuneRollback.Pending when file.Candidate is null => (StartAction.None, false, "PENDING without a rung: nothing was applied"),
+        TuneRollback.Pending when file.OrderlyStop => (StartAction.Revert, false, "the collector reached its exit path with this rung still applied and could not take it off on the way out; reverting quietly"),
+        TuneRollback.Pending => (StartAction.Revert, true, "the machine or the collector died with this rung applied, without reaching the exit path (a hard hang, stage 4)"),
+        _ => (StartAction.None, false, "nothing pending"),
     };
 
-    /// <summary>Runs <see cref="AtStart"/> and acts on it: the revert goes through NVAPI and
-    /// is recorded with the candidate that caused it (plan section 16: tell the user exactly
-    /// which value did it). Returns false only when a revert was needed and could not be
-    /// done, which is the one outcome that must not look like success.</summary>
+    /// <summary>Runs <see cref="AtStart"/> and acts on it: the revert goes through NVAPI and,
+    /// for a hang, is recorded with the rung that caused it (plan section 16: tell the user
+    /// exactly which value did it). Returns false only when a revert was needed and could
+    /// not be done, which is the one outcome that must not look like success.</summary>
     public static bool Reconcile(TuneStateStore store, Action<string> log, out TuneRollback outcome)
     {
         var file = store.Current;
         outcome = file.State;
-        if (store.Problem is { } problem && file.State is TuneRollback.Pending or TuneRollback.Validating)
+        if (store.Problem is { } problem && file.State == TuneRollback.Pending)
         {
-            log($"tune: {file.State.Wire()} found at start but the file cannot be trusted ({problem}); nothing is applied from it");
+            log($"tune: PENDING found at start but the file cannot be trusted ({problem}); nothing is applied from it");
             return false;
         }
-        var facts = Facts(file, log);
-        var (action, reason) = AtStart(file, facts);
-        switch (action)
+        var (action, hang, reason) = AtStart(file);
+        if (action == StartAction.None)
+            return true;
+        if (file.Baseline is not { } baseline)
         {
-            case StartAction.Revert:
-                if (file.Baseline is not { } baseline)
-                {
-                    // Applying 0/0 would wipe a vendor tool's offsets; leave it, and say so every start.
-                    log($"tune: {file.State.Wire()} found at start without a baseline; refusing to guess one (the user's Revert acknowledges it)");
-                    return false;
-                }
-                log($"tune: {file.State.Wire()} found at start with candidate core {file.Candidate!.CoreKhz} / memory {file.Candidate.MemKhz} kHz: {reason}; reverting to baseline core {baseline.CoreKhz} / memory {baseline.MemKhz} kHz");
-                var ok = NvapiPstates.ApplyDeltas(baseline, out var status);
-                log($"tune: revert {(ok ? "applied" : "FAILED")}: {status}");
-                if (!ok)
-                    return false;
-                store.Reverted(new TuneReverted(file.Candidate, baseline, DateTimeOffset.UtcNow.ToString("O"), reason));
-                break;
-            case StartAction.Promote:
-                log($"tune: promoting kept result core {file.Candidate!.CoreKhz} / memory {file.Candidate.MemKhz} kHz: {reason}");
-                if (file.Result is { } result)
-                    store.Result(result with { Validated = true, Promoted = true });
-                store.KnownGood("promoted to KNOWN_GOOD: kept through a clean shutdown and a clean boot. The offsets are not re-applied; the export text is what persists");
-                break;
-            case StartAction.Forget:
-                log($"tune: kept result core {file.Candidate!.CoreKhz} / memory {file.Candidate.MemKhz} kHz dropped: {reason}");
-                store.KnownGood($"kept result dropped: {reason}");
-                break;
-            default:
-                if (file.State is TuneRollback.Validating)
-                    log($"tune: VALIDATING kept: {reason}");
-                break;
+            // Applying 0/0 would wipe a vendor tool's offsets; leave it, and say so every start.
+            log("tune: PENDING found at start without a baseline; refusing to guess one (the user's Revert acknowledges it)");
+            return false;
         }
+        var target = file.Vendor is { } v
+            ? $"your vendor tune through our route, P0 core +{baseline.CoreMhz} / memory +{baseline.MemMhz} MHz (the tool shows core +{v.CoreMhz} / memory +{v.MemMhz}), never 0"
+            : $"baseline core {baseline.CoreMhz} / memory {baseline.MemMhz} MHz";
+        log($"tune: PENDING found at start with rung core {file.Candidate!.CoreMhz} / memory {file.Candidate.MemMhz} MHz: {reason}; reverting to {target}");
+        var ok = NvapiPstates.ApplyDeltas(baseline, out var status);
+        log($"tune: revert {(ok ? "applied" : "FAILED")}: {status}");
+        if (!ok)
+            return false;
+        if (hang)
+            store.Reverted(new TuneReverted(file.Candidate, baseline, DateTimeOffset.UtcNow.ToString("O"), reason, 4));
+        else
+            store.Idle($"reverted at start: {reason}");
         outcome = store.Current.State;
         return true;
-    }
-
-    private static StartFacts Facts(TuneFile file, Action<string> log)
-    {
-        if (file.State != TuneRollback.Validating || file.Candidate is null || !file.CleanShutdown)
-            return new StartFacts(true, null, null);
-        var sameBoot = BootRecord.SameBoot(file.BootAt);
-        var onCard = NvapiPstates.ReadDeltas(out _) is { } range ? range.Deltas == file.Candidate : (bool?)null;
-        var dirty = sameBoot || file.AppliedAt is null ? null : BootRecord.UnexpectedShutdownSince(file.AppliedAt, log);
-        log($"tune: start facts: same boot {sameBoot} (file boot {file.BootAt ?? "-"}, this boot {BootRecord.BootedAtIso}), on card {onCard?.ToString() ?? "unknown"}, dirty shutdown since apply {dirty?.ToString() ?? "unknown"}");
-        return new StartFacts(sameBoot, dirty, onCard);
     }
 }

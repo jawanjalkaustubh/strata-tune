@@ -81,7 +81,7 @@ describe('the advisor without Ollama or a bench', () => {
     const picks = bestRows(rows);
     expect(picks.chat).not.toBeNull();
     const html = renderToStaticMarkup(
-      <ModelList rows={rows} vramBytes={facts.vramBytes} liveVram={false} freeDiskBytes={facts.freeDiskBytes} diskLabel="the model drive" contextTokens={8192} maxContext={131072} onContext={() => {}} tags={[]} filter={null} onFilter={() => {}} bandwidthKnown />
+      <ModelList rows={rows} vramBytes={facts.vramBytes} ramBytes={facts.ramBytes} liveVram={false} freeDiskBytes={facts.freeDiskBytes} diskLabel="the model drive" contextTokens={8192} maxContext={131072} onContext={() => {}} tags={[]} filter={null} onFilter={() => {}} bandwidthKnown />
     );
     for (const r of rows) expect(html).toContain(`Copy &quot;ollama pull ${r.pullTag}&quot;`);
     expect(html).toContain('100 GiB free');

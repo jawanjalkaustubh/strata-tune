@@ -22,19 +22,52 @@ export interface Settings {
    */
   cpuPptW: number | null;
   /**
+   * The rest of the PBO tuning the user set in the BIOS, typed in the Monitor gear beside the
+   * PPT (polish 3 items 2–3) and tagged "set by you" wherever it is used: the TDC and EDC
+   * current limits in amperes, and the Curve Optimizer, which no software can read on Zen 5
+   * (no SMU access), so the audit's CPU advice takes it from here and never recommends the
+   * undervolt the user already runs. coAllCore is the all-core offset as the BIOS shows it
+   * (negative is an undervolt, −30 on the dev box); coPerCore is the user's own note of
+   * per-core values, absent when not set. null means "not set".
+   */
+  cpuTdcA: number | null;
+  cpuEdcA: number | null;
+  coAllCore: number | null;
+  coPerCore?: string;
+  /**
    * The power supply's rated wattage and 80 PLUS badge, asked once (plan section 13): the
    * wall-side figure, the "bigger PSU?" verdict and the stats card's PSU tile read them.
    * null means "not set": the card offers the form and the reference suggestion stays muted.
    */
   psuWatts: number | null;
   psuRating: PsuRating | null;
+  /**
+   * What the user's vendor OC tool shows (plan section 16, 'a P0 delta write replaces the
+   * vendor tool's offset'): the core offset in MHz, and the memory offset in the unit the
+   * tool's slider uses. GPU Tweak III and Afterburner show the effective data rate, twice
+   * NVML's memory clock (+4072 effective = +2036 NVML on the dev box); a tool that shows the
+   * NVML clock is entered as 'nvml'. The one conversion is src/analysis/tune.ts
+   * vendorMemoryNvml. Asked once, remembered, sent with every hunt start; null means not set.
+   */
+  vendorCoreOffsetMhz: number | null;
+  vendorMemoryOffset: { value: number; unit: 'effective' | 'nvml' } | null;
+  /**
+   * "Never test above __ MHz" (plan section 16): the user's own caution for a night run, sent
+   * with every hunt start; the collector skips a rung whose predicted top-of-curve SM clock
+   * (core) or memory clock would pass it and ends the ladder with "stopped at your cap". null
+   * means no cap, the default on every box.
+   */
+  coreCapMhz: number | null;
+  memCapMhz: number | null;
   /** Monitor panel titles the user typed over the detected names, keyed by the hardware id (e.g. "/amdcpu/0", "/nvml/0", "/motherboard"). */
   panelNames: Record<string, string>;
   /** Monitor panel order and sizes, owned entirely by the Monitor page; null is the default layout. */
   monitorLayout: unknown;
+  /** Plan 27a, first launch: the disclaimer version accepted and when; the main process keeps the record that gates the collector, this mirrors it. null until accepted. */
+  disclaimerAccepted?: { version: number; acceptedAt: string } | null;
 }
 
-export const DEFAULT_SETTINGS: Settings = { enableTune: false, tuneAcceptedWarningAt: null, calibrationFactor: null, cpuPptW: null, psuWatts: null, psuRating: null, panelNames: {}, monitorLayout: null };
+export const DEFAULT_SETTINGS: Settings = { enableTune: false, tuneAcceptedWarningAt: null, calibrationFactor: null, cpuPptW: null, cpuTdcA: null, cpuEdcA: null, coAllCore: null, psuWatts: null, psuRating: null, vendorCoreOffsetMhz: null, vendorMemoryOffset: null, coreCapMhz: null, memCapMhz: null, panelNames: {}, monitorLayout: null };
 
 const KEY = 'strata-tune.settings';
 

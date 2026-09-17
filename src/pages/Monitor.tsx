@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings2, X } from 'lucide-react';
+import { Settings2 } from 'lucide-react';
 import { api, ipcErrorMessage } from '../api';
 import type { StaticSnapshot, Tick } from '../collector-types';
 import { useCollectorStatus } from '../components/useCollectorStatus';
@@ -9,12 +9,15 @@ import { takeIntent } from '../components/navigate';
 import { SensorIndex } from '../components/monitor/sensors';
 import { Ring } from '../components/monitor/history';
 import { cachedSensorMeta, cachedSnapshot, clearStaticCache, refreshSensorMeta, rememberedSnapshot } from '../components/monitor/cache';
-import { CpuPanel, cpuKey, cpuPowerLimit } from '../components/monitor/CpuPanel';
+import { CpuPanel, cpuKey } from '../components/monitor/CpuPanel';
 import { GpuPanel, gpuKey } from '../components/monitor/GpuPanel';
 import { BoardPanel, BOARD_KEY, boardName } from '../components/monitor/BoardPanel';
 import { SystemPower } from '../components/monitor/SystemPower';
 import { panelName, type PanelChrome } from '../components/monitor/Panel';
 import { cpuLimits } from '../components/monitor/cpuLimits';
+import { cpuTuningSummary } from '../components/monitor/cpuTuning';
+import { MonitorMenu } from '../components/monitor/MonitorMenu';
+import { capsOf } from '../components/monitor/caps';
 import { gpuTitle } from '../components/monitor/vendors';
 import { COLUMNS, isDefaultLayout, MIN_HEIGHT, movePanel, parseLayout, placeLayout, rowsOf, snapSpan, type Layout, type PanelId, type Span } from '../components/monitor/layout';
 
@@ -44,87 +47,6 @@ function useMediaQuery(query: string): boolean {
   }, [query]);
   return matches;
 }
-
-interface MenuProps {
-  cpuName?: string;
-  layoutIsDefault: boolean;
-  onClose: () => void;
-}
-
-/**
- * The page menu (items 2 and 3): the CPU power limit the sensors cannot read, and the
- * layout reset. The limit is stored as the user typed it; blank returns to stock.
- */
-const PageMenu: React.FC<MenuProps> = ({ cpuName, layoutIsDefault, onClose }) => {
-  const settings = useSettings();
-  const limits = cpuLimits(cpuName);
-  const [draft, setDraft] = useState(settings.cpuPptW === null ? '' : String(settings.cpuPptW));
-  const input = useRef<HTMLInputElement>(null);
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    input.current?.focus();
-    // A press outside the menu closes it; the gear is left to its own toggle.
-    const away = (e: PointerEvent) => {
-      const t = e.target as HTMLElement;
-      if (!box.current?.contains(t) && !t.closest('[data-menu-anchor]')) onClose();
-    };
-    window.addEventListener('pointerdown', away);
-    return () => window.removeEventListener('pointerdown', away);
-  }, [onClose]);
-  const name = limits.powerName ?? 'PPT';
-  const save = () => {
-    const w = Number(draft);
-    updateSettings({ cpuPptW: draft.trim() && Number.isFinite(w) && w > 0 ? Math.round(w) : null });
-    onClose();
-  };
-  return (
-    <div ref={box} className="absolute right-0 top-8 z-20 w-80 rounded-md border border-studio-border-light bg-studio-panel p-3 space-y-3" role="dialog" aria-label="Monitor settings">
-      <div className="flex items-center justify-between">
-        <span className="label text-studio-text">Monitor settings</span>
-        <button className="btn-icon w-6 h-6" onClick={onClose} aria-label="Close">
-          <X size={12} />
-        </button>
-      </div>
-      <label className="block space-y-1">
-        <span className="label">CPU power limit ({name})</span>
-        <span className="flex items-center gap-2">
-          <input
-            ref={input}
-            type="number"
-            min={1}
-            step={1}
-            inputMode="numeric"
-            className="figure text-[12px] w-24 h-7 px-2 rounded bg-studio-bg border border-studio-border-light text-studio-text outline-none"
-            placeholder={limits.powerW ? `${limits.powerW} stock` : ''}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') save();
-              if (e.key === 'Escape') onClose();
-            }}
-          />
-          <span className="figure text-[12px] text-studio-muted">W</span>
-          <span className="flex-1" />
-          <button className="btn" onClick={() => setDraft('')} disabled={!draft}>
-            Stock
-          </button>
-          <button className="btn btn-accent" onClick={save}>
-            Save
-          </button>
-        </span>
-        <span className="block text-micro text-studio-subtle leading-relaxed">
-          The sensors cannot read a raised PBO limit; enter the {name} you set in the BIOS or Ryzen Master{limits.powerW ? ` (stock ${limits.powerW} W)` : ''}. The Package bar and the audit judge against it.
-        </span>
-      </label>
-      <div className="flex items-center justify-between gap-3 border-t border-studio-border pt-2">
-        <span className="text-micro text-studio-subtle">Drag a header to move a panel, its corner to resize.</span>
-        <button className="btn shrink-0" disabled={layoutIsDefault} onClick={() => updateSettings({ monitorLayout: null })}>
-          Reset layout
-        </button>
-      </div>
-    </div>
-  );
-};
 
 interface Drag {
   id: PanelId;
@@ -282,7 +204,9 @@ export const Monitor: React.FC = () => {
   const cpuTitle = snapshot && index ? panelName(names, cpuKey(index), snapshot.cpu.name) : undefined;
   const gpuName = gpu ? panelName(names, gpuKey(gpu), gpuTitle(gpu)) : undefined;
   const boardTitle = snapshot ? panelName(names, BOARD_KEY, boardName(snapshot)) : undefined;
-  const power = cpuPowerLimit(cpuLimits(snapshot?.cpu.name), settings.cpuPptW);
+  const tuning = cpuTuningSummary(settings, cpuLimits(snapshot?.cpu.name).powerName ?? 'PPT');
+  // Plan 17d rule 2: computed once here, never string-matched inside a panel.
+  const caps = useMemo(() => capsOf(snapshot, index, tick), [snapshot, index, tick]);
 
   // A resize in progress is placed as if it had landed, so the grid reflows under the pointer.
   const placed = placeLayout(resize ? layout.map((p) => (p.id === resize.id ? { id: p.id, span: resize.span, height: resize.height } : p)) : layout);
@@ -309,9 +233,9 @@ export const Monitor: React.FC = () => {
       case 'cpu':
         return <CpuPanel index={index} tick={tick} ring={ring} snapshot={snapshot} panel={chrome(id)} onOpenPowerLimit={() => setMenu(true)} />;
       case 'gpu':
-        return <GpuPanel index={index} tick={tick} ring={ring} panel={chrome(id)} />;
+        return <GpuPanel index={index} tick={tick} ring={ring} panel={chrome(id)} caps={caps} />;
       case 'power':
-        return <SystemPower index={index} tick={tick} ring={ring} snapshot={snapshot} panel={chrome(id)} />;
+        return <SystemPower index={index} tick={tick} ring={ring} snapshot={snapshot} panel={chrome(id)} caps={caps} />;
       case 'board':
         return <BoardPanel index={index} tick={tick} ring={ring} snapshot={snapshot} panel={chrome(id)} />;
     }
@@ -324,19 +248,20 @@ export const Monitor: React.FC = () => {
         <HeaderItem label="GPU" value={gpuName} />
         <HeaderItem label="Board" value={boardTitle} />
         <span className="flex-1" />
-        {power.watts && !power.stock && (
-          <span className="label text-studio-subtle" title="The CPU power limit you set; the Package bar is judged against it">
-            {power.name} {power.watts} W
+        {tuning.length > 0 && (
+          <span className="inline-flex items-baseline gap-1.5 min-w-0" title={caps.laptop ? "CPU power mode you set in the vendor app (gear menu); the Package bar's limit tick and the audit's CPU advice use it" : "CPU tuning you set in the BIOS (gear menu); the Package bar's limit tick and the audit's CPU advice use it"}>
+            <span className="label">set by you</span>
+            <span className="figure text-[12px] text-studio-muted">{tuning.join(' · ')}</span>
           </span>
         )}
         <span className="figure text-[12px] text-studio-muted" title="Time on this page">
           {mmss(seconds)}
         </span>
         <CollectorStatusPill state={status} />
-        <button className="btn-icon" data-menu-anchor onClick={() => setMenu((m) => !m)} title="Monitor settings: CPU power limit, layout" aria-label="Monitor settings" aria-expanded={menu}>
+        <button className="btn-icon" data-menu-anchor onClick={() => setMenu((m) => !m)} title={caps.laptop ? 'Monitor settings: CPU power mode you set in the vendor app, layout' : 'Monitor settings: CPU tuning you set in BIOS, layout'} aria-label="Monitor settings" aria-expanded={menu}>
           <Settings2 size={14} />
         </button>
-        {menu && <PageMenu cpuName={snapshot?.cpu.name} layoutIsDefault={isDefaultLayout(layout)} onClose={closeMenu} />}
+        {menu && <MonitorMenu cpuName={snapshot?.cpu.name} laptop={caps.laptop} layoutIsDefault={isDefaultLayout(layout)} onClose={closeMenu} />}
       </header>
 
       {!connected ? (

@@ -6,7 +6,8 @@ import { STREAM_EFFICIENCY } from '../src/analysis/advisor';
 import { updateSettings } from '../src/components/useSettings';
 import { factsFromPicker, factsFromSnapshot } from '../src/components/advisor/hardware';
 import { gpuSpecOf, streamedBandwidth } from '../src/components/advisor/rows';
-import { NVML_MEM_RATE_FACTOR, loadedClocks, raise, thisCard, type HeldClocks } from '../src/components/advisor/thisCard';
+import { NVML_MEM_RATE_FACTOR, loadedClocks, memClockMhzOf, nvmlMemOffsetMhz, raise, thisCard, type HeldClocks } from '../src/components/advisor/thisCard';
+import { GPU_SPECS } from '../src/analysis/hardware-tables';
 import { loadHeldClocks, saveHeldClocks } from '../src/components/advisor/heldClocks';
 import { devbox } from './fixtures';
 
@@ -71,10 +72,18 @@ describe('thisCard: the driver over the table (plan section 10)', () => {
     expect(idle.bandwidthGBs).toBeCloseTo(1792, 0);
   });
 
-  it('a positive NVML offset lifts the ceiling; a negative one does not lower it; no ceiling and no held clock leaves the reference standing', () => {
+  it('a positive NVML offset lifts the ceiling by half its figure (the driver counts it on the effective rate); a negative one does not lower it; no ceiling and no held clock leaves the reference standing', () => {
     const g = gpu();
     g.clockOffsets = { smMhz: 0, memMhz: 500, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
-    expect(thisCard(g, 512, null).memGbps).toBeCloseTo(29.002, 3);
+    expect(nvmlMemOffsetMhz(g.clockOffsets)).toBe(250);
+    expect(thisCard(g, 512, null).memGbps).toBeCloseTo(28.502, 3);
+    // The dev box on 2026-09-17: the collector's own +2036 P0 delta read +4072 from nvmlDeviceGetClockOffsets while the card held 16037.
+    g.clockOffsets = { smMhz: 319, memMhz: 4072, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
+    g.pstateDeltas = { coreMhz: 319, memMhz: 2036 };
+    expect(thisCard(g, 512, null)).toMatchObject({ memMhz: 16037, memSource: 'ceiling' });
+    expect(thisCard(g, 512, null).memGbps).toBeCloseTo(32.074, 3);
+    g.pstateDeltas = null;
+    g.clockOffsets = { smMhz: 0, memMhz: 500, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
     g.clockOffsets = { smMhz: 0, memMhz: -500, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
     expect(thisCard(g, 512, null).memGbps).toBeCloseTo(28.002, 3);
     g.clockOffsets = null;
@@ -95,7 +104,7 @@ describe('thisCard: the driver over the table (plan section 10)', () => {
     expect(thisCard(g, 512, null).memGbps).toBeCloseTo(32.064, 3);
     // The record above the ceiling in force is 'held'; at the ceiling it is the ceiling's.
     g.pstateDeltas = { coreMhz: 0, memMhz: 0 };
-    expect(thisCard(g, 512, HELD)).toMatchObject({ memSource: 'held', memCeilingGbps: 29.002 });
+    expect(thisCard(g, 512, HELD)).toMatchObject({ memSource: 'held', memCeilingGbps: 28.502 });
   });
 
   it('a live reading is a held clock only under load: an idle card on a driver without ceilings leaves the reference standing (the RTX 4080 at 405 MHz case)', () => {
@@ -191,17 +200,25 @@ describe('StatsCard: this card leads, the reference is demoted', () => {
     expect(html).toContain('4,493');
     expect(html).toContain('at 3226 MHz held under load');
     expect(html).toContain('NVIDIA advertises <span class="figure">3,352</span> at the 2407 MHz reference boost');
+    // A clock seen below the reference boost (the dev box's stream copy held the SM at 1192 MHz) never scales the peaks down: the advertised figure stands and the BOOST tile says where the clock came from.
+    const copyBound = render(thisCard(gpu(), spec.tiles.busBits, { smMhz: 1192, memMhz: 16041 }));
+    expect(copyBound).toContain('1192 MHz');
+    expect(copyBound).toContain('held in a memory-bound run; a compute load shows the boost');
+    expect(copyBound).not.toContain('at 1192 MHz held under load');
+    expect(copyBound).toContain('3,352');
+    expect(copyBound).not.toContain('1,660');
     // The dense / sparse pairs and the shader figure scale the same way, the reference beside each.
     expect(html).toContain('reference 419 / 838');
     expect(html).toContain('>140<');
     expect(html).toContain('reference 105');
-    // Three columns: the reference, this card, the measurement.
+    // Two columns (user, 2026-09-16): the reference and this card; the card's 2052 is the held clock × bus, so it wears the green measured tag.
     expect(html).toContain('>Spec<');
     expect(html).toContain('>This card<');
-    expect(html).toContain('>Measured<');
-    // 1611 against 2052: −21 % of this card's ceiling, −2 % against the copy a stream reaches; never "+x % above spec".
-    expect(html).toContain("−21 % of this card&#x27;s ceiling");
-    expect(html).toContain('−2 % vs expected copy');
+    expect(html).not.toContain('>Measured<');
+    expect(html).toMatch(/>2052<[\s\S]{0,400}>measured</);
+    // The stream copy is evidence beneath, not a rival figure: 1611 is 79 % of 2052, the share a copy kernel reaches.
+    expect(html).toContain('Stream copy <span class="figure">1611</span> GB/s · 79 % of this card&#x27;s ceiling (a copy kernel reaches ~80 %)');
+    expect(html).not.toContain('vs expected copy');
     expect(html).not.toContain('vs reference spec');
     expect(html).toContain('+15 % vs reference');
   });
@@ -221,8 +238,8 @@ describe('StatsCard: this card leads, the reference is demoted', () => {
     expect(html).not.toContain('held under load');
     expect(html).toContain('of 105 shader spec');
     expect(html).toContain("needs the collector&#x27;s live clocks");
-    // The measurement is then judged against the reference, and says so.
-    expect(html).toContain('−10 % of reference spec');
+    // The copy is then judged against the reference, and says so.
+    expect(html).toContain('90 % of reference spec');
     expect(html).not.toContain('reference 575 W');
   });
 
@@ -248,7 +265,8 @@ describe('StatsCard: this card leads, the reference is demoted', () => {
     // Without a held clock the ceiling stands in and the card says how to see the held one.
     expect(html).toContain('28.0 Gbps');
     expect(html).toContain('measure to see the clock the card holds under load');
-    expect(html).toContain('not measured yet');
+    expect(html).toContain('Not measured yet: Measure runs a stream copy to confirm the bus.');
+    expect(html).toContain('driver ceiling; run a load to measure');
     expect(html).toContain('run a load to measure');
     // A card equal to the reference prints no "+0 % vs reference".
     expect(html).not.toContain('+0 %');
@@ -257,10 +275,9 @@ describe('StatsCard: this card leads, the reference is demoted', () => {
   it('a measurement is judged against the clock the sweep held, not the record: 1463 GB/s at 14001 MHz is on expectation, not -29 % of a 16032 MHz ceiling', () => {
     const closed: GpuBench = { ...bench, bandwidthGBs: 1463, bandwidthMedianGBs: 1380, heldSmMhz: 2992, heldMemMhz: 14001 };
     const html = render(thisCard(gpu(), spec.tiles.busBits, HELD), closed);
-    expect(html).toContain('−18 % of the clock held for this run');
-    expect(html).toContain('+2 % vs expected copy');
+    expect(html).toContain('82 % of the clock held for this run');
     expect(html).not.toContain("of this card&#x27;s ceiling");
-    expect(html).toContain('Judged against the 28.0 Gbps the card held while the sweep ran');
+    expect(html).not.toContain('Well below the expected copy');
     // The record stays the card's ceiling on the tiles, and one muted line says the tune was not on for the run.
     expect(html).toContain('32.1 Gbps');
     expect(html).toContain('Earlier this card held 32.1 Gbps (2052 GB/s); this run held 28.0 Gbps — the memory offset was not applied then (vendor tool closed?).');
@@ -281,5 +298,69 @@ describe('StatsCard: this card leads, the reference is demoted', () => {
     expect(html).toContain('grid-cols-[repeat(auto-fit,minmax(150px,1fr))]');
     expect(html).not.toMatch(/2xl:grid-cols-12|xl:grid-cols-11/);
     expect(html).toContain('col-span-2');
+  });
+});
+
+describe('MEMORY CLOCK tile: the GPU-Z convention beside the Gbps one (plan section 10, polish 3 item 10)', () => {
+  it("converts NVML's half-rate clock per memory type: GDDR7 and GDDR6X by 8, GDDR6 by 4, an unknown type to null", () => {
+    // The dev box: 14001 is the 28 Gbps reference ceiling, 16008 the +4072 GPU Tweak tune.
+    expect(memClockMhzOf(14001, 'GDDR7')).toBe(1750);
+    expect(memClockMhzOf(16008, 'GDDR7')).toBe(2001);
+    // A 4090 at its 21 Gbps reference (NVML 10501) prints 1313 MHz; a 4060 at 17 Gbps (NVML 8500) prints 2125.
+    expect(memClockMhzOf(10501, 'GDDR6X')).toBe(1313);
+    expect(memClockMhzOf(8500, 'GDDR6')).toBe(2125);
+    expect(memClockMhzOf(14001, 'HBM3')).toBeNull();
+    expect(memClockMhzOf(14001, '')).toBeNull();
+  });
+
+  it("every gpus.json row carries the cited page's memory clock, and it agrees with the Gbps figure by the type's factor (null where the page disagrees)", () => {
+    const factor: Record<string, number> = { GDDR7: 16, GDDR6X: 16, GDDR6: 8 };
+    for (const g of GPU_SPECS) {
+      expect(g, g.name).toHaveProperty('memoryClockMhz');
+      if (g.memoryClockMhz === null) continue;
+      expect((g.memoryClockMhz * factor[g.vramType]) / 1000, g.name).toBeCloseTo(g.memoryGbps, 0);
+    }
+    expect(spec.tiles.memoryClockMhz).toBe(1750);
+    expect(gpuSpecOf('GeForce RTX 5080')!.tiles.memoryClockMhz).toBe(1875);
+    expect(gpuSpecOf('Arc A770 16 GB')!.tiles.memoryClockMhz).toBeNull();
+  });
+
+  it('this box: 2001 MHz held with "reference 1750 MHz · +251 MHz" beneath, next to the Gbps tile', () => {
+    const c = thisCard(gpu(), spec.tiles.busBits, { smMhz: 3225, memMhz: 16008 });
+    expect(c.memMhz).toBe(16008);
+    const html = render(c);
+    expect(html).toContain('leading-tight">memory clock <span class="text-slate-300 whitespace-nowrap">· this card</span>');
+    expect(html).toContain('2001 MHz');
+    expect(html).toContain('reference 1750 MHz · +251 MHz');
+    // Gbps and MHz sit side by side and never contradict: 32.0 Gbps is 2001 MHz x 16.
+    expect(html).toContain('32.0 Gbps');
+    expect(html.indexOf('leading-tight">memory clock')).toBeGreaterThan(html.indexOf('leading-tight">memory <span'));
+    expect(html.indexOf('leading-tight">memory clock')).toBeLessThan(html.indexOf('leading-tight">bandwidth'));
+  });
+
+  it('at the ceiling the tile says "at reference"; below it the offset is negative; without a card the reference clock stands alone', () => {
+    const atCeiling = render(thisCard(gpu(), spec.tiles.busBits, null));
+    expect(atCeiling).toContain('1750 MHz');
+    expect(atCeiling).toContain('reference 1750 MHz · at reference');
+    const g = gpu();
+    g.clockOffsets = { smMhz: 0, memMhz: -400, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
+    // A negative NVML offset does not lower the ceiling figure (thisCard keeps the larger), so a held clock under the reference is the case: 13600 -> 1700 MHz.
+    const under = render(thisCard({ ...g, clockOffsets: null }, spec.tiles.busBits, { smMhz: 2800, memMhz: 13600 }));
+    expect(under).toContain('1700 MHz');
+    expect(under).toContain('reference 1750 MHz · −50 MHz');
+    const reference = render(null);
+    expect(reference).toContain('>1750 MHz<');
+    expect(reference).not.toContain('at reference');
+  });
+
+  it('a memory type without a rule gets no tile, and the row still has no clipping rule', () => {
+    const hbm = { ...spec, tiles: { ...spec.tiles, vramType: 'HBM3' } };
+    const c = thisCard(gpu(), spec.tiles.busBits, HELD);
+    const html = renderToStaticMarkup(
+      <StatsCard gpuName="NVIDIA GeForce RTX 5090" gpuColour="#76B900" spec={hbm} card={c} latest={null} npuTops={null} bench={null} applies={false} measuring={false} canMeasure error="" onMeasure={() => {}} />
+    );
+    expect(html).not.toContain('leading-tight">memory clock');
+    expect(html).toContain('grid-cols-[repeat(auto-fit,minmax(150px,1fr))]');
+    expect(html).not.toContain('truncate">memory');
   });
 });

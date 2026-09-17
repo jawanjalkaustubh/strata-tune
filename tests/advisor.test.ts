@@ -340,9 +340,14 @@ describe('gpus.json lookups', () => {
     expect(lookupGpu('NVIDIA GeForce RTX 4060 Ti')?.name).toBe('GeForce RTX 4060 Ti 16 GB');
   });
 
-  it('the picker name is exact, laptop parts and unknown cards are null', () => {
+  it('the picker name is exact, laptop parts match only their own rows (plan 17d), unknown cards are null', () => {
     expect(lookupGpu('GeForce RTX 4060 Ti 8 GB')?.vramGiB).toBe(8);
-    expect(lookupGpu('NVIDIA GeForce RTX 4070 Laptop GPU')).toBeNull();
+    // A mobile name never takes the desktop row (8 GB on a 128-bit bus at 115 W is not the 12 GB desktop 4070), and a desktop name never takes the laptop row.
+    expect(lookupGpu('NVIDIA GeForce RTX 4070 Laptop GPU')).toMatchObject({ name: 'GeForce RTX 4070 Laptop', vramGiB: 8, busBits: 128, tdpW: 115, tgpRangeW: [35, 115] });
+    expect(lookupGpu('NVIDIA GeForce RTX 4070')!.name).toBe('GeForce RTX 4070');
+    expect(lookupGpu('NVIDIA GeForce RTX 5090 Laptop GPU')).toMatchObject({ name: 'GeForce RTX 5090 Laptop', vramGiB: 24, vramType: 'GDDR7' });
+    for (const n of ['4050', '4060', '4070', '4080', '4090', '5070', '5080', '5090']) expect(lookupGpu(`NVIDIA GeForce RTX ${n} Laptop GPU`)?.name).toBe(`GeForce RTX ${n} Laptop`);
+    expect(lookupGpu('NVIDIA GeForce RTX 4070 Max-Q')?.name).toBe('GeForce RTX 4070 Laptop');
     expect(lookupGpu('NVIDIA GeForce RTX 5090 D')).toBeNull();
     expect(lookupGpu('NVIDIA GeForce GTX 1080 Ti')).toBeNull();
   });
@@ -363,7 +368,9 @@ describe('gpus.json lookups', () => {
         // Vendors round dense and sparse separately (AMD: 195 against 389).
         if (sparse !== undefined) expect(Math.abs(g.tops[p]! - sparse / 2)).toBeLessThanOrEqual(1);
       }
-      if (g.denseDerived) expect(g.notes).toMatch(/dense is half/);
+      if (g.denseDerived) expect(g.notes).toMatch(/dense is half|dense figures are derived/);
+      // Laptop rows carry the TGP range the laptop maker chooses from; tdpW is its top.
+      if (g.tgpRangeW) expect(g.tgpRangeW[1]).toBe(g.tdpW);
     }
     expect(lookupGpu('NVIDIA GeForce RTX 4070 SUPER')!.bandwidthGBs).toBe(504);
     expect(lookupGpu('NVIDIA GeForce RTX 3060', 12288)!.bandwidthGBs).toBe(360);
@@ -388,7 +395,7 @@ describe('gpus.json lookups', () => {
     expect(lookupGpu('Intel(R) Arc(TM) B580 Graphics')!.advertisedAiTops).toMatchObject({ value: 233, precision: 'int8', sparse: null });
     expect(lookupGpu('NVIDIA GeForce RTX 3090')!.advertisedAiTops).toBeNull();
     expect(lookupGpu('AMD Radeon RX 7900 XTX')!.advertisedAiTops).toBeNull();
-    expect(advertised.length).toBe(21);
+    expect(advertised.length).toBe(29);
   });
 
   it('the spec tiles carry the TechPowerUp figures and the vendor power recommendation', () => {

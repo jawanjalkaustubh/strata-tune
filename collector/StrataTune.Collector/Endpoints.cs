@@ -47,6 +47,20 @@ internal static class Endpoints
             ? Json(run, WireJson.Default.LoadRun)
             : Error(StatusCodes.Status404NotFound, "no such load run"));
 
+        // Stop (plan section 17c): the worker or bench is killed and the run answers as cancelled.
+        app.MapPost("/load/{id}/cancel", (string id) =>
+            state.Loads.TryCancel(id, out var run) switch
+            {
+                LoadRunner.Cancel.Cancelled => Json(run, WireJson.Default.LoadRun),
+                LoadRunner.Cancel.NotRunning => Error(StatusCodes.Status409Conflict, $"load run {id} is not running"),
+                _ => Error(StatusCodes.Status404NotFound, "no such load run"),
+            });
+
+        // Timer resolution and the QPC clock (plan sections 8 and 17); ?trace=N runs powercfg's
+        // energy report for N seconds to name the processes holding the timer raised.
+        app.MapGet("/timers", async (int? trace, int? excludePid, CancellationToken cancel) =>
+            Json(await TimerProbe.ReadAsync(trace, excludePid, state.Log, cancel), WireJson.Default.Timers));
+
         MapTune(app, state.Tune);
     }
 
@@ -64,14 +78,7 @@ internal static class Endpoints
             var (status, refusal) = await tune.TryStartAsync(request);
             return status == StatusCodes.Status200OK ? Status() : Error(status, refusal);
         });
-        // The validate run is a kind of start; the client spells it as its own route.
-        app.MapPost("/tune/validate", async () =>
-        {
-            var (status, refusal) = await tune.TryStartAsync(new TuneStartRequest(TuneRunKind.Validate, null, null));
-            return status == StatusCodes.Status200OK ? Status() : Error(status, refusal);
-        });
         app.MapPost("/tune/stop", () => Outcome(tune.Stop()));
-        app.MapPost("/tune/keep", () => Outcome(tune.Keep()));
         app.MapPost("/tune/revert", () => Outcome(tune.Revert()));
         app.MapGet("/tune/export", () => tune.Export() is { } export
             ? Json(export, WireJson.Default.TuneExport)

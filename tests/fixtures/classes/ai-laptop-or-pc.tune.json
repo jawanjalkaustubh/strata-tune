@@ -1,0 +1,44 @@
+{
+  "class": "ai-laptop-or-pc",
+  "snapshot": {
+    "chassis": {
+      "isLaptop": true,
+      "chassisTypes": [
+        10
+      ]
+    },
+    "cpu": {
+      "name": "Snapdragon(R) X Elite - X1E80100 - Qualcomm(R) Oryon(TM) CPU"
+    },
+    "gpus": []
+  },
+  "tune": {
+    "status": {
+      "enabled": false,
+      "state": "IDLE",
+      "baseline": {
+        "coreKhz": 0,
+        "memKhz": 0,
+        "coreMhz": 0,
+        "memMhz": 0
+      },
+      "candidate": null,
+      "appliedAt": null,
+      "reverted": null,
+      "result": null,
+      "history": [],
+      "nvapi": {
+        "available": false,
+        "reason": "no supported GPU: Headroom needs an NVIDIA card with the NVAPI pstate interface; on this ARM64 laptop the Adreno GPU has no such interface and the sensor set is limited",
+        "deltas": null,
+        "range": null
+      },
+      "run": null,
+      "flightAvailable": false,
+      "stateFile": "C:\\ProgramData\\Strata Tune\\tune-state.json",
+      "problem": null,
+      "estimateMinutes": 16
+    },
+    "export": null
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "class": "laptop-no-dgpu",
+  "snapshot": {
+    "chassis": {
+      "isLaptop": true,
+      "chassisTypes": [
+        10
+      ]
+    },
+    "cpu": {
+      "name": "AMD Ryzen 7 7730U with Radeon Graphics"
+    },
+    "gpus": []
+  },
+  "tune": {
+    "status": {
+      "enabled": false,
+      "state": "IDLE",
+      "baseline": {
+        "coreKhz": 0,
+        "memKhz": 0,
+        "coreMhz": 0,
+        "memMhz": 0
+      },
+      "candidate": null,
+      "appliedAt": null,
+      "reverted": null,
+      "result": null,
+      "history": [],
+      "nvapi": {
+        "available": false,
+        "reason": "no supported GPU: Headroom needs an NVIDIA card with the NVAPI pstate interface; this laptop has an integrated Radeon GPU only",
+        "deltas": null,
+        "range": null
+      },
+      "run": null,
+      "flightAvailable": false,
+      "stateFile": "C:\\ProgramData\\Strata Tune\\tune-state.json",
+      "problem": null,
+      "estimateMinutes": 16
+    },
+    "export": null
+  }
+}

@@ -17,13 +17,13 @@ return args.Length == 0 ? Bad("expected --probe, --serve or --revert-if-pending"
 {
     "--probe" => Probe(args),
     "--serve" => Serve.Run(args),
-    RevertTask.Verb => RevertIfPending(),
+    "--revert-if-pending" => RevertIfPending(),
     _ => Bad($"unknown verb {args[0]}"),
 };
 
-// The logon task's verb (plan section 16): read the state file, put the baseline back if a
-// candidate was left on the card, exit. No port, no sensors, no handshake; a failed revert
-// is exit 1 so Task Scheduler's history shows it.
+// The same pass every --serve start runs first (plan section 16), on its own: read the
+// state file, put the baseline back if a rung was left on the card, exit. No port, no
+// sensors, no handshake; a failed revert is exit 1.
 static int RevertIfPending()
 {
     var log = new Log(AppPaths.Log);

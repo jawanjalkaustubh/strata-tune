@@ -16,7 +16,7 @@ interface Props {
   ring: Ring;
   snapshot: StaticSnapshot | null;
   panel?: PanelChrome;
-  /** Opens the Monitor page's CPU power-limit setting; the "stock" tag on the Package bar is the way in. */
+  /** Opens the Monitor page's CPU tuning menu; the tag on the Package bar's "of N W" is the way in. */
   onOpenPowerLimit?: () => void;
 }
 
@@ -77,15 +77,20 @@ export const CpuPanel: React.FC<Props> = ({ index, tick, ring, snapshot, panel, 
   const pkgHigh = layout.packageW ? ring.high((t) => t.sensors[layout.packageW!]) : 0;
   const tempMax = limits.tjmax ? limits.tjmax + 10 : 110;
   const clockMax = Math.max(boost.current, avgEff ?? 0, 1000);
-  // Until the user sets the limit they run, the tick is the part's stock value and says so; the tag opens the setting.
+  // Until the user sets the limit they run, the tick is the part's stock value and says so;
+  // once set, the figure is tagged as theirs, on its own line so the figure column never
+  // clips it (plan 17a). Either tag opens the menu.
+  const limitTag = power.stock ? 'stock' : 'set by you';
   const pptSub = power.watts ? (
     <>
       of {power.watts} W
-      {power.stock && (
-        <button className="ml-1 underline decoration-dotted underline-offset-2 hover:text-studio-text" onClick={onOpenPowerLimit} title={`Stock ${power.name} from the parts table; set the limit you run (PBO) to judge against it`}>
-          stock
-        </button>
-      )}
+      <button
+        className={`${power.stock ? 'ml-1' : 'block ml-auto'} underline decoration-dotted underline-offset-2 hover:text-studio-text`}
+        onClick={onOpenPowerLimit}
+        title={power.stock ? `Stock ${power.name} from the parts table; set the limit you run (PBO) to judge against it` : `The ${power.name} you set in the BIOS, entered in the gear menu; no sensor reads it`}
+      >
+        {limitTag}
+      </button>
     </>
   ) : undefined;
 
@@ -114,7 +119,7 @@ export const CpuPanel: React.FC<Props> = ({ index, tick, ring, snapshot, panel, 
             format={(x) => `${x.toFixed(1)} W`}
             max={power.watts ? Math.max(power.watts * 1.15, pkgHigh * 1.05) : Math.max(pkgHigh * 1.2, 100)}
             limit={power.watts}
-            limitLabel={power.watts ? `${power.name} ${power.watts} W${power.stock ? ' (stock)' : ''}` : undefined}
+            limitLabel={power.watts ? `${power.name} ${power.watts} W (${limitTag})` : undefined}
             sub={pptSub}
             tone={toneByLimit(pkg ?? 0, power.watts)}
             history={hist(layout.packageW)}

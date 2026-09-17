@@ -3,7 +3,9 @@ import { WARMUP_FRAMES } from '../analysis/frames';
 import { LOGO_DATA_URL } from '../assets/logo';
 import { FrameTimeChart, dotTone } from './FrameTimeChart';
 import { causeText, engineSentence, headline, pct } from './causes';
-import type { BenchCheck, BenchCheckRow, BoundVerdict, CauseShare, Measurements, SessionSummary, StutterReport } from './report-types';
+import type { BenchCheck, BenchCheckRow, BoundVerdict, CauseShare, Measurements, ReportFile, SessionSummary, StutterReport } from './report-types';
+import { isScoreReport } from './report-types';
+import { ScoreSheetView } from './ScoreSheet';
 import benchmarks from '../data/benchmarks.json';
 import { benchSegmentLabel } from '../components/capture/LiveFrames';
 import './report.css';
@@ -346,3 +348,7 @@ export const ReportView: React.FC<Props> = ({ report, session, brand = true }) =
     </div>
   );
 };
+
+/** The one template's entry (plan §19): a report file renders as the stutter report or, by its `kind`, as the score sheet. */
+export const ReportFileView: React.FC<{ data: ReportFile; brand?: boolean }> = ({ data, brand = true }) =>
+  isScoreReport(data) ? <ScoreSheetView sheet={data.sheet} brand={brand} /> : <ReportView report={data.report} session={data.session} brand={brand} />;

@@ -30,8 +30,8 @@ export const BestFor: React.FC<Props> = ({ picks, measured, contextTokens }) => 
                 <div className="mt-1 flex items-baseline gap-1.5 flex-wrap">
                   {r.tokPerSec !== null ? (
                     <>
-                      <span className="figure text-emerald-400 text-[13px]">{tokS(r.tokPerSec)}</span>
-                      <span className="text-[10px] text-studio-subtle">tok/s</span>
+                      <span className={`figure text-[13px] ${r.cpuOnly ? 'text-studio-text' : 'text-emerald-400'}`}>{tokS(r.cpuOnly && r.tokPerSecOffloaded !== null ? r.tokPerSecOffloaded : r.tokPerSec)}</span>
+                      <span className="text-[10px] text-studio-subtle">{r.cpuOnly ? 'tok/s on the CPU' : 'tok/s'}</span>
                       <Tag kind="estimated" />
                       {r.mtpAcceptedTokens !== null && <MtpTag accepted={r.mtpAcceptedTokens} />}
                       {r.moe && <MoeTag />}
@@ -50,6 +50,7 @@ export const BestFor: React.FC<Props> = ({ picks, measured, contextTokens }) => 
             ) : (
               <div className="text-mini text-studio-muted">Nothing tagged {tag} runs fast at this context.</div>
             )}
+            {r?.cpuOnly && <div className="text-[10px] text-studio-subtle mt-1">from RAM; a discrete GPU is what changes this</div>}
           </div>
         );
       })}

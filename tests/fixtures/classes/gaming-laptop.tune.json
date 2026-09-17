@@ -1,0 +1,794 @@
+{
+  "class": "gaming-laptop",
+  "snapshot": {
+    "chassis": {
+      "isLaptop": true,
+      "chassisTypes": [
+        10
+      ]
+    },
+    "cpu": {
+      "name": "Intel(R) Core(TM) i7-13700HX"
+    },
+    "gpus": [
+      {
+        "name": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "vram": {
+          "totalMiB": 8188
+        }
+      }
+    ]
+  },
+  "tune": {
+    "status": {
+      "enabled": true,
+      "state": "IDLE",
+      "baseline": {
+        "coreKhz": 0,
+        "memKhz": 0,
+        "coreMhz": 0,
+        "memMhz": 0
+      },
+      "candidate": null,
+      "appliedAt": null,
+      "reverted": null,
+      "result": {
+        "kind": "hunt",
+        "deltas": {
+          "coreKhz": 45000,
+          "memKhz": 30000,
+          "coreMhz": 45,
+          "memMhz": 30
+        },
+        "baseline": {
+          "coreKhz": 0,
+          "memKhz": 0,
+          "coreMhz": 0,
+          "memMhz": 0
+        },
+        "vendor": null,
+        "baselineHeld": {
+          "smMhz": 2280,
+          "memMhz": 8001
+        },
+        "heldAtCertified": {
+          "smMhz": 2325,
+          "memMhz": 8031
+        },
+        "firstFailure": {
+          "ladder": "memory",
+          "reason": "bandwidth",
+          "offsetMhz": 45,
+          "stage": 2,
+          "note": "+45 MHz memory: bandwidth fell"
+        },
+        "stops": [
+          {
+            "ladder": "memory",
+            "reason": "bandwidth",
+            "offsetMhz": 45,
+            "stage": 2,
+            "note": "+45 MHz memory: bandwidth fell"
+          },
+          {
+            "ladder": "core",
+            "reason": "hash",
+            "offsetMhz": 60,
+            "stage": 1,
+            "note": "+60 MHz core: silent error"
+          }
+        ],
+        "bandwidthGBs": 783.1,
+        "referenceHash": "bbcc4652a31654c5",
+        "confidence": "high",
+        "foundAt": "2026-09-17T06:40:00Z",
+        "certified": {
+          "coreMhz": 45,
+          "memMhz": 30
+        },
+        "asFound": {
+          "deltas": {
+            "coreKhz": 0,
+            "memKhz": 0,
+            "coreMhz": 0,
+            "memMhz": 0
+          },
+          "repeats": 2,
+          "verdict": "stable",
+          "score": {
+            "points": 5075,
+            "computePoints": 2360,
+            "bandwidthPoints": 2715,
+            "throughputGsps": 1350.2,
+            "bandwidthGBs": 780.4
+          },
+          "held": {
+            "smMhz": 2280,
+            "memMhz": 8001
+          },
+          "topSmMhz": 2505,
+          "note": "every pass matched",
+          "telemetry": {
+            "samples": 240,
+            "seconds": 120.4,
+            "gpu": {
+              "coreMhz": {
+                "avg": 2190.5,
+                "max": 2280
+              },
+              "memMhz": {
+                "avg": 8001,
+                "max": 8001
+              },
+              "coreC": {
+                "avg": 78.2,
+                "max": 84
+              },
+              "hotspotC": {
+                "avg": 88.5,
+                "max": 94
+              },
+              "memoryJunctionC": null,
+              "boardW": {
+                "avg": 112.6,
+                "max": 140
+              },
+              "powerCapW": 140,
+              "limitShare": {
+                "SwPowerCap": 0.55
+              },
+              "fanPercent": null
+            },
+            "cpu": {
+              "effectiveMhz": {
+                "avg": 3910.2,
+                "max": 4900
+              },
+              "packageW": {
+                "avg": 42.1,
+                "max": 55
+              },
+              "tctlC": {
+                "avg": 81.3,
+                "max": 92
+              }
+            }
+          },
+          "steppedDown": false
+        },
+        "official": {
+          "deltas": {
+            "coreKhz": 45000,
+            "memKhz": 30000,
+            "coreMhz": 45,
+            "memMhz": 30
+          },
+          "repeats": 2,
+          "verdict": "stable",
+          "score": {
+            "points": 5157,
+            "computePoints": 2432,
+            "bandwidthPoints": 2725,
+            "throughputGsps": 1391.8,
+            "bandwidthGBs": 783.1
+          },
+          "held": {
+            "smMhz": 2325,
+            "memMhz": 8031
+          },
+          "topSmMhz": 2550,
+          "note": "every pass matched",
+          "telemetry": {
+            "samples": 240,
+            "seconds": 120.4,
+            "gpu": {
+              "coreMhz": {
+                "avg": 2231,
+                "max": 2325
+              },
+              "memMhz": {
+                "avg": 8031,
+                "max": 8031
+              },
+              "coreC": {
+                "avg": 79.1,
+                "max": 85
+              },
+              "hotspotC": {
+                "avg": 89.7,
+                "max": 95
+              },
+              "memoryJunctionC": null,
+              "boardW": {
+                "avg": 113.9,
+                "max": 140
+              },
+              "powerCapW": 140,
+              "limitShare": {
+                "SwPowerCap": 0.55
+              },
+              "fanPercent": null
+            },
+            "cpu": {
+              "effectiveMhz": {
+                "avg": 3902,
+                "max": 4900
+              },
+              "packageW": {
+                "avg": 41.8,
+                "max": 54
+              },
+              "tctlC": {
+                "avg": 82,
+                "max": 93
+              }
+            }
+          },
+          "steppedDown": false
+        },
+        "holdsNow": {
+          "smMhz": 2280,
+          "memMhz": 8001
+        },
+        "rungs": [
+          {
+            "ladder": "memory",
+            "deltas": {
+              "coreKhz": 0,
+              "memKhz": 15000,
+              "coreMhz": 0,
+              "memMhz": 15
+            },
+            "verdict": "stable",
+            "stage": null,
+            "failedPattern": null,
+            "held": {
+              "smMhz": 2280,
+              "memMhz": 8016
+            },
+            "topSmMhz": 2505,
+            "throughputGsps": 1351.1,
+            "bandwidthGBs": 781.0,
+            "throttledFraction": 0.7,
+            "note": "every pass matched",
+            "score": {
+              "points": 5078,
+              "computePoints": 2361,
+              "bandwidthPoints": 2717,
+              "throughputGsps": 1351.1,
+              "bandwidthGBs": 781.0
+            }
+          },
+          {
+            "ladder": "memory",
+            "deltas": {
+              "coreKhz": 0,
+              "memKhz": 30000,
+              "coreMhz": 0,
+              "memMhz": 30
+            },
+            "verdict": "stable",
+            "stage": null,
+            "failedPattern": null,
+            "held": {
+              "smMhz": 2280,
+              "memMhz": 8031
+            },
+            "topSmMhz": 2505,
+            "throughputGsps": 1350.8,
+            "bandwidthGBs": 783.1,
+            "throttledFraction": 0.7,
+            "note": "every pass matched",
+            "score": {
+              "points": 5086,
+              "computePoints": 2361,
+              "bandwidthPoints": 2725,
+              "throughputGsps": 1350.8,
+              "bandwidthGBs": 783.1
+            }
+          },
+          {
+            "ladder": "memory",
+            "deltas": {
+              "coreKhz": 0,
+              "memKhz": 45000,
+              "coreMhz": 0,
+              "memMhz": 45
+            },
+            "verdict": "unstable",
+            "stage": 2,
+            "failedPattern": "sustained",
+            "held": {
+              "smMhz": 2280,
+              "memMhz": 8046
+            },
+            "topSmMhz": 2505,
+            "throughputGsps": 1349.9,
+            "bandwidthGBs": 760.2,
+            "throttledFraction": 0.7,
+            "note": "bandwidth 760 GB/s is more than 3.0 % under the best certified rung's 783",
+            "score": null
+          },
+          {
+            "ladder": "core",
+            "deltas": {
+              "coreKhz": 15000,
+              "memKhz": 0,
+              "coreMhz": 15,
+              "memMhz": 0
+            },
+            "verdict": "stable",
+            "stage": null,
+            "failedPattern": null,
+            "held": {
+              "smMhz": 2295,
+              "memMhz": 8001
+            },
+            "topSmMhz": 2520,
+            "throughputGsps": 1364.0,
+            "bandwidthGBs": 780.1,
+            "throttledFraction": 0.7,
+            "note": "every pass matched",
+            "score": {
+              "points": 5098,
+              "computePoints": 2384,
+              "bandwidthPoints": 2714,
+              "throughputGsps": 1364.0,
+              "bandwidthGBs": 780.1
+            }
+          },
+          {
+            "ladder": "core",
+            "deltas": {
+              "coreKhz": 30000,
+              "memKhz": 0,
+              "coreMhz": 30,
+              "memMhz": 0
+            },
+            "verdict": "stable",
+            "stage": null,
+            "failedPattern": null,
+            "held": {
+              "smMhz": 2310,
+              "memMhz": 8001
+            },
+            "topSmMhz": 2535,
+            "throughputGsps": 1378.2,
+            "bandwidthGBs": 780.0,
+            "throttledFraction": 0.7,
+            "note": "every pass matched",
+            "score": {
+              "points": 5123,
+              "computePoints": 2409,
+              "bandwidthPoints": 2714,
+              "throughputGsps": 1378.2,
+              "bandwidthGBs": 780.0
+            }
+          },
+          {
+            "ladder": "core",
+            "deltas": {
+              "coreKhz": 45000,
+              "memKhz": 0,
+              "coreMhz": 45,
+              "memMhz": 0
+            },
+            "verdict": "stable",
+            "stage": null,
+            "failedPattern": null,
+            "held": {
+              "smMhz": 2325,
+              "memMhz": 8001
+            },
+            "topSmMhz": 2550,
+            "throughputGsps": 1391.8,
+            "bandwidthGBs": 780.3,
+            "throttledFraction": 0.7,
+            "note": "every pass matched",
+            "score": {
+              "points": 5147,
+              "computePoints": 2432,
+              "bandwidthPoints": 2715,
+              "throughputGsps": 1391.8,
+              "bandwidthGBs": 780.3
+            }
+          },
+          {
+            "ladder": "core",
+            "deltas": {
+              "coreKhz": 60000,
+              "memKhz": 0,
+              "coreMhz": 60,
+              "memMhz": 0
+            },
+            "verdict": "unstable",
+            "stage": 1,
+            "failedPattern": "sustained",
+            "held": null,
+            "topSmMhz": null,
+            "throughputGsps": null,
+            "bandwidthGBs": null,
+            "throttledFraction": 0.7,
+            "note": "silent error, hash mismatch under the variable half",
+            "score": null
+          }
+        ]
+      },
+      "history": [],
+      "nvapi": {
+        "available": true,
+        "reason": null,
+        "deltas": {
+          "coreKhz": 0,
+          "memKhz": 0,
+          "coreMhz": 0,
+          "memMhz": 0
+        },
+        "range": null
+      },
+      "run": null,
+      "flightAvailable": false,
+      "stateFile": "C:\\ProgramData\\Strata Tune\\tune-state.json",
+      "problem": null,
+      "estimateMinutes": 16
+    },
+    "export": {
+      "certified": {
+        "coreMhz": 45,
+        "memMhz": 30
+      },
+      "vendorSlider": {
+        "coreMhz": 45,
+        "memMhz": 60
+      },
+      "sliderTotal": null,
+      "baselineHeld": {
+        "smMhz": 2280,
+        "memMhz": 8001
+      },
+      "heldAtCertified": {
+        "smMhz": 2325,
+        "memMhz": 8031
+      },
+      "firstFailure": {
+        "ladder": "memory",
+        "reason": "bandwidth",
+        "offsetMhz": 45,
+        "stage": 2,
+        "note": "+45 MHz memory: bandwidth fell"
+      },
+      "text": "",
+      "confidence": "high",
+      "measuredAt": "2026-09-17T06:40:00Z",
+      "vendor": null,
+      "score": {
+        "deltas": {
+          "coreKhz": 45000,
+          "memKhz": 30000,
+          "coreMhz": 45,
+          "memMhz": 30
+        },
+        "repeats": 2,
+        "verdict": "stable",
+        "score": {
+          "points": 5157,
+          "computePoints": 2432,
+          "bandwidthPoints": 2725,
+          "throughputGsps": 1391.8,
+          "bandwidthGBs": 783.1
+        },
+        "held": {
+          "smMhz": 2325,
+          "memMhz": 8031
+        },
+        "topSmMhz": 2550,
+        "note": "every pass matched",
+        "telemetry": {
+          "samples": 240,
+          "seconds": 120.4,
+          "gpu": {
+            "coreMhz": {
+              "avg": 2231,
+              "max": 2325
+            },
+            "memMhz": {
+              "avg": 8031,
+              "max": 8031
+            },
+            "coreC": {
+              "avg": 79.1,
+              "max": 85
+            },
+            "hotspotC": {
+              "avg": 89.7,
+              "max": 95
+            },
+            "memoryJunctionC": null,
+            "boardW": {
+              "avg": 113.9,
+              "max": 140
+            },
+            "powerCapW": 140,
+            "limitShare": {
+              "SwPowerCap": 0.55
+            },
+            "fanPercent": null
+          },
+          "cpu": {
+            "effectiveMhz": {
+              "avg": 3902,
+              "max": 4900
+            },
+            "packageW": {
+              "avg": 41.8,
+              "max": 54
+            },
+            "tctlC": {
+              "avg": 82,
+              "max": 93
+            }
+          }
+        },
+        "steppedDown": false
+      },
+      "asFound": {
+        "deltas": {
+          "coreKhz": 0,
+          "memKhz": 0,
+          "coreMhz": 0,
+          "memMhz": 0
+        },
+        "repeats": 2,
+        "verdict": "stable",
+        "score": {
+          "points": 5075,
+          "computePoints": 2360,
+          "bandwidthPoints": 2715,
+          "throughputGsps": 1350.2,
+          "bandwidthGBs": 780.4
+        },
+        "held": {
+          "smMhz": 2280,
+          "memMhz": 8001
+        },
+        "topSmMhz": 2505,
+        "note": "every pass matched",
+        "telemetry": {
+          "samples": 240,
+          "seconds": 120.4,
+          "gpu": {
+            "coreMhz": {
+              "avg": 2190.5,
+              "max": 2280
+            },
+            "memMhz": {
+              "avg": 8001,
+              "max": 8001
+            },
+            "coreC": {
+              "avg": 78.2,
+              "max": 84
+            },
+            "hotspotC": {
+              "avg": 88.5,
+              "max": 94
+            },
+            "memoryJunctionC": null,
+            "boardW": {
+              "avg": 112.6,
+              "max": 140
+            },
+            "powerCapW": 140,
+            "limitShare": {
+              "SwPowerCap": 0.55
+            },
+            "fanPercent": null
+          },
+          "cpu": {
+            "effectiveMhz": {
+              "avg": 3910.2,
+              "max": 4900
+            },
+            "packageW": {
+              "avg": 42.1,
+              "max": 55
+            },
+            "tctlC": {
+              "avg": 81.3,
+              "max": 92
+            }
+          }
+        },
+        "steppedDown": false
+      },
+      "referencePoints": 10000,
+      "rungs": [
+        {
+          "ladder": "memory",
+          "deltas": {
+            "coreKhz": 0,
+            "memKhz": 15000,
+            "coreMhz": 0,
+            "memMhz": 15
+          },
+          "verdict": "stable",
+          "stage": null,
+          "failedPattern": null,
+          "held": {
+            "smMhz": 2280,
+            "memMhz": 8016
+          },
+          "topSmMhz": 2505,
+          "throughputGsps": 1351.1,
+          "bandwidthGBs": 781.0,
+          "throttledFraction": 0.7,
+          "note": "every pass matched",
+          "score": {
+            "points": 5078,
+            "computePoints": 2361,
+            "bandwidthPoints": 2717,
+            "throughputGsps": 1351.1,
+            "bandwidthGBs": 781.0
+          }
+        },
+        {
+          "ladder": "memory",
+          "deltas": {
+            "coreKhz": 0,
+            "memKhz": 30000,
+            "coreMhz": 0,
+            "memMhz": 30
+          },
+          "verdict": "stable",
+          "stage": null,
+          "failedPattern": null,
+          "held": {
+            "smMhz": 2280,
+            "memMhz": 8031
+          },
+          "topSmMhz": 2505,
+          "throughputGsps": 1350.8,
+          "bandwidthGBs": 783.1,
+          "throttledFraction": 0.7,
+          "note": "every pass matched",
+          "score": {
+            "points": 5086,
+            "computePoints": 2361,
+            "bandwidthPoints": 2725,
+            "throughputGsps": 1350.8,
+            "bandwidthGBs": 783.1
+          }
+        },
+        {
+          "ladder": "memory",
+          "deltas": {
+            "coreKhz": 0,
+            "memKhz": 45000,
+            "coreMhz": 0,
+            "memMhz": 45
+          },
+          "verdict": "unstable",
+          "stage": 2,
+          "failedPattern": "sustained",
+          "held": {
+            "smMhz": 2280,
+            "memMhz": 8046
+          },
+          "topSmMhz": 2505,
+          "throughputGsps": 1349.9,
+          "bandwidthGBs": 760.2,
+          "throttledFraction": 0.7,
+          "note": "bandwidth 760 GB/s is more than 3.0 % under the best certified rung's 783",
+          "score": null
+        },
+        {
+          "ladder": "core",
+          "deltas": {
+            "coreKhz": 15000,
+            "memKhz": 0,
+            "coreMhz": 15,
+            "memMhz": 0
+          },
+          "verdict": "stable",
+          "stage": null,
+          "failedPattern": null,
+          "held": {
+            "smMhz": 2295,
+            "memMhz": 8001
+          },
+          "topSmMhz": 2520,
+          "throughputGsps": 1364.0,
+          "bandwidthGBs": 780.1,
+          "throttledFraction": 0.7,
+          "note": "every pass matched",
+          "score": {
+            "points": 5098,
+            "computePoints": 2384,
+            "bandwidthPoints": 2714,
+            "throughputGsps": 1364.0,
+            "bandwidthGBs": 780.1
+          }
+        },
+        {
+          "ladder": "core",
+          "deltas": {
+            "coreKhz": 30000,
+            "memKhz": 0,
+            "coreMhz": 30,
+            "memMhz": 0
+          },
+          "verdict": "stable",
+          "stage": null,
+          "failedPattern": null,
+          "held": {
+            "smMhz": 2310,
+            "memMhz": 8001
+          },
+          "topSmMhz": 2535,
+          "throughputGsps": 1378.2,
+          "bandwidthGBs": 780.0,
+          "throttledFraction": 0.7,
+          "note": "every pass matched",
+          "score": {
+            "points": 5123,
+            "computePoints": 2409,
+            "bandwidthPoints": 2714,
+            "throughputGsps": 1378.2,
+            "bandwidthGBs": 780.0
+          }
+        },
+        {
+          "ladder": "core",
+          "deltas": {
+            "coreKhz": 45000,
+            "memKhz": 0,
+            "coreMhz": 45,
+            "memMhz": 0
+          },
+          "verdict": "stable",
+          "stage": null,
+          "failedPattern": null,
+          "held": {
+            "smMhz": 2325,
+            "memMhz": 8001
+          },
+          "topSmMhz": 2550,
+          "throughputGsps": 1391.8,
+          "bandwidthGBs": 780.3,
+          "throttledFraction": 0.7,
+          "note": "every pass matched",
+          "score": {
+            "points": 5147,
+            "computePoints": 2432,
+            "bandwidthPoints": 2715,
+            "throughputGsps": 1391.8,
+            "bandwidthGBs": 780.3
+          }
+        },
+        {
+          "ladder": "core",
+          "deltas": {
+            "coreKhz": 60000,
+            "memKhz": 0,
+            "coreMhz": 60,
+            "memMhz": 0
+          },
+          "verdict": "unstable",
+          "stage": 1,
+          "failedPattern": "sustained",
+          "held": null,
+          "topSmMhz": null,
+          "throughputGsps": null,
+          "bandwidthGBs": null,
+          "throttledFraction": 0.7,
+          "note": "silent error, hash mismatch under the variable half",
+          "score": null
+        }
+      ],
+      "holdsNow": {
+        "smMhz": 2280,
+        "memMhz": 8001
+      }
+    }
+  }
+}

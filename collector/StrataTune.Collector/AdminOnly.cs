@@ -3,14 +3,12 @@ using System.Security.Principal;
 
 namespace StrataTune.Collector;
 
-/// <summary>The one ACL rule behind two doors an elevated process must keep shut: the exe
-/// the logon task runs (collector/README.md, "where the collector may be installed") and
-/// the state folder whose file that task trusts for the values it applies. Both are "only
-/// administrators write": a standard user who can replace the exe, or edit the file, runs
-/// their own code or their own clock offsets as administrator at the next logon. The check
-/// is on the DACL and the owner, not on the path, so a Program Files install passes and a
-/// portable copy in Downloads (or a dev tree on a drive that grants Authenticated Users
-/// Modify at its root) is refused whatever it is called.</summary>
+/// <summary>The one ACL rule an elevated process must keep: the state folder whose file it
+/// trusts at start for the baseline it re-applies is "only administrators write". A
+/// standard user who could edit the file would choose the clock offsets the elevated
+/// collector writes at its next start. The check is on the DACL and the owner, not on the
+/// path, so an installer's or an older build's folder with %ProgramData%'s inheritance
+/// intact is repaired whatever it is called.</summary>
 internal static class AdminOnly
 {
     private static readonly SecurityIdentifier Administrators = new(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -22,30 +20,6 @@ internal static class AdminOnly
     // Anything that replaces, renames or re-permissions the object itself.
     private const FileSystemRights WriteRights = FileSystemRights.WriteData | FileSystemRights.AppendData | FileSystemRights.Delete
         | FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
-    // On a parent, deleting or renaming a child needs FILE_DELETE_CHILD there, and WRITE_DAC
-    // or ownership gets it; plain create rights on a parent (ProgramData, the drive root)
-    // cannot touch an existing subfolder, so they pass.
-    private const FileSystemRights ParentRights = FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
-
-    /// <summary>Why this exe must not be run elevated at logon, or null when its file, its
-    /// folder and every parent up to the root are writable by administrators alone.</summary>
-    public static string? ExeProblem(string exePath)
-    {
-        try
-        {
-            var full = Path.GetFullPath(exePath);
-            var dir = Path.GetDirectoryName(full);
-            if (dir is null)
-                return $"{full} has no parent directory";
-            return Problem(new FileInfo(full).GetAccessControl(), full, WriteRights)
-                ?? Problem(new DirectoryInfo(dir).GetAccessControl(), dir, WriteRights)
-                ?? ParentsProblem(dir);
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            return $"the ACL of {exePath} could not be read: {e.Message}";
-        }
-    }
 
     /// <summary>The state folder and its file: repaired to the restricted DACL when anyone
     /// else could write them (an installer, an older build or a standard user may have
@@ -88,16 +62,6 @@ internal static class AdminOnly
         security.AddAccessRule(new FileSystemAccessRule(System, FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
         security.AddAccessRule(new FileSystemAccessRule(Users, FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
         return security;
-    }
-
-    private static string? ParentsProblem(string dir)
-    {
-        for (var parent = Directory.GetParent(dir); parent is not null; parent = parent.Parent)
-        {
-            if (Problem(parent.GetAccessControl(), parent.FullName, ParentRights) is { } problem)
-                return problem;
-        }
-        return null;
     }
 
     // Effective rights per principal (allow minus deny) against the mask; the owner is

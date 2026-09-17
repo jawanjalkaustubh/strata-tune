@@ -1,5 +1,5 @@
 import React from 'react';
-import { Timer, RotateCcw } from 'lucide-react';
+import { Timer, RotateCcw, Square } from 'lucide-react';
 import type { OllamaBench, OllamaInstalled } from '../../api';
 import { openExternal } from '../../support';
 import { Card } from './Card';
@@ -21,6 +21,10 @@ interface Props {
   measurements: Record<string, OllamaBench>;
   calibrating: string | null;
   calibrateError: string;
+  /** The last Calibrate was stopped (plan section 17c): one muted line, the earlier timing standing. */
+  stopped?: boolean;
+  /** Aborts the generation in flight; the row's Calibrate becomes Stop while it runs. */
+  onStop?: () => void;
   factor: number;
   defaultFactor: number;
   factorIsSet: boolean;
@@ -154,10 +158,19 @@ export const Calibration: React.FC<Props> = (p) => {
                         </span>
                       )}
                     </td>
-                    <td className="py-1.5 text-right border-t border-studio-border">
-                      <button className="btn h-6" disabled={busy} onClick={() => p.onCalibrate(m.name)} title="Times a fixed 256-token generation; a model that is not loaded takes longer the first time">
-                        <Timer size={12} /> {p.calibrating === m.name ? 'Timing…' : 'Calibrate'}
-                      </button>
+                    <td className="py-1.5 text-right border-t border-studio-border whitespace-nowrap">
+                      {p.calibrating === m.name && p.onStop ? (
+                        <>
+                          <span className="text-[10px] text-studio-subtle mr-2">Timing…</span>
+                          <button className="btn h-6 bg-rose-500/15 text-rose-300 hover:text-rose-200" onClick={p.onStop} title="Aborts the generation (Escape)">
+                            <Square size={12} /> Stop
+                          </button>
+                        </>
+                      ) : (
+                        <button className="btn h-6" disabled={busy} onClick={() => p.onCalibrate(m.name)} title="Times a fixed 256-token generation; a model that is not loaded takes longer the first time">
+                          <Timer size={12} /> {p.calibrating === m.name ? 'Timing…' : 'Calibrate'}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -167,6 +180,7 @@ export const Calibration: React.FC<Props> = (p) => {
         </div>
       )}
       {p.calibrateError && <p className="text-mini text-rose-300">{p.calibrateError}</p>}
+      {p.stopped && !p.calibrateError && <p className="text-mini text-studio-subtle">Timing stopped; the earlier measurements stand.</p>}
       {p.installed.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap pt-1">
           <button className="btn" disabled={p.derived === null || busy} onClick={p.onSetFactor} title="Median of measured ÷ estimated over the calibrated models">

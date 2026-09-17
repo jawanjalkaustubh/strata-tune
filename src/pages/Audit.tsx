@@ -1,64 +1,30 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Play, Copy, Check, ChevronDown, ChevronUp, Settings2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Play, Copy, Check, ChevronDown, ChevronUp, Settings2, Square } from 'lucide-react';
 import { api, ipcErrorMessage } from '../api';
-import { needsFillRateCrossCheck, runAudit, rankTop, type AuditFinding } from '../analysis/audit';
-import type { LoadKind, LoadRun } from '../collector-types';
+import { rankTop, type AuditFinding } from '../analysis/audit';
 import { useCollectorStatus } from '../components/useCollectorStatus';
 import { CollectorStatusPill } from '../components/CollectorStatusPill';
-import { loadSettings } from '../settings';
 import { navigate } from '../components/navigate';
-import { gpuTitle } from '../components/monitor/vendors';
-import { panelName } from '../components/monitor/Panel';
-import { gpuKey } from '../components/monitor/GpuPanel';
-import { BOARD_KEY, boardName } from '../components/monitor/BoardPanel';
+import { auditRun, STEPS, totalSeconds, type AuditResult, type Step } from '../components/audit/run';
 
 const KEY = 'strata-tune.audit';
 const TOP = 5;
 
-interface Saved {
-  at: string;
-  machine: string;
-  findings: AuditFinding[];
-  /** Sampled steps that failed, with the reason; their checks read "unknown". */
-  skipped: string[];
-}
-
-interface Step {
-  label: string;
-  seconds: number;
-}
-
-/** Expected seconds per step drive the progress line; the whole run is about 50 s. */
-const STEPS: Step[] = [
-  { label: 'Reading the system snapshot', seconds: 2 },
-  { label: 'Sampling idle background load', seconds: 5 },
-  { label: 'PCIe link under a light load', seconds: 3 },
-  { label: 'Thermal headroom under a heavy load', seconds: 20 },
-  { label: 'CPU under an all-core load', seconds: 20 }
-];
-/**
- * Appended only when the driver gave no direct ROP count (audit rule gpu-units): 6 s of
- * measured fill after the bench's start-up and 1 s warm-up.
- */
-const FILL_RATE_STEP: Step = { label: 'Fill-rate cross-check (the driver gave no ROP count)', seconds: 8 };
-const FILL_RATE_SECONDS = 6;
-
 /** The CPU package-power rule judges against the limit the user sets on the Monitor page (phase1-polish item 2); the card links there. */
 const LINKS_TO_CPU_PPT = 'cpu-package-power';
-const totalSeconds = (steps: Step[]) => steps.reduce((a, s) => a + s.seconds, 0);
 
-function loadSaved(): Saved | null {
+function loadSaved(): AuditResult | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
-    const s = JSON.parse(raw) as Saved;
+    const s = JSON.parse(raw) as AuditResult;
     return { ...s, skipped: s.skipped ?? [] };
   } catch {
     return null;
   }
 }
 
-function save(s: Saved) {
+function save(s: AuditResult) {
   try {
     localStorage.setItem(KEY, JSON.stringify(s));
   } catch {
@@ -78,14 +44,18 @@ const plain = (text: string) => text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').
 /** The cost text says what the fault would cost; on a passing check it would read as a price of being fine, and when the detail already says it, it is said once. */
 const showsCost = (f: AuditFinding) => (f.state === 'warn' || f.state === 'bad' || f.state === 'info') && !!f.costText && !plain(f.detail).includes(plain(f.costText));
 
-function reportText(s: Saved): string {
+/** An interrupted run shows the checks that completed; the ones its missing steps would have fed read unknown and are counted, not listed. */
+export const visibleFindings = (s: AuditResult): AuditFinding[] => rankTop(s.findings, s.findings.length).filter((f) => !s.interrupted || f.state !== 'unknown');
+
+export function reportText(s: AuditResult): string {
   const lines = [`Strata Tune audit — ${new Date(s.at).toLocaleString()}`, s.machine, ''];
-  rankTop(s.findings, s.findings.length).forEach((f, i) => {
+  visibleFindings(s).forEach((f, i) => {
     lines.push(`${i + 1}. [${STATE[f.state].label.toUpperCase()}] ${f.title}${showsCost(f) ? ` — ${f.costText}` : ''}`);
     if (f.detail) lines.push(`   ${f.detail}`);
     if (f.fix) lines.push(`   Fix${f.fixWhere === 'none' ? '' : ` (${f.fixWhere})`}: ${f.fix}`);
   });
   if (s.skipped.length) lines.push('', 'Skipped:', ...s.skipped.map((x) => `- ${x}`));
+  if (s.interrupted) lines.push('', `Interrupted at step ${s.interrupted.step} of ${s.interrupted.of} (${s.interrupted.label}); the steps after it did not run.`);
   return lines.join('\n');
 }
 
@@ -113,15 +83,113 @@ const Card: React.FC<{ f: AuditFinding }> = ({ f }) => (
   </article>
 );
 
-/** Home page (plan sections 8 and 17): the ranked findings, nothing changed on the machine. */
-export const Audit: React.FC = () => {
+interface Running {
+  steps: Step[];
+  step: number;
+  stepStartedAt: number;
+}
+
+/** The progress line with its Stop beside it from the first second (plan section 17c); `now` paces the bar. */
+export const AuditProgress: React.FC<{ running: Running; now: number; onStop: () => void }> = ({ running, now, onStop }) => {
+  const total = totalSeconds(running.steps);
+  const progress = (totalSeconds(running.steps.slice(0, running.step)) + Math.min(Math.max((now - running.stepStartedAt) / 1000, 0), running.steps[running.step].seconds)) / total;
+  return (
+    <div className="rounded-md border border-studio-border bg-studio-panel px-3 py-2.5 space-y-2">
+      <div className="flex items-center gap-3 text-mini">
+        <span className="text-studio-text min-w-0">
+          Step {running.step + 1} of {running.steps.length}: {running.steps[running.step].label}…
+        </span>
+        <span className="flex-1" />
+        <span className="figure text-studio-subtle whitespace-nowrap">
+          {Math.round(progress * total)} / ~{total} s
+        </span>
+        <button className="btn bg-rose-500/15 text-rose-300 hover:text-rose-200" onClick={onStop} title="Stops the step in flight and skips the rest (Escape)">
+          <Square size={12} /> Stop
+        </button>
+      </div>
+      <div className="relative h-1.5 rounded-full bg-studio-border">
+        <div className="absolute inset-y-0 left-0 rounded-full bg-studio-accent transition-[width] duration-200 ease-linear" style={{ width: `${(progress * 100).toFixed(1)}%` }} />
+      </div>
+    </div>
+  );
+};
+
+interface ResultProps {
+  saved: AuditResult;
+  /** Run again is offered in the interrupted banner; disabled while the collector is away or a run is going. */
+  canRun: boolean;
+  onRun: () => void;
+}
+
+/** The result: the interrupted banner when Stop cut the run short, the skipped steps, the ranked cards with the rest behind "Show all". */
+export const AuditResultView: React.FC<ResultProps> = ({ saved, canRun, onRun }) => {
+  const [showAll, setShowAll] = useState(false);
+  const ranked = useMemo(() => visibleFindings(saved), [saved]);
+  const unknownCount = saved.findings.length - ranked.length;
+  const top = ranked.slice(0, TOP);
+  const rest = ranked.slice(TOP);
+  return (
+    <>
+      {saved.interrupted && (
+        <div className="rounded-md border border-amber-400/40 bg-amber-400/10 text-amber-200 text-mini px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="flex-1 min-w-0">
+            Interrupted at step {saved.interrupted.step} of {saved.interrupted.of} ({saved.interrupted.label}).{' '}
+            {ranked.length === 0 ? 'No check completed.' : `The ${ranked.length} check${ranked.length === 1 ? '' : 's'} that completed ${ranked.length === 1 ? 'is' : 'are'} below`}
+            {ranked.length > 0 && unknownCount > 0 && `; ${unknownCount} read unknown without the steps that did not run`}
+            {ranked.length > 0 && '.'}
+          </span>
+          <button className="btn" disabled={!canRun} onClick={onRun}>
+            <Play size={13} /> Run again
+          </button>
+        </div>
+      )}
+      {saved.machine && (
+        <p className="text-micro text-studio-subtle">
+          {saved.interrupted ? 'Stopped' : 'Last run'} {new Date(saved.at).toLocaleString()} · {saved.machine}
+        </p>
+      )}
+      {saved.skipped.length > 0 && (
+        <div className="rounded-md border border-amber-400/40 bg-amber-400/10 text-amber-200 text-mini px-3 py-2 space-y-0.5">
+          {saved.skipped.map((s) => (
+            <p key={s}>Skipped {s}</p>
+          ))}
+        </div>
+      )}
+      <div className="space-y-2">
+        {top.map((f) => (
+          <Card key={f.id} f={f} />
+        ))}
+      </div>
+      {rest.length > 0 && (
+        <button className="btn" onClick={() => setShowAll((s) => !s)}>
+          {showAll ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {showAll ? 'Show top five' : `Show all ${ranked.length}`}
+        </button>
+      )}
+      {showAll && (
+        <div className="space-y-2">
+          {rest.map((f) => (
+            <Card key={f.id} f={f} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+};
+
+/**
+ * The audit (plan sections 8 and 17): the ranked findings, nothing changed on the machine.
+ * Self-contained: it owns its run, its Stop and its result. The Tune page carries it as its
+ * top half (user, 2026-09-16: the audit belongs in the Tune section) and only adds the padding.
+ */
+export const AuditPanel: React.FC = () => {
   const status = useCollectorStatus();
-  const [saved, setSaved] = useState<Saved | null>(loadSaved);
-  const [running, setRunning] = useState<{ steps: Step[]; step: number; stepStartedAt: number } | null>(null);
+  const [saved, setSaved] = useState<AuditResult | null>(loadSaved);
+  const [running, setRunning] = useState<Running | null>(null);
   const [now, setNow] = useState(0);
   const [error, setError] = useState('');
-  const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Stop for the run in flight (plan section 17c); set by run(), cleared when it ends.
+  const stopRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!running) return;
@@ -130,60 +198,30 @@ export const Audit: React.FC = () => {
     return () => clearInterval(id);
   }, [running]);
 
+  // Escape stops the run while it is on screen, the same as the button.
+  useEffect(() => {
+    if (!running) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') stopRef.current?.();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [running]);
+
   const run = async () => {
     if (!api || running) return;
-    const c = api.collector;
     setError('');
-    setShowAll(false);
-    // The snapshot decides whether the fill-rate step is worth its seconds, so the list is per run.
-    let steps = STEPS;
-    const step = (i: number) => setRunning({ steps, step: i, stepStartedAt: Date.now() });
-    // The snapshot is the audit; the sampled steps are optional inputs (AuditInputs
-    // takes null), so one failed worker run costs its checks, not the whole result.
-    const skipped: string[] = [];
-    const optional = async <T,>(i: number, read: () => Promise<T>): Promise<T | null> => {
-      step(i);
-      try {
-        return await read();
-      } catch (e) {
-        skipped.push(`${steps[i].label}: ${ipcErrorMessage(e)}`);
-        return null;
-      }
-    };
-    // A worker that exits non-zero resolves as a failed run; its reason belongs in the Skipped box, not in silence.
-    const load = async (i: number, kind: LoadKind, seconds: number): Promise<LoadRun | null> => {
-      const r = await optional(i, () => c.load(kind, seconds));
-      if (r && r.state !== 'done') {
-        skipped.push(`${steps[i].label}: ${r.error ?? `the worker exited ${r.exitCode ?? 'without a code'}`}`);
-        return null;
-      }
-      return r;
-    };
+    const r = auditRun(api.collector, (steps, step) => setRunning({ steps, step, stepStartedAt: Date.now() }));
+    stopRef.current = r.stop;
     try {
-      step(0);
-      const snapshot = await c.snapshot();
-      if (needsFillRateCrossCheck(snapshot)) steps = [...STEPS, FILL_RATE_STEP];
-      const hogs = await optional(1, () => c.hogs(5));
-      const pcieUnderLoad = await load(2, 'light', 3);
-      const thermalRamp = await load(3, 'heavy', 20);
-      const cpuLoad = await load(4, 'cpu', 20);
-      const fillRate = steps.length > STEPS.length ? await load(STEPS.length, 'fillrate', FILL_RATE_SECONDS) : null;
-      const nowIso = new Date().toISOString();
-      const settings = loadSettings();
-      const findings = runAudit({ snapshot, hogs, pcieUnderLoad, thermalRamp, cpuLoad, cpuPptW: settings.cpuPptW, fillRate, nowIso });
-      // The names the Monitor shows (the user's own where set); " / " because a GPU title carries " · " of its own.
-      const gpu = snapshot.gpus[0];
-      const result: Saved = {
-        at: nowIso,
-        machine: [snapshot.cpu.name, gpu ? panelName(settings.panelNames, gpuKey(gpu), gpuTitle(gpu)) : 'no NVML GPU', panelName(settings.panelNames, BOARD_KEY, boardName(snapshot))].join(' / '),
-        findings,
-        skipped
-      };
-      save(result);
+      const result = await r.done;
+      // A stopped run is shown, not kept: the last complete audit stays the one to come back to.
+      if (!result.interrupted) save(result);
       setSaved(result);
     } catch (e) {
       setError(ipcErrorMessage(e));
     } finally {
+      stopRef.current = null;
       setRunning(null);
     }
   };
@@ -199,17 +237,10 @@ export const Audit: React.FC = () => {
       .catch(() => setError('Could not copy to the clipboard'));
   };
 
-  const ranked = useMemo(() => (saved ? rankTop(saved.findings, saved.findings.length) : []), [saved]);
-  const top = ranked.slice(0, TOP);
-  const rest = ranked.slice(TOP);
-
-  const total = totalSeconds(running?.steps ?? STEPS);
-  const progress = running
-    ? (totalSeconds(running.steps.slice(0, running.step)) + Math.min(Math.max((now - running.stepStartedAt) / 1000, 0), running.steps[running.step].seconds)) / total
-    : 0;
+  const canRun = status.status === 'connected' && !running;
 
   return (
-    <div className="p-4 max-w-4xl w-full mx-auto space-y-4">
+    <div className="space-y-4">
       <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-base font-semibold text-studio-text">Audit</h1>
         <CollectorStatusPill state={status} />
@@ -219,24 +250,12 @@ export const Audit: React.FC = () => {
             {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? 'Copied' : 'Copy report'}
           </button>
         )}
-        <button className="btn btn-accent" disabled={status.status !== 'connected' || !!running} onClick={run}>
+        <button className="btn btn-accent" disabled={!canRun} onClick={run}>
           <Play size={13} /> {saved ? 'Run again' : 'Run audit'}
         </button>
       </header>
 
-      {running && (
-        <div className="rounded-md border border-studio-border bg-studio-panel px-3 py-2.5 space-y-2">
-          <div className="flex items-center justify-between gap-3 text-mini">
-            <span className="text-studio-text">
-              Step {running.step + 1} of {running.steps.length}: {running.steps[running.step].label}…
-            </span>
-            <span className="figure text-studio-subtle">{Math.round(progress * total)} / ~{total} s</span>
-          </div>
-          <div className="relative h-1.5 rounded-full bg-studio-border">
-            <div className="absolute inset-y-0 left-0 rounded-full bg-studio-accent transition-[width] duration-200 ease-linear" style={{ width: `${(progress * 100).toFixed(1)}%` }} />
-          </div>
-        </div>
-      )}
+      {running && <AuditProgress running={running} now={now} onStop={() => stopRef.current?.()} />}
 
       {error && <div className="rounded-md border border-rose-500/40 bg-rose-500/10 text-rose-200 text-mini px-3 py-2">Audit stopped: {error}</div>}
 
@@ -244,44 +263,14 @@ export const Audit: React.FC = () => {
         <div className="rounded-md border border-studio-border bg-studio-panel/50 p-5 space-y-2">
           <p className="text-mini text-studio-muted leading-relaxed">
             The audit reads your configuration and sensors, samples the machine idling, runs the GPU for a few seconds lightly and for twenty seconds flat out to
-            measure the PCIe link and thermal headroom, then loads every CPU core for twenty seconds (about 50 seconds in all), and ranks what costs this PC
-            performance, with a fix for each. It changes nothing.
+            measure the PCIe link and thermal headroom, then loads every CPU core for twenty seconds (about {totalSeconds(STEPS)} seconds in all), and ranks what costs
+            this PC performance, with a fix for each. It changes nothing.
           </p>
           {status.status !== 'connected' && <p className="text-micro text-studio-subtle">{status.message}</p>}
         </div>
       )}
 
-      {saved && (
-        <>
-          <p className="text-micro text-studio-subtle">
-            Last run {new Date(saved.at).toLocaleString()} · {saved.machine}
-          </p>
-          {saved.skipped.length > 0 && (
-            <div className="rounded-md border border-amber-400/40 bg-amber-400/10 text-amber-200 text-mini px-3 py-2 space-y-0.5">
-              {saved.skipped.map((s) => (
-                <p key={s}>Skipped {s}</p>
-              ))}
-            </div>
-          )}
-          <div className="space-y-2">
-            {top.map((f) => (
-              <Card key={f.id} f={f} />
-            ))}
-          </div>
-          {rest.length > 0 && (
-            <button className="btn" onClick={() => setShowAll((s) => !s)}>
-              {showAll ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {showAll ? 'Show top five' : `Show all ${ranked.length}`}
-            </button>
-          )}
-          {showAll && (
-            <div className="space-y-2">
-              {rest.map((f) => (
-                <Card key={f.id} f={f} />
-              ))}
-            </div>
-          )}
-        </>
-      )}
+      {saved && <AuditResultView key={saved.at} saved={saved} canRun={canRun} onRun={run} />}
     </div>
   );
 };
