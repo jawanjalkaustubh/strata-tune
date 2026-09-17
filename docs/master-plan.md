@@ -635,10 +635,17 @@ the offset is actually exercised; (3) heavy-pattern **throughput at the cap** �
 buy work per watt; a rung whose light/transient patterns pass and whose heavy throughput did not
 fall is certified whether or not the cap bit was set. The memory ladder runs first and on its
 own (cheap win, orthogonal to the cap). The result page shows the user's current OC · the board's
-rated figures · the reference · the ladder's certified numbers in one table. Hunting on top of an
-active vendor tune (previous paragraph) is off by default because the driver's summing of the two
-routes is unknown; an explicit "hunt on top of my current tune" option takes the held clocks as
-the baseline for people who want to push further.
+rated figures · the reference · the ladder's certified numbers in one table. **The hunt starts from whatever the card holds now (user, 2026-09-16: "just increment on
+whatever the current OC applied is, in steps of 5–15 MHz on both core and memory").** The
+baseline is the card as found — its held SM and memory clocks under the reference pass, vendor
+tune included — and our P0 deltas step on top of it: core +15 MHz per rung (fine step 5),
+memory +15 MHz NVML (30 effective) per rung (fine step 5). The first rung doubles as the
+additivity check: the light pattern must hold a clock higher than the baseline by about the rung
+size, or the hunt stops with "the driver is not adding our offset on top of your tune" instead
+of climbing blind. The result names both: "your tune holds 3225 / 16008; certified +45 core /
++60 memory on top → 3270 / 16068; first silent error at +60 core (stage 1)". The vendor-tool
+guard above therefore refuses only a vendor tool that is *changing* clocks during a run (a
+profile timer, a fan-curve app re-applying), not a tune that is simply applied and steady.
 
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
