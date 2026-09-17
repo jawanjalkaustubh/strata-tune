@@ -341,7 +341,10 @@ reference spec is expected on an overclocked card, never treated as a measuremen
 (2) the stats card shows **spec (reference) · this card (rated) · measured**, three columns,
 so the gap reads as "your tune is worth +13 %" rather than "our number is wrong"; (3) OC
 detection (§8) and the score's expected values (§14) baseline on the card's own rated
-figures, and the offsets on top of them.
+figures, and the offsets on top of them. (4) **No third-party database is named in the UI**
+(user, 2026-09-16, "delete this" on the card's TechPowerUp link): the reference figures are
+labelled *spec* and link to the vendor page only; the `tpuUrl` fields in `gpus.json` stay as the
+author's provenance and never render.
 
 **Lead with the advertised number, tag it, then the truth beneath (user, 2026-09-16).** People
 arrive knowing one figure from a search — "RTX 5090: 3,352 AI TOPS" — and a card that shows only
