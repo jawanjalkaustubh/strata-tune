@@ -132,4 +132,14 @@
 .rp-table td:last-child { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
 .rp-table td:last-child .sub { color: var(--subtle); font-family: var(--sans); font-size: 11px; margin-left: 6px; }
 
+/* Bench check: one row per script segment, designed against classified, a mark at the end. After the measurements rules, whose td padding it widens. */
+.rp-bench p { color: var(--muted); max-width: 78ch; margin-bottom: 10px; }
+.rp-bench-table th { text-align: left; padding: 0 16px 6px 0; font-weight: 500; white-space: nowrap; }
+.rp-bench-table td { padding-right: 16px; }
+.rp-bench-table td:first-child { white-space: nowrap; }
+.rp-bench-table td:last-child, .rp-bench-table th:last-child { padding-right: 0; text-align: right; width: 2rem; }
+.rp-bench-table td:nth-child(2) { color: var(--muted); white-space: nowrap; font-size: 12px; }
+.rp-bench-table tr.unscored td { color: var(--subtle); }
+@media (max-width: 640px) { .rp-bench-table th:nth-child(2), .rp-bench-table td:nth-child(2) { display: none; } }
+
 .rp-foot { color: var(--subtle); font-size: 11px; padding-top: 4px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

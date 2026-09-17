@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { HogsResult, SensorMeta, SensorWindow, StaticSnapshot } from '../src/collector-types';
 import { judgeBound } from '../src/analysis/bound';
 import { WARMUP_FRAMES } from '../src/analysis/frames';
-import { analyseSession, buildReport, classify, detectStutters, type ClassifyExtras } from '../src/analysis/stutter';
+import { analyseSession, buildReport, classify, detectStutters, periodicRuns, type ClassifyExtras } from '../src/analysis/stutter';
 import type { CaptureSession, FrameRow, StutterEvent } from '../src/analysis/session-types';
-import { during, gpuTimeline, HZ, marks, QPC0, sensorWindow, session, spikesAt, steady, VRAM_TOTAL_MIB } from './fixtures/frames';
+import { analyse } from '../src/components/capture/toReport';
+import { during, gpuTimeline, HZ, marks, QPC0, randomMarks, sensorWindow, session, spikesAt, steady, VRAM_TOTAL_MIB, type FrameSpec, type Kind } from './fixtures/frames';
 
 const causeIds = (events: StutterEvent[]) => events.map((e) => e.cause?.id ?? null);
 const run = (s: CaptureSession, extras?: ClassifyExtras) => classify(detectStutters(s.frames).events, s, extras);
@@ -13,6 +14,29 @@ const report = (s: CaptureSession, extras?: ClassifyExtras) => analyseSession(s,
 const oneAt = (at: number, ms: number) => (_: number, i: number) => (i === at ? { ms } : null);
 const stall = (when: number[], ms = 40) => spikesAt(when, ms, 'cpu');
 const usedAt = (share: number) => Math.round(share * VRAM_TOTAL_MIB);
+
+/** Marks with their own frame time each, so a burst can shrink as it goes. */
+const sized = (when: [number, number][], kind: Kind = 'cpu') => {
+  let next = 0;
+  return (t: number): FrameSpec | null => {
+    if (next < when.length && t >= when[next][0]) return { ms: when[next++][1], kind };
+    return null;
+  };
+};
+/** Marks off any beat: each gap is `step` stretched or squeezed by up to 45 % on a sine, so no five in a row share a cadence. */
+const irregular = (from: number, to: number, step: number, seed = 0): number[] => {
+  const out: number[] = [];
+  for (let t = from, n = seed; t < to; n++) {
+    out.push(Number(t.toFixed(3)));
+    t += step * (1 + 0.45 * Math.sin(1.7 * n));
+  }
+  return out;
+};
+/** A compile burst as a DX12 game shows it: dense early, thinning, `fromMs` shrinking to `toMs`, then nothing. */
+const burst = (fromMs: number, toMs: number): [number, number][] => {
+  const when = [...irregular(10, 40, 1), ...irregular(40, 70, 2, 30), ...irregular(70, 100, 4, 45)];
+  return when.map((t, i) => [t, fromMs + ((toMs - fromMs) * i) / (when.length - 1)]);
+};
 
 describe('detectStutters', () => {
   it('finds two 40 ms spikes in a steady 8 ms stream and the time they cost', () => {
@@ -88,6 +112,165 @@ describe('classify', () => {
     expect(new Set(causeIds(events))).toEqual(new Set(['shader-compile']));
     expect(events[0].cause).toMatchObject({ case: 1, fixable: true, confidence: 'high' });
     expect(events[0].cause!.evidence[1]).toMatch(/% fewer/);
+  });
+
+  it('case 1 by the DX12 route: CPU-side hitches that come early, thin out and shrink are shader compilation, high', () => {
+    const s = session(steady(300, 8, sized(burst(60, 24))), { gpuTimeline: gpuTimeline(300) });
+    const events = run(s);
+    expect(events.length).toBe(burst(60, 24).length);
+    expect(periodicRuns(events, HZ)).toEqual([]);
+    expect(new Set(causeIds(events))).toEqual(new Set(['shader-compile']));
+    expect(events[0].cause).toMatchObject({ case: 1, fixable: true, confidence: 'high' });
+    expect(events[0].cause!.evidence[0]).toMatch(/^CPU busy 59\.0 ms on a 60\.0 ms frame with the GPU idle/);
+    expect(events[0].cause!.evidence[1]).toMatch(/^100 % fewer of these in the last third of the capture than in the first \(\d+ against 0/);
+    expect(events[0].cause!.evidence[2]).toMatch(/^and they shrank, from \d+\.\d ms of lost time each to \d+\.\d ms, then stopped before the last third$/);
+  });
+
+  it('case 1 by the DX12 route is low when the hitches stopped but never shrank: a fight, then a quiet walk, is one signal', () => {
+    const when = irregular(10, 90, 8);
+    const s = session(steady(300, 8, stall(when)), { gpuTimeline: gpuTimeline(300) });
+    const events = run(s);
+    expect(events).toHaveLength(when.length);
+    expect(when.length).toBeGreaterThanOrEqual(6);
+    expect(new Set(causeIds(events))).toEqual(new Set(['shader-compile']));
+    expect(events[0].cause).toMatchObject({ confidence: 'low' });
+    expect(events[0].cause!.evidence).toHaveLength(2);
+    expect(events[0].cause!.evidence[1]).toMatch(/^100 % fewer/);
+    expect(analyse(s, 'test').verdict).toMatch(/^Probably shader compilation · /);
+  });
+
+  it('case 1 by the DX12 route is low when the rate fell but the hitches kept their size', () => {
+    const late: [number, number][] = [[210, 40], [235.5, 40], [262, 40], [281.3, 40]];
+    const s = session(steady(300, 8, sized([...burst(40, 40), ...late])), { gpuTimeline: gpuTimeline(300) });
+    const events = run(s);
+    const early = events.filter((e) => (e.qpc - QPC0) / HZ < 200);
+    expect(new Set(causeIds(early))).toEqual(new Set(['shader-compile']));
+    expect(early[0].cause).toMatchObject({ confidence: 'low' });
+    expect(early[0].cause!.evidence).toHaveLength(2);
+    expect(early[0].cause!.evidence[1]).toMatch(/^9\d % fewer/);
+  });
+
+  it('a stall in the last third is the engine’s: the settled rate is what the decay was measured against', () => {
+    const s = session(steady(300, 8, sized([...burst(60, 24), [250, 40], [271.5, 40]])), { gpuTimeline: gpuTimeline(300) });
+    const events = run(s);
+    const late = events.filter((e) => (e.qpc - QPC0) / HZ > 200);
+    expect(late).toHaveLength(2);
+    expect(causeIds(late)).toEqual(['engine', 'engine']);
+    expect(causeIds(events.slice(0, -2)).every((id) => id === 'shader-compile')).toBe(true);
+  });
+
+  it('case 8: CPU stalls whose rate holds over five minutes are engine stalls, however early the first', () => {
+    const when = irregular(10, 300, 7);
+    const s = session(steady(300, 8, stall(when)), { gpuTimeline: gpuTimeline(300) });
+    const events = run(s);
+    expect(events).toHaveLength(when.length);
+    expect(new Set(causeIds(events))).toEqual(new Set(['engine']));
+    expect(events[0].cause).toMatchObject({ case: 8, fixable: false });
+  });
+
+  it('case 7 by cluster: a 2 s beat of eight stalls is the tick, and the irregular stalls around it stay case 8', () => {
+    const beat = marks(40, 56, 2);
+    const around = [5, 6.5, 11, 12.2, 100, 103.7, 110];
+    const s = session(steady(120, 8, stall([...around.filter((t) => t < 40), ...beat, ...around.filter((t) => t > 56)], 30)), { gpuTimeline: gpuTimeline(120) });
+    const events = run(s);
+    const onBeat = events.filter((e) => e.cause?.id === 'periodic');
+    expect(onBeat).toHaveLength(beat.length);
+    expect(onBeat[0].cause).toMatchObject({ case: 7, confidence: 'high' });
+    expect(onBeat[0].cause!.evidence[0]).toMatch(/^8 stutters every 2\.0\d s/);
+    expect(causeIds(events.filter((e) => e.cause?.id !== 'periodic'))).toEqual(around.map(() => 'engine'));
+    expect(periodicRuns(detectStutters(s.frames).events, HZ)).toHaveLength(1);
+  });
+
+  it('a tick keeps its case while the session’s compile burst decays: a fixed beat at a fixed cost is not a cache filling', () => {
+    // A 240 s capture: the beat sits in the middle third, where the compile route would otherwise reach it.
+    const beat = marks(120, 142, 2);
+    const s = session(steady(240, 8, sized([...burst(60, 24), ...beat.map((t): [number, number] => [t, 38])])), { gpuTimeline: gpuTimeline(240) });
+    const events = run(s);
+    const onBeat = events.filter((e) => (e.qpc - QPC0) / HZ >= 120);
+    expect(onBeat).toHaveLength(beat.length);
+    expect(new Set(causeIds(onBeat))).toEqual(new Set(['periodic']));
+    expect(new Set(causeIds(events.filter((e) => (e.qpc - QPC0) / HZ < 120)))).toEqual(new Set(['shader-compile']));
+  });
+
+  it('a tick that settles keeps its case beside a compile burst; one whose hitches halve along the beat is the cache filling on a timer', () => {
+    const beat = marks(120, 152, 2);
+    const easing = (fromMs: number, toMs: number) => beat.map((t, i): [number, number] => [t, fromMs + ((toMs - fromMs) * i) / (beat.length - 1)]);
+    const on = (tick: [number, number][]) => run(session(steady(240, 8, sized([...burst(60, 24), ...tick])), { gpuTimeline: gpuTimeline(240) }));
+    const settling = on(easing(50, 32)).filter((e) => (e.qpc - QPC0) / HZ >= 120);
+    expect(settling).toHaveLength(beat.length);
+    expect(new Set(causeIds(settling))).toEqual(new Set(['periodic']));
+    expect(settling[0].cause).toMatchObject({ case: 7, confidence: 'high' });
+    const halving = on(easing(60, 20)).filter((e) => (e.qpc - QPC0) / HZ >= 120);
+    expect(new Set(causeIds(halving))).toEqual(new Set(['shader-compile']));
+  });
+
+  it('a short run is a tick only as a metronome: five stalls dead on 2 s are one at low confidence, six drifting by 5 % are none', () => {
+    const exact = run(session(steady(60, 8, stall(marks(20, 30, 2), 30)), { gpuTimeline: gpuTimeline(60) }));
+    expect(exact).toHaveLength(5);
+    expect(new Set(causeIds(exact))).toEqual(new Set(['periodic']));
+    expect(exact[0].cause).toMatchObject({ case: 7, confidence: 'low' });
+    const drifting = run(session(steady(60, 8, stall([20, 22.1, 24, 26.05, 28, 30.08], 30)), { gpuTimeline: gpuTimeline(60) }));
+    expect(drifting).toHaveLength(6);
+    expect(new Set(causeIds(drifting))).toEqual(new Set(['engine']));
+  });
+
+  it('eight on a beat that wanders by a tenth is not a tick either: an established run must hold under 8 %', () => {
+    const events = run(session(steady(60, 8, stall([20, 22.2, 24, 26.2, 28, 30.2, 32, 34.2], 30)), { gpuTimeline: gpuTimeline(60) }));
+    expect(events).toHaveLength(8);
+    expect(new Set(causeIds(events))).toEqual(new Set(['engine']));
+  });
+
+  it('a beat is one mechanism: four CPU stalls then four GPU spikes on the same 2 s beat are two shapes, not one tick', () => {
+    const cpu = spikesAt(marks(20, 28, 2), 40, 'cpu');
+    const gpu = spikesAt(marks(28, 36, 2), 40, 'gpu');
+    const s = session(steady(60, 8, (t) => cpu(t) ?? gpu(t)), { gpuTimeline: gpuTimeline(60) });
+    expect(periodicRuns(detectStutters(s.frames).events, HZ)).toHaveLength(1);
+    const events = run(s);
+    expect(causeIds(events)).toEqual(['engine', 'engine', 'engine', 'engine', null, null, null, null]);
+  });
+
+  it('random spacing is not a beat: over 100 seeded sessions of 120 stutters at 3–20 s gaps, no established tick and at most a couple of short ones', () => {
+    // The same 100 sessions under the old rule (five on a beat under CV 0.15, any length): a tick in 90, eight or more in 11, 12.6 stutters a session claimed.
+    const at = (times: number[]): StutterEvent[] => times.map((t, i) => ({ index: i, qpc: QPC0 + Math.round(t * HZ), frameMs: 40, medianMs: 8, kind: 'spike', cause: null }));
+    let any = 0;
+    let established = 0;
+    let claimed = 0;
+    for (let seed = 1; seed <= 100; seed++) {
+      const runs = periodicRuns(at(randomMarks(seed, 120, 3, 20)), HZ);
+      if (runs.length) any++;
+      if (runs.some((r) => r.count >= 8)) established++;
+      claimed += runs.reduce((a, r) => a + r.count, 0);
+    }
+    expect(established).toBe(0);
+    expect(any).toBeLessThanOrEqual(2);
+    expect(claimed / 100).toBeLessThan(0.15);
+  });
+
+  it('random spacing through the whole pipeline: 120 CPU stalls at 3–20 s gaps are engine stalls, with no tick among them and no compile burst', () => {
+    const when = randomMarks(1, 120, 3, 20);
+    const s = session(steady(when[when.length - 1] + 10, 8, stall(when)));
+    const r = report(s);
+    expect(r.stutterCount).toBe(120);
+    expect(r.causes.map((c) => c.id)).toEqual(['engine']);
+    expect(r.verdict).toBe('engine');
+    expect(new Set(r.events.map((e) => e.cause?.case))).toEqual(new Set([8]));
+  });
+
+  it('a side that barely moved is normal whatever its ratio: 0.3 ms of GPU work on a 55 ms frame over a 0.2 ms baseline', () => {
+    const when = [5, 6.5, 11, 12.2, 19, 27];
+    let next = 0;
+    const frames = steady(30, 8, (t) => {
+      if (next < when.length && t >= when[next]) {
+        next++;
+        return { ms: 55, gpuBusy: 0.3, cpuBusy: 54 };
+      }
+      return { ms: 8, gpuBusy: 0.2, cpuBusy: 4 };
+    }).map((f) => (f.msBetweenPresents === 55 ? { ...f, msGpuWait: 5 } : f));
+    const events = run(session(frames, { gpuTimeline: gpuTimeline(30) }));
+    expect(events).toHaveLength(when.length);
+    expect(new Set(causeIds(events))).toEqual(new Set(['engine']));
+    expect(events[0].cause).toMatchObject({ case: 8, confidence: 'low' });
+    expect(events[0].cause!.evidence).toContain('GPU work stayed normal');
   });
 
   it('case 2: a clock drop with the thermal bit, even on a regular beat, is thermal throttling', () => {
@@ -334,6 +517,23 @@ describe('buildReport', () => {
     expect(r.causes[0]).toMatchObject({ id: 'thermal', share: 1, fixable: true, confidence: 'high' });
     expect(r.causes[0].action).toMatch(/fan curve/);
     expect(r.measurements['GPU max temperature (°C)']).toBe(84);
+  });
+
+  it('a game session with an early compile burst and steady play after reads as shader compilation that plays out', () => {
+    const s = session(steady(300, 8, sized(burst(60, 24))), { gpuTimeline: gpuTimeline(300) });
+    const r = report(s);
+    expect(r.verdict).toBe('fixable');
+    expect(r.causes).toHaveLength(1);
+    expect(r.causes[0]).toMatchObject({ id: 'shader-compile', share: 1, fixable: true, confidence: 'high' });
+    expect(r.causes[0].text).toMatch(/^Temporary: the game is compiling shaders the first time it meets new effects and caching them; this settles within a session\./);
+    expect(r.causes[0].action).toMatch(/^Let it play out/);
+  });
+
+  it('the periodic wording quotes the beat of the largest run when two ticks share a session', () => {
+    const s = session(steady(120, 8, stall([...marks(20, 35, 3), ...marks(60, 76, 2)], 30)), { gpuTimeline: gpuTimeline(120) });
+    const r = report(s);
+    expect(r.causes[0]).toMatchObject({ id: 'periodic' });
+    expect(r.causes[0].text).toMatch(/every 2\.0\d s/);
   });
 
   it('says plainly that nothing on your end changes an engine tick', () => {

@@ -8,7 +8,12 @@
  * (src/analysis/session-types.ts): src/components/capture/toReport.ts maps the
  * analysis into these shapes, so a field the classifier names differently never
  * reaches the renderer, and an exported file stays readable when the classifier changes.
+ * The bench check is the one block carried as the classifier wrote it: it is the
+ * classifier's own account of itself (plan §11a), and the file keeps its case numbers.
  */
+import type { BenchCheck, BenchCheckRow } from '../analysis/session-types';
+
+export type { BenchCheck, BenchCheckRow };
 
 /** The nine §11 signatures, first match wins; 0 is a stutter no rule matched. */
 export type StutterCase = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -88,6 +93,8 @@ export interface StutterReport {
   timeline: TimelinePoint[];
   /** Every stutter, or the worst N of a long session; t is on the timeline's axis. */
   stutters: StutterMark[];
+  /** Bench sessions only: the classifier against the script's designed cases. */
+  benchCheck?: BenchCheck;
 }
 
 export interface SessionSummary {

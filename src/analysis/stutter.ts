@@ -8,14 +8,22 @@
  * samples slower than that: GPU facts arrive at 2 Hz and PDH disk queues at 1 Hz, and
  * the nearest reading on either side is the best the timeline has for them. A GPU
  * reading further than 100 ms from the frame is said so in the evidence.
+ *
+ * Two of the cases are told apart by time, not by which side of the frame was busy.
+ * In DX12 and Vulkan the driver compiles pipeline states on the game's own thread, so
+ * a shader-compile hitch is a CPU-busy spike with the GPU waiting, the same per-frame
+ * shape as an engine stall (case 8); what separates them is that compile hitches come
+ * early and thin out as the cache fills, while the engine's keep their rate. The bench
+ * (plan §11a) trips both on purpose, and its report carries the check.
  */
 import type { HogsResult, SensorMeta, SensorWindow } from '../collector-types';
+import benchmarks from '../data/benchmarks.json';
 import { judgeBound } from './bound';
 import { frameTimeMs, WARMUP_FRAMES } from './frames';
 import { hasAny, hasBit, SW_POWER_CAP, THERMAL_OR_BRAKE } from './nvmlBits';
 import type {
-  BoundVerdict, CaptureSession, CauseId, ClassifiedCause, Detection, FrameRow, GpuSample, ReportCause,
-  StutterEvent, StutterReport
+  BenchCheck, BenchCheckRow, BenchSegment, BoundVerdict, CaptureSession, CauseId, ClassifiedCause, Detection, FrameRow,
+  GpuSample, ReportCause, StutterEvent, StutterReport
 } from './session-types';
 
 const MEDIAN_WINDOW = 120;
@@ -26,6 +34,8 @@ const ABSOLUTE_MS = 50;
 const SIGNAL_RATIO = 2.0;
 const NORMAL_RATIO = 1.5;
 const EXPLAINS_SHARE = 0.5;
+/** A side that stretched by under a tenth of what the frame lost stayed normal, whatever the ratio says of a 0.2 ms baseline. */
+const NEGLIGIBLE_SHARE = 0.1;
 const CONCURRENT_S = 0.1;
 /** Where NVIDIA's slowdown target sits on every generation since Pascal; the driver never reports it. */
 const THERMAL_TARGET_C = 83;
@@ -39,13 +49,32 @@ const DISK_QUEUE_DEEP = 4;
 /** One full core of the machine, in percent × logical CPUs, before a process counts as a hog. */
 const HOG_CORE_PERCENT = 100;
 const HOG_LOUD_PERCENT = 25;
+/** Case 1's decay: the rate in the last third of the capture against the first. */
 const DECAY_MIN = 0.5;
+/** A burst is at least this many hitches in the first third; three early stalls and one late is not a rate that fell. */
 const DECAY_ESTABLISHED = 6;
+/** The hitches shrink as the cache fills: the burst's fitted cost falls by this much of its start along the burst itself. */
+const MAGNITUDE_FALL = 0.25;
+/**
+ * A run on a beat whose hitches lose half their cost end to end is a cache filling
+ * on a timer (the bench compiles one batch a second), not a tick, when the session
+ * has a compile burst; a tick that holds its cost, or settles by less, stays case 7.
+ */
+const COMPILE_RUN_FALL = 0.5;
+/**
+ * Case 7 per cluster. Random spacing makes short beats by chance: on 120 stutters at
+ * uniform 3–20 s gaps, five on a beat under CV 0.15 turn up in nine sessions of ten
+ * and eight in one of six. Eight under 0.08 is one session in a hundred, five under
+ * 0.02 one in forty; a real tick lands on a frame boundary, so its CV is about 1 %.
+ */
 const PERIODIC_MIN_EVENTS = 5;
 const PERIODIC_ESTABLISHED = 8;
-const PERIODIC_MAX_CV = 0.15;
+const PERIODIC_MAX_CV = 0.08;
+const PERIODIC_METRONOME_CV = 0.02;
 /** A tick, not frame-to-frame alternation: anything faster than this is pacing (case 9). */
 const PERIODIC_MIN_INTERVAL_S = 0.25;
+/** A gap over this many times the run's median interval ends the run: the beat is judged per cluster, never across the session. */
+const CLUSTER_GAP = 3;
 const ALTERNATING_MIN_FRAMES = 6;
 const ALTERNATING_ESTABLISHED = 10;
 const ALTERNATING_RATIO = 1.5;
@@ -280,8 +309,8 @@ function spikes(value: number | null, base: number | null, excessMs: number): bo
   return value > SIGNAL_RATIO * base && value - base >= EXPLAINS_SHARE * excessMs;
 }
 
-function normal(value: number | null, base: number | null): boolean {
-  return value === null || base === null || value <= NORMAL_RATIO * base;
+function normal(value: number | null, base: number | null, excessMs: number): boolean {
+  return value === null || base === null || value <= NORMAL_RATIO * base || value - base <= NEGLIGIBLE_SHARE * excessMs;
 }
 
 function frameSignals(frames: FrameRow[], event: StutterEvent): FrameSignals {
@@ -295,9 +324,9 @@ function frameSignals(frames: FrameRow[], event: StutterEvent): FrameSignals {
   return {
     frameMs: event.frameMs,
     gpuBusySpike: spikes(f.msGpuBusy, gpuBusyBase, excessMs),
-    gpuBusyNormal: normal(f.msGpuBusy, gpuBusyBase),
+    gpuBusyNormal: normal(f.msGpuBusy, gpuBusyBase, excessMs),
     cpuBusySpike,
-    cpuBusyNormal: normal(f.msCpuBusy, cpuBusyBase),
+    cpuBusyNormal: normal(f.msCpuBusy, cpuBusyBase, excessMs),
     cpuSideElevated: cpuBusySpike || spikes(f.msCpuWait, cpuWaitBase, excessMs),
     gpuWaitHigh: spikes(f.msGpuWait, gpuWaitBase, excessMs),
     gpuBusy: f.msGpuBusy,
@@ -362,28 +391,183 @@ function referenceClock(timeline: GpuSample[]): number | null {
   return sorted.length ? percentile(sorted, 0.9) : null;
 }
 
-/** Case 1's decay test: candidate events in the second half of the capture against the first. */
-function decayOf(events: StutterEvent[], candidates: Set<number>, frames: FrameRow[]): { decay: number; count: number } {
+/** Which third of the analysed capture a stamp falls in, 0..2; the level load is not part of it. */
+function thirdOf(frames: FrameRow[]): (qpc: number) => number {
   const first = frames[Math.min(WARMUP_FRAMES, frames.length - 1)]?.timeInQpc ?? 0;
   const last = frames[frames.length - 1]?.timeInQpc ?? 0;
-  const mid = (first + last) / 2;
-  let early = 0;
-  let late = 0;
-  for (const e of events) {
-    if (!candidates.has(e.index)) continue;
-    if (e.qpc < mid) early++;
-    else late++;
-  }
-  return { decay: early > 0 ? 1 - late / early : 0, count: early + late };
+  const span = Math.max(1, last - first);
+  return (qpc) => Math.min(2, Math.max(0, Math.floor((3 * (qpc - first)) / span)));
 }
 
-/** Case 7's regularity: coefficient of variation of the gaps between consecutive stutters. */
-function periodicity(events: StutterEvent[], qpcFrequency: number): { cv: number; periodS: number; count: number } {
-  const gaps: number[] = [];
-  for (let i = 1; i < events.length; i++) gaps.push((events[i].qpc - events[i - 1].qpc) / qpcFrequency);
-  if (gaps.length < 2) return { cv: Number.POSITIVE_INFINITY, periodS: 0, count: events.length };
-  const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-  return { cv: mean > 0 ? stdev(gaps) / mean : Number.POSITIVE_INFINITY, periodS: mean, count: events.length };
+interface Decay {
+  /** 1 − last-third count / first-third count; 0 without an early count. */
+  decay: number;
+  early: number;
+  late: number;
+  count: number;
+  /** Median hitch cost (frame − median) over the first and the second half of the burst, ms. */
+  earlyMs: number;
+  lateMs: number;
+  /** The burst's own cost trend fell by MAGNITUDE_FALL: the second signal for a compile. */
+  shrank: boolean;
+}
+
+/**
+ * Case 1's decay: the candidates' rate in the first third of the capture against the
+ * last, and their cost trend along the burst (the candidates before the last third,
+ * in time order). A burst that merely stopped is one signal, not two: a fight, then a
+ * walk, stops the same way.
+ */
+function decayOf(events: StutterEvent[], candidate: (i: number) => boolean, third: (qpc: number) => number): Decay {
+  const perThird = [0, 0, 0];
+  const burst: number[] = [];
+  events.forEach((e, i) => {
+    if (!candidate(i)) return;
+    const t = third(e.qpc);
+    perThird[t]++;
+    if (t < 2) burst.push(e.frameMs - e.medianMs);
+  });
+  const [early, middle, late] = perThird;
+  const half = Math.floor(burst.length / 2);
+  return {
+    decay: early > 0 ? 1 - late / early : 0,
+    early,
+    late,
+    count: early + middle + late,
+    earlyMs: median(burst.slice(0, half)) ?? 0,
+    lateMs: median(burst.slice(half)) ?? 0,
+    shrank: costFall(burst) >= MAGNITUDE_FALL
+  };
+}
+
+/** A run of consecutive stutters on one beat: indices [from, to) into the event list. */
+export interface PeriodicRun {
+  from: number;
+  to: number;
+  cv: number;
+  periodS: number;
+  count: number;
+  /** How much of their cost the hitches lost over the run (costFall): a tick holds it. */
+  costFall: number;
+}
+
+/** Points a cost trend is fitted over; a longer series is thinned evenly so the pairwise fit stays cheap. */
+const TREND_POINTS = 200;
+
+/**
+ * How much of its cost a series lost end to end: a Theil–Sen line (the median of the
+ * pairwise slopes, so one outsized first spin or one stray blip does not tilt it) and
+ * its fall over the series as a fraction of its fitted start. A tick is flat, a compile
+ * burst falls; under two points, or a start of nothing, it is 0.
+ */
+function costFall(all: number[]): number {
+  const step = Math.max(1, Math.ceil(all.length / TREND_POINTS));
+  const cost = all.filter((_, i) => i % step === 0);
+  if (cost.length < 2) return 0;
+  const slopes: number[] = [];
+  for (let i = 0; i < cost.length; i++) for (let j = i + 1; j < cost.length; j++) slopes.push((cost[j] - cost[i]) / (j - i));
+  const slope = median(slopes)!;
+  const start = median(cost.map((c, i) => c - slope * i))!;
+  return start > 0 ? (-slope * (cost.length - 1)) / start : 0;
+}
+
+/** Mean and coefficient of variation of a growing list, updated in O(1) so a long run costs nothing to extend. */
+class RunningCv {
+  private n = 0;
+  private sum = 0;
+  private sumSq = 0;
+
+  push(v: number): void {
+    this.n++;
+    this.sum += v;
+    this.sumSq += v * v;
+  }
+
+  get mean(): number {
+    return this.n ? this.sum / this.n : 0;
+  }
+
+  /** The CV the list would have with `v` added; infinite until two values are in. */
+  cvWith(v: number): number {
+    return RunningCv.cv(this.n + 1, this.sum + v, this.sumSq + v * v);
+  }
+
+  get cv(): number {
+    return RunningCv.cv(this.n, this.sum, this.sumSq);
+  }
+
+  private static cv(n: number, sum: number, sumSq: number): number {
+    if (n < 2 || sum <= 0) return Number.POSITIVE_INFINITY;
+    const variance = Math.max(0, (sumSq - (sum * sum) / n) / (n - 1));
+    return (Math.sqrt(variance) * n) / sum;
+  }
+}
+
+/**
+ * The events [from, to) as a run, if they are a tick: five or more at a tick's pace,
+ * under the CV their number earns (0.08 once established, 0.02 for fewer, which only a
+ * metronome passes); else null.
+ */
+function runOver(events: StutterEvent[], from: number, to: number, qpcFrequency: number): PeriodicRun | null {
+  const count = to - from;
+  if (count < PERIODIC_MIN_EVENTS) return null;
+  const gaps = new RunningCv();
+  for (let k = from + 1; k < to; k++) gaps.push((events[k].qpc - events[k - 1].qpc) / qpcFrequency);
+  if (gaps.mean < PERIODIC_MIN_INTERVAL_S || gaps.cv >= (count >= PERIODIC_ESTABLISHED ? PERIODIC_MAX_CV : PERIODIC_METRONOME_CV)) return null;
+  return { from, to, cv: gaps.cv, periodS: gaps.mean, count, costFall: costFall(events.slice(from, to).map((e) => e.frameMs - e.medianMs)) };
+}
+
+/**
+ * Case 7's regularity, judged per cluster: walking the stutters in time order, a run
+ * is extended while its gaps stay on one beat (CV under 0.08, and no gap over three
+ * times the run's mean, which at that CV is its median) and its hitches keep one
+ * shape, a tick being one mechanism. A run too loose for its length is retried from
+ * its tail end, so a short metronome is not lost to one gap that drifted; a run on a
+ * beat too fast for a tick (frame-to-frame alternation, case 9) is stepped over
+ * whole. The last event of a run may open the next, because a hitch on the boundary
+ * of two beats fits both, and the larger run keeps it.
+ */
+export function periodicRuns(events: StutterEvent[], qpcFrequency: number, shapeAt: (i: number) => unknown = () => 0): PeriodicRun[] {
+  const runs: PeriodicRun[] = [];
+  let i = 0;
+  while (i < events.length) {
+    const gaps = new RunningCv();
+    let j = i + 1;
+    while (j < events.length && shapeAt(j) === shapeAt(i)) {
+      const gap = (events[j].qpc - events[j - 1].qpc) / qpcFrequency;
+      if (j > i + 1 && (gap > CLUSTER_GAP * gaps.mean || gaps.cvWith(gap) >= PERIODIC_MAX_CV)) break;
+      gaps.push(gap);
+      j++;
+    }
+    if (j - i >= PERIODIC_MIN_EVENTS && gaps.mean < PERIODIC_MIN_INTERVAL_S) {
+      i = j;
+      continue;
+    }
+    let run: PeriodicRun | null = null;
+    for (let to = j; !run && to - i >= PERIODIC_MIN_EVENTS; to--) run = runOver(events, i, to, qpcFrequency);
+    if (!run) {
+      i++;
+      continue;
+    }
+    const previous = runs[runs.length - 1];
+    if (previous && previous.to > run.from) {
+      if (run.count > previous.count) {
+        runs.pop();
+        const kept = runOver(events, previous.from, previous.to - 1, qpcFrequency);
+        if (kept) runs.push(kept);
+      } else {
+        const kept = runOver(events, run.from + 1, run.to, qpcFrequency);
+        if (!kept) {
+          i = run.from + 1;
+          continue;
+        }
+        run = kept;
+      }
+    }
+    runs.push(run);
+    i = run.to - 1;
+  }
+  return runs;
 }
 
 /** Case 9's pattern: the longest run of frames through `index` that alternate long/short by ≥ 1.5×. */
@@ -438,9 +622,31 @@ function cause(id: CauseId, confidence: 'high' | 'low', evidence: string[], proc
 
 const ms = (v: number) => `${v.toFixed(1)} ms`;
 
+/** Case 8's shape, which a CPU-side compile hitch shares: the CPU side of the frame ran long and the GPU had nothing else to do. */
+function cpuStallShape(s: FrameSignals): boolean {
+  return s.cpuBusySpike && (s.gpuWaitHigh || s.gpuBusyNormal);
+}
+
+/** The per-frame shape a tick keeps from one hitch to the next; a run that changes shape is two mechanisms, not one beat. */
+function shapeOf(s: FrameSignals): 'stall' | 'gpu' | 'quiet' | 'mixed' {
+  if (cpuStallShape(s)) return 'stall';
+  if (s.gpuBusySpike && s.cpuBusyNormal) return 'gpu';
+  return s.cpuBusySpike || s.gpuBusySpike ? 'mixed' : 'quiet';
+}
+
 /**
  * Plan §11: first match wins in case order. Returns new events with `cause` filled;
  * an event no case claims keeps null.
+ *
+ * Case 1 has two shapes. The plan's own is a GPU-busy spike with the CPU normal whose
+ * rate decays, decided first; the DX12 one is the case 8 shape whose rate decays and
+ * whose hitches shrink, decided where case 8 is, after the resource cases, because
+ * nothing on the machine may explain the frame. Two rules keep that route honest.
+ * The last third of the capture is the settled rate the decay was measured against,
+ * so a stall there is the engine's (the GPU route needs no such rule: no later case
+ * claims a GPU-busy spike with nothing behind it, and an unexplained row would say
+ * less than the burst's tail). And a run on a fixed beat is a tick, case 7, unless
+ * its hitches lose half their cost along the run, which is a cache filling on a timer.
  */
 export function classify(events: StutterEvent[], session: CaptureSession, extras: ClassifyExtras = {}): StutterEvent[] {
   const { frames, qpcFrequency } = session;
@@ -448,12 +654,15 @@ export function classify(events: StutterEvent[], session: CaptureSession, extras
   const disks = session.sensorWindow ? new DiskQueues(session.sensorWindow, qpcFrequency, extras.sensorMeta) : null;
   const refClock = referenceClock(session.gpuTimeline);
   const signals = events.map((e) => frameSignals(frames, e));
+  const third = thirdOf(frames);
 
-  const shaderCandidates = new Set<number>();
-  events.forEach((e, i) => { if (signals[i].gpuBusySpike && signals[i].cpuBusyNormal) shaderCandidates.add(e.index); });
-  const decay = decayOf(events, shaderCandidates, frames);
-  const period = periodicity(events, qpcFrequency);
-  const periodic = period.count >= PERIODIC_MIN_EVENTS && period.cv < PERIODIC_MAX_CV && period.periodS >= PERIODIC_MIN_INTERVAL_S;
+  const runOf: (PeriodicRun | null)[] = events.map(() => null);
+  for (const run of periodicRuns(events, qpcFrequency, (i) => shapeOf(signals[i]))) for (let i = run.from; i < run.to; i++) runOf[i] = run;
+  const tick = (i: number) => runOf[i] !== null && runOf[i]!.costFall < COMPILE_RUN_FALL;
+  const gpuDecay = decayOf(events, (i) => signals[i].gpuBusySpike && signals[i].cpuBusyNormal, third);
+  const cpuDecay = decayOf(events, (i) => cpuStallShape(signals[i]) && !tick(i), third);
+  const gpuBurst = gpuDecay.decay >= DECAY_MIN;
+  const cpuBurst = cpuDecay.early >= DECAY_ESTABLISHED && cpuDecay.decay >= DECAY_MIN;
 
   const hogs = extras.hogs ?? null;
   const hog = hogs?.processes.find((p) => p.pid !== session.game.pid && p.cpuPercent * hogs.logicalCpus >= HOG_CORE_PERCENT) ?? null;
@@ -470,11 +679,13 @@ export function classify(events: StutterEvent[], session: CaptureSession, extras
     // Plan §11 case 4 is "≥ 95 % + spike on new assets": a card that merely sits full (a resident model, a big texture pool) is not the cause.
     const vramPaging = vramFull && (g.vramGrew || s.gpuBusySpike);
     const resourceQuiet = !g.thermalBit && !g.powerBit && !g.clockDrop && !vramFull && !disk;
+    const stall = cpuStallShape(s);
+    const compile = stall && cpuBurst && !tick(i) && third(event.qpc) < 2;
 
     // A GPU spike the driver explains with a slowdown bit is throttling, not compilation.
     let cause: ClassifiedCause | null = null;
-    if (s.gpuBusySpike && s.cpuBusyNormal && !g.thermalBit && !g.powerBit && decay.decay >= DECAY_MIN) {
-      cause = cause1(s, decay);
+    if (s.gpuBusySpike && s.cpuBusyNormal && !g.thermalBit && !g.powerBit && gpuBurst) {
+      cause = cause1Gpu(s, gpuDecay);
     } else if (g.clockDrop && (g.thermalBit || g.hot)) {
       cause = cause2(g);
     } else if (g.clockDrop && g.powerBit && !g.hot) {
@@ -485,9 +696,11 @@ export function classify(events: StutterEvent[], session: CaptureSession, extras
       cause = cause5(disk, s);
     } else if (hog && s.cpuSideElevated) {
       cause = cause6(hog.name, hog.cpuPercent, s);
-    } else if (periodic) {
-      cause = cause7(period);
-    } else if (s.cpuBusySpike && (s.gpuWaitHigh || s.gpuBusyNormal)) {
+    } else if (compile) {
+      cause = cause1Cpu(s, cpuDecay);
+    } else if (runOf[i]) {
+      cause = cause7(runOf[i]!);
+    } else if (stall) {
       cause = cause8(s);
     } else if (resourceQuiet && !s.gpuBusySpike && !s.cpuBusySpike) {
       const run = alternatingRun(frames, event.index);
@@ -497,11 +710,20 @@ export function classify(events: StutterEvent[], session: CaptureSession, extras
   });
 }
 
-function cause1(s: FrameSignals, decay: { decay: number; count: number }): ClassifiedCause {
+const fewer = (d: Decay) => `${Math.round(d.decay * 100)} % fewer of these in the last third of the capture than in the first (${d.early} against ${d.late}, ${d.count} in all)`;
+
+function cause1Gpu(s: FrameSignals, decay: Decay): ClassifiedCause {
   return cause('shader-compile', decay.count >= DECAY_ESTABLISHED ? 'high' : 'low', [
     `GPU busy ${ms(s.gpuBusy ?? 0)} on a ${ms(s.frameMs)} frame while the CPU side stayed normal`,
-    `${Math.round(decay.decay * 100)} % fewer of these in the second half of the capture (${decay.count} in all)`
+    fewer(decay)
   ]);
+}
+
+/** The DX12 shape: the driver compiled on the game's thread, so the second signal is the hitches shrinking, not the GPU. */
+function cause1Cpu(s: FrameSignals, decay: Decay): ClassifiedCause {
+  const evidence = [`CPU busy ${ms(s.cpuBusy ?? 0)} on a ${ms(s.frameMs)} frame with the GPU idle: the driver compiling on the game's thread`, fewer(decay)];
+  if (decay.shrank) evidence.push(`and they shrank, from ${ms(decay.earlyMs)} of lost time each to ${ms(decay.lateMs)}${decay.late === 0 ? ', then stopped before the last third' : ''}`);
+  return cause('shader-compile', decay.shrank ? 'high' : 'low', evidence);
 }
 
 function cause2(g: GpuSignals): ClassifiedCause {
@@ -537,9 +759,9 @@ function cause6(name: string, cpuPercent: number, s: FrameSignals): ClassifiedCa
   return cause('background', cpuPercent >= HOG_LOUD_PERCENT ? 'high' : 'low', evidence, name);
 }
 
-function cause7(period: { cv: number; periodS: number; count: number }): ClassifiedCause {
-  return cause('periodic', period.count >= PERIODIC_ESTABLISHED ? 'high' : 'low', [
-    `${period.count} stutters every ${period.periodS.toFixed(2)} s, varying by only ${Math.round(period.cv * 100)} %`
+function cause7(run: PeriodicRun): ClassifiedCause {
+  return cause('periodic', run.count >= PERIODIC_ESTABLISHED ? 'high' : 'low', [
+    `${run.count} stutters every ${run.periodS.toFixed(2)} s, varying by only ${Math.round(run.cv * 100)} %`
   ]);
 }
 
@@ -572,7 +794,7 @@ type Wording = (n: { count: number; process: string; periodS: string }) => { tex
 
 const WORDING: Record<ReportCause['id'], Wording> = {
   'shader-compile': () => ({
-    text: 'The GPU spent extra time on frames while the game built shaders for things it had not drawn yet. The stutters thinned out as the session went on, which is the tell.',
+    text: 'Temporary: the game is compiling shaders the first time it meets new effects and caching them; this settles within a session. The stutters thinned out as the capture went on, which is the tell.',
     action: 'Let it play out: it settles once the game has drawn everything once. If the game offers a shader pre-compile step in its settings, run it; a driver update resets the shader cache, so expect one more pass after that.'
   }),
   thermal: () => ({
@@ -636,7 +858,7 @@ export function buildReport(session: CaptureSession, detection: Detection, bound
     if (e.cause?.process) entry.process = e.cause.process;
     tally.set(id, entry);
   }
-  const periodS = periodicity(detection.events.filter((e) => e.cause?.id === 'periodic'), session.qpcFrequency).periodS.toFixed(2);
+  const periodS = beatOf(detection.events.filter((e) => e.cause?.id === 'periodic'), session.qpcFrequency).toFixed(2);
   const totalLost = [...tally.values()].reduce((a, b) => a + b.ms, 0);
   const causes: ReportCause[] = [...tally.entries()]
     .sort((a, b) => b[1].ms - a[1].ms)
@@ -688,7 +910,7 @@ export function buildReport(session: CaptureSession, detection: Detection, bound
     measurements['GPU samples'] = session.gpuTimeline.length;
   }
 
-  return {
+  const report: StutterReport = {
     headline: HEADLINE[verdict],
     verdict,
     stutterCount: detection.stutterCount,
@@ -701,6 +923,73 @@ export function buildReport(session: CaptureSession, detection: Detection, bound
     events: detection.events,
     measurements
   };
+  const check = benchCheck(session, detection.events);
+  if (check) report.benchCheck = check;
+  return report;
+}
+
+/** The beat the periodic wording quotes: the period of the largest run among the events case 7 claimed. */
+function beatOf(periodic: StutterEvent[], qpcFrequency: number): number {
+  const largest = periodicRuns(periodic, qpcFrequency).sort((a, b) => b.count - a.count)[0];
+  return largest?.periodS ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// Bench check (plan §11a)
+
+/**
+ * What each bench segment is written to trip (collector/StrataTune.Bench/README.md),
+ * by name so the bench's own --json timings carry it. cpu-stall is a 30 ms spin every
+ * 2 s on the full script, case 7 by first-match order, and three spins a second apart
+ * on the short script, too few for a beat, so case 8: the README's "not fixable"
+ * verdict either way, and the check takes either.
+ */
+const DESIGNED: Record<string, Pick<BenchSegment, 'designedCause' | 'weakCauses' | 'sameVerdict'>> = {
+  'warm-up': { designedCause: null },
+  'shader-compile': { designedCause: 'shader-compile' },
+  'texture-stream': { designedCause: null, weakCauses: ['vram', 'storage'] },
+  'cpu-stall': { designedCause: 'periodic', sameVerdict: ['engine'] },
+  'gpu-load': { designedCause: null, weakCauses: ['thermal', 'power-limit'] }
+};
+
+/** The bench's segment timings (its --json line, or benchmarks.json for the full script) with their designed cases. */
+export function benchSegments(timings: { name: string; start: number; end: number }[]): BenchSegment[] {
+  return timings.map((t) => ({ name: t.name, startS: t.start, endS: t.end, ...(DESIGNED[t.name] ?? { designedCause: null }) }));
+}
+
+/**
+ * The classifier against the script, for a bench session. The bench's clock starts at
+ * its first present (Bench.cs), which is the first frame PresentMon sees, so segment
+ * times are read from the first captured frame. A segment designed to trip a case
+ * matches when most of its stutters got that case; one designed to run clean matches
+ * when its stutters stay under the report's worth-fixing line or show what a weak
+ * machine rightly would there. Without the bench's own summary the full script's
+ * fixed timings stand in, and the check says so.
+ */
+function benchCheck(session: CaptureSession, events: StutterEvent[]): BenchCheck | null {
+  const summary = session.benchSummary ?? (session.game.exe.toLowerCase() === benchmarks.builtIn.exe ? { script: 'full', segments: benchSegments(benchmarks.builtIn.segments) } : null);
+  if (!summary || !session.frames.length) return null;
+  const origin = session.frames[0].timeInQpc;
+  const endS = (session.frames[session.frames.length - 1].timeInQpc - origin) / session.qpcFrequency;
+  const at = (e: StutterEvent) => (e.qpc - origin) / session.qpcFrequency;
+  const rows: BenchCheckRow[] = summary.segments.map((seg) => {
+    const reached = endS >= seg.startS;
+    const inside = events.filter((e) => at(e) >= seg.startS && at(e) < seg.endS);
+    const tally = new Map<ClassifiedCause['case'] | 0, number>();
+    for (const e of inside) tally.set(e.cause?.case ?? 0, (tally.get(e.cause?.case ?? 0) ?? 0) + 1);
+    const found = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    const lostMs = inside.reduce((a, e) => a + e.frameMs - e.medianMs, 0);
+    const lostPct = (100 * lostMs) / ((seg.endS - seg.startS) * 1000);
+    const designed = seg.designedCause ? CASE_OF[seg.designedCause] : null;
+    const weak = (seg.weakCauses ?? []).map((id) => CASE_OF[id]);
+    const sameVerdict = (seg.sameVerdict ?? []).map((id) => CASE_OF[id]);
+    const scored = reached && (designed !== null || weak.length > 0);
+    const match = designed !== null ? found === designed || sameVerdict.some((c) => c === found) : lostPct < FINE_MAX_PERCENT_LOST || weak.some((c) => c === found);
+    return { segment: seg.name, startS: seg.startS, endS: seg.endS, designed, weak, sameVerdict, found, stutters: inside.length, lostPct, reached, scored, match };
+  });
+  const scored = rows.filter((r) => r.scored).length;
+  const matched = rows.filter((r) => r.scored && r.match).length;
+  return { script: summary.script, assumedTimings: !session.benchSummary, rows, matched, scored, score: `${matched} of ${scored} designed segments classified as designed` };
 }
 
 function round(v: number, places: number): number {

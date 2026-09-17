@@ -3,7 +3,7 @@ import { WARMUP_FRAMES } from '../analysis/frames';
 import { LOGO_DATA_URL } from '../assets/logo';
 import { FrameTimeChart, dotTone } from './FrameTimeChart';
 import { causeText, engineSentence, headline, pct } from './causes';
-import type { BoundVerdict, CauseShare, Measurements, SessionSummary, StutterReport } from './report-types';
+import type { BenchCheck, BenchCheckRow, BoundVerdict, CauseShare, Measurements, SessionSummary, StutterReport } from './report-types';
 import './report.css';
 
 interface Props {
@@ -103,6 +103,67 @@ const Bound: React.FC<{ b: BoundVerdict }> = ({ b }) => {
     </section>
   );
 };
+
+/** The names a bench segment's designed and found cases print under; a clean segment names what a weak machine would show there instead. */
+const designedText = (r: BenchCheckRow) => {
+  if (r.designed !== null) return `${causeText(r.designed).name}${(r.sameVerdict ?? []).map((c) => ` or ${causeText(c).inSentence}`).join('')}`;
+  if (!r.weak.length) return 'clean, ignored';
+  return `clean, or ${r.weak.map((c) => causeText(c).inSentence).join(' / ')} on a weak machine`;
+};
+
+/** What the classifier made of the segment; a clean segment that passed with stutters says on what grounds. */
+const foundText = (r: BenchCheckRow) => {
+  if (!r.reached) return 'not reached';
+  if (r.found === null) return 'no stutters';
+  const found = `${causeText(r.found).name} · ${r.stutters === 1 ? 'one stutter' : `${r.stutters} stutters`} · ${pct(r.lostPct)} % lost`;
+  if (r.designed !== null || !r.scored || !r.match) return found;
+  return r.weak.some((c) => c === r.found) ? `${found}, as a weak machine would` : `${found}, under the worth-fixing line`;
+};
+
+/** ✓ when the segment got its designed case (or stayed under the worth-fixing line when designed clean), ✗ when not, — when it is not scored. */
+const Mark: React.FC<{ r: BenchCheckRow }> = ({ r }) =>
+  r.scored ? <span className={`figure ${r.match ? 'ok' : 'warn'}`}>{r.match ? '✓' : '✗'}</span> : <span className="figure idle">—</span>;
+
+/**
+ * Plan §11a: the bench exists to trip known cases, so its report shows the classifier
+ * against the script, segment by segment, as the classifier's own honesty check. A
+ * clean segment that still has stutters passes only under the report's own
+ * worth-fixing line, and the row says how much it lost.
+ */
+const BenchTable: React.FC<{ check: BenchCheck }> = ({ check }) => (
+  <section className="rp-panel rp-bench">
+    <div className="label">Bench check — the classifier against the script</div>
+    <p>
+      {check.score}.{check.assumedTimings ? ' Segment times are the full script’s; this session carried no bench summary.' : ''}
+    </p>
+    <table className="rp-table rp-bench-table">
+      <thead>
+        <tr>
+          <th className="label">Segment</th>
+          <th className="label">Script time</th>
+          <th className="label">Designed to show</th>
+          <th className="label">Classified as</th>
+          <th className="label" aria-label="Match" />
+        </tr>
+      </thead>
+      <tbody>
+        {check.rows.map((r) => (
+          <tr key={r.segment} className={r.scored ? '' : 'unscored'}>
+            <td>{r.segment}</td>
+            <td className="figure">
+              {r.startS}–{r.endS} s
+            </td>
+            <td>{designedText(r)}</td>
+            <td>{foundText(r)}</td>
+            <td>
+              <Mark r={r} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </section>
+);
 
 const yesNo = (v: boolean) => (v ? 'yes' : 'no');
 
@@ -244,6 +305,8 @@ export const ReportView: React.FC<Props> = ({ report, session, brand = true }) =
             ))}
           </section>
         )}
+
+        {!short && report.benchCheck && <BenchTable check={report.benchCheck} />}
 
         {!short && (
           <div className="rp-grid">

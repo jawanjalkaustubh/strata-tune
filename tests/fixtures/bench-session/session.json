@@ -1,0 +1,310 @@
+{
+  "startedAt": "2026-09-17T01:01:49.483Z",
+  "endedAt": "2026-09-17T01:03:22.155Z",
+  "game": {
+    "pid": 9696,
+    "exe": "strata-tune-bench.exe",
+    "path": "D:\\AntiGravity\\strata-tune\\collector\\StrataTune.Bench\\bin\\x64\\Release\\net10.0\\win-x64\\strata-tune-bench.exe"
+  },
+  "trigger": "bench",
+  "qpcFrequency": 10000000,
+  "qpcStart": 23583712090,
+  "qpcEnd": 24480714145,
+  "snapshot": {
+    "capturedAt": "2026-09-17T01:01:49.5447586+00:00",
+    "os": {
+      "caption": "Microsoft Windows 11 Home",
+      "build": "26200.9457"
+    },
+    "chassis": {
+      "isLaptop": false,
+      "chassisTypes": [
+        3
+      ]
+    },
+    "cpu": {
+      "name": "AMD Ryzen 9 9950X 16-Core Processor",
+      "family": 26,
+      "model": 68,
+      "cores": 16,
+      "logical": 32,
+      "maxClockMhz": 4300
+    },
+    "ram": {
+      "totalMiB": 32768,
+      "modules": [
+        {
+          "slot": "DIMMA2",
+          "partNumber": "F5-6000J2836G16G",
+          "manufacturer": "Unknown",
+          "capacityMiB": 16384,
+          "configuredMts": 6200,
+          "reportedMts": 6200
+        },
+        {
+          "slot": "DIMMB2",
+          "partNumber": "F5-6000J2836G16G",
+          "manufacturer": "Unknown",
+          "capacityMiB": 16384,
+          "configuredMts": 6200,
+          "reportedMts": 6200
+        }
+      ]
+    },
+    "gpus": [
+      {
+        "index": 0,
+        "name": "NVIDIA GeForce RTX 5090",
+        "driver": "616.92",
+        "pcie": {
+          "currentGen": 5,
+          "currentWidth": 16,
+          "maxGen": 5,
+          "maxWidth": 16,
+          "gpuMaxGen": 5
+        },
+        "bar1TotalMiB": 32768,
+        "vram": {
+          "totalMiB": 32607,
+          "usedMiB": 3261
+        },
+        "powerMw": 64970,
+        "powerLimitMw": 600000,
+        "powerMaxLimitMw": 600000,
+        "clocks": {
+          "smMhz": 1305,
+          "memMhz": 7001
+        },
+        "temperatureC": 32,
+        "utilisation": {
+          "gpu": 3,
+          "memory": 3
+        },
+        "clocksEventReasons": {
+          "raw": 1024,
+          "names": [
+            "Unknown(0x400)"
+          ]
+        },
+        "pciSubsystem": {
+          "vendorId": 4163,
+          "deviceId": 35308
+        },
+        "clockOffsets": {
+          "smMhz": 0,
+          "memMhz": 0,
+          "maxClockSmMhz": 3090,
+          "maxClockMemMhz": 14001
+        }
+      }
+    ],
+    "gpuDriver": {
+      "version": "616.92",
+      "date": "2026-09-04"
+    },
+    "powerPlan": {
+      "guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+      "name": "Balanced",
+      "overlayGuid": "ded574b5-45a0-4f42-8737-46345c09c238"
+    },
+    "disks": [
+      {
+        "deviceId": "0",
+        "friendlyName": "Samsung SSD 9100 PRO 2TB",
+        "mediaType": "SSD",
+        "busType": "NVMe",
+        "sizeBytes": 2000398934016
+      },
+      {
+        "deviceId": "1",
+        "friendlyName": "CT2000P3PSSD8",
+        "mediaType": "SSD",
+        "busType": "NVMe",
+        "sizeBytes": 2000398934016
+      },
+      {
+        "deviceId": "2",
+        "friendlyName": "Samsung SSD 980 PRO 2TB",
+        "mediaType": "SSD",
+        "busType": "NVMe",
+        "sizeBytes": 2000398934016
+      }
+    ],
+    "volumes": [
+      {
+        "letter": "C",
+        "label": "",
+        "fileSystem": "NTFS",
+        "sizeBytes": 1160559718400,
+        "freeBytes": 786603696128,
+        "isBoot": true,
+        "diskDeviceId": "2"
+      },
+      {
+        "letter": "D",
+        "label": "New Volume",
+        "fileSystem": "NTFS",
+        "sizeBytes": 209591463936,
+        "freeBytes": 151738183680,
+        "isBoot": false,
+        "diskDeviceId": "2"
+      },
+      {
+        "letter": "E",
+        "label": "Games",
+        "fileSystem": "NTFS",
+        "sizeBytes": 628436758528,
+        "freeBytes": 202047074304,
+        "isBoot": false,
+        "diskDeviceId": "2"
+      },
+      {
+        "letter": "F",
+        "label": "Photos gen4",
+        "fileSystem": "NTFS",
+        "sizeBytes": 2000381014016,
+        "freeBytes": 768274444288,
+        "isBoot": false,
+        "diskDeviceId": "1"
+      },
+      {
+        "letter": "G",
+        "label": "Editing gen 5",
+        "fileSystem": "NTFS",
+        "sizeBytes": 2000381014016,
+        "freeBytes": 1786071703552,
+        "isBoot": false,
+        "diskDeviceId": "0"
+      }
+    ],
+    "ollama": []
+  },
+  "hogs": {
+    "seconds": 5,
+    "logicalCpus": 32,
+    "processes": [
+      {
+        "pid": 7912,
+        "name": "claude",
+        "cpuPercent": 2.22,
+        "workingSetMiB": 675.9
+      },
+      {
+        "pid": 15644,
+        "name": "claude",
+        "cpuPercent": 1.01,
+        "workingSetMiB": 213.8
+      },
+      {
+        "pid": 8152,
+        "name": "WmiPrvSE",
+        "cpuPercent": 0.61,
+        "workingSetMiB": 58.5
+      },
+      {
+        "pid": 21324,
+        "name": "CorsairCpuIdService",
+        "cpuPercent": 0.44,
+        "workingSetMiB": 56.9
+      },
+      {
+        "pid": 29332,
+        "name": "claude",
+        "cpuPercent": 0.33,
+        "workingSetMiB": 707.6
+      },
+      {
+        "pid": 5820,
+        "name": "MsMpEng",
+        "cpuPercent": 0.28,
+        "workingSetMiB": 361.7
+      },
+      {
+        "pid": 3668,
+        "name": "NVDisplay.Container",
+        "cpuPercent": 0.17,
+        "workingSetMiB": 48.9
+      },
+      {
+        "pid": 5704,
+        "name": "svchost",
+        "cpuPercent": 0.12,
+        "workingSetMiB": 35.9
+      }
+    ]
+  },
+  "notes": [
+    "bench exit code 0"
+  ],
+  "verdict": "Engine stall · 1.6 % of playtime went to 36 stutters; the main cause was an engine stall. Probably nothing on your end changes this — one signal only.",
+  "benchSummary": {
+    "script": "full",
+    "device": "NVIDIA GeForce RTX 5090",
+    "luid": 77971,
+    "pid": 9696,
+    "width": 1920,
+    "height": 1080,
+    "vsync": false,
+    "fpsCap": 120,
+    "vramTargetPercent": 40,
+    "completed": true,
+    "frames": 6067,
+    "seconds": 90.01,
+    "segments": [
+      {
+        "name": "warm-up",
+        "start": 0,
+        "end": 10,
+        "frames": 753,
+        "avgFps": 75.3,
+        "maxFrameMs": 16.72,
+        "avgGpuMs": 0.039
+      },
+      {
+        "name": "shader-compile",
+        "start": 10,
+        "end": 30,
+        "frames": 1269,
+        "avgFps": 63.4,
+        "maxFrameMs": 56.89,
+        "avgGpuMs": 0.032
+      },
+      {
+        "name": "texture-stream",
+        "start": 30,
+        "end": 45,
+        "frames": 950,
+        "avgFps": 63.3,
+        "maxFrameMs": 56.42,
+        "avgGpuMs": 0.059
+      },
+      {
+        "name": "cpu-stall",
+        "start": 45,
+        "end": 60,
+        "frames": 951,
+        "avgFps": 63.4,
+        "maxFrameMs": 94.85,
+        "avgGpuMs": 0.03
+      },
+      {
+        "name": "gpu-load",
+        "start": 60,
+        "end": 90,
+        "frames": 2144,
+        "avgFps": 71.5,
+        "maxFrameMs": 22.29,
+        "avgGpuMs": 9.896
+      }
+    ],
+    "pipelineStates": 85,
+    "texturesUploaded": 205,
+    "uploadedMiB": 13120,
+    "heavyIterations": 4436
+  },
+  "id": "2026-09-16-1901-strata-tune-bench",
+  "version": 1,
+  "frames": 6025,
+  "sensorRows": 1204,
+  "gpuRows": 185
+}

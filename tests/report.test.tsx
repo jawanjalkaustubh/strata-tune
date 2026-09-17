@@ -5,7 +5,7 @@ import { ReportView } from '../src/report/ReportView';
 import { ShareCard } from '../src/report/ShareCard';
 import { ENGINE_SENTENCE, ENGINE_SENTENCE_HEDGED, causeText, headline } from '../src/report/causes';
 import { REPORT_SLOT, exportReport, readEmbeddedReport, reportFileName } from '../src/report/export';
-import type { Report, StutterReport } from '../src/report/report-types';
+import type { BenchCheck, Report, StutterReport } from '../src/report/report-types';
 import type { Score } from '../src/analysis/score';
 import benchJson from './fixtures/bench.report.json';
 
@@ -138,7 +138,7 @@ describe('headline', () => {
   });
 
   it('one or two stutters over the line are titled by their count, never with the calm green', () => {
-    const r: StutterReport = { ...bench().report, verdict: 'unclear', causes: [{ case: 4, count: 1, share: 1, lostMs: 200, confidence: 'low' }] };
+    const r: StutterReport = { ...bench().report, verdict: 'unclear', causes: [{ case: 4, count: 1, share: 1, lostMs: 200, confidence: 'high' }] };
     r.measurements = { ...r.measurements, stutters: 1, lostPct: 1.1 };
     const one = headline(r);
     expect(one.title).toBe('One stutter');
@@ -148,6 +148,24 @@ describe('headline', () => {
     expect(headline(r).title).toBe('Two stutters');
     r.measurements.stutters = 3;
     expect(headline(r)).toMatchObject({ title: 'VRAM exhaustion', tone: 'warn' });
+  });
+
+  it('on one signal the title starts with Probably and the sentence keeps the hedge', () => {
+    const r: StutterReport = { ...bench().report, verdict: 'unclear', causes: [{ case: 4, count: 3, share: 1, lostMs: 200, confidence: 'low' }] };
+    r.measurements = { ...r.measurements, stutters: 3, lostPct: 1.1 };
+    expect(headline(r)).toMatchObject({ title: 'Probably VRAM exhaustion', summary: '1.1 % of playtime went to 3 stutters; the cause was probably VRAM exhaustion — one signal only.', tone: 'warn' });
+    r.measurements.stutters = 1;
+    expect(headline(r)).toMatchObject({ title: 'One stutter', summary: '1.1 % of playtime went to one stutter; the cause was probably VRAM exhaustion — one signal only.' });
+    r.causes = [{ case: 8, count: 40, share: 0.8, lostMs: 800, confidence: 'low' }, { case: 2, count: 4, share: 0.2, lostMs: 100, confidence: 'high' }];
+    r.measurements.stutters = 44;
+    const engine = headline(r);
+    expect(engine.title).toBe('Probably an engine stall');
+    // The hedge is in the plan's sentence, once: not "was probably an engine stall. Probably nothing".
+    expect(engine.summary).toBe(`1.1 % of playtime went to 44 stutters; the main cause was an engine stall. ${ENGINE_SENTENCE_HEDGED}`);
+    expect(engine.summary.match(/probably/gi)?.length).toBe(1);
+    expect(engine.engine).toBe(true);
+    r.causes[0].confidence = 'high';
+    expect(headline(r).title).toBe('Engine stall');
   });
 
   it('a cause on top is never paired with the ok tone', () => {
@@ -190,6 +208,59 @@ describe('headline', () => {
     r.measurements = { ...r.measurements, stutters: 0, lostPct: 0 };
     expect(headline(r).title).toBe('Smooth');
     expect(headline(r).tone).toBe('ok');
+  });
+});
+
+describe('bench check (plan §11a)', () => {
+  const check: BenchCheck = {
+    script: 'full',
+    assumedTimings: false,
+    rows: [
+      { segment: 'warm-up', startS: 0, endS: 10, designed: null, weak: [], found: 1, stutters: 3, lostPct: 1.57, reached: true, scored: false, match: false },
+      { segment: 'shader-compile', startS: 10, endS: 30, designed: 1, weak: [], found: 1, stutters: 15, lostPct: 2.66, reached: true, scored: true, match: true },
+      { segment: 'texture-stream', startS: 30, endS: 45, designed: null, weak: [4, 5], found: 7, stutters: 5, lostPct: 1.82, reached: true, scored: true, match: false },
+      { segment: 'cpu-stall', startS: 45, endS: 60, designed: 7, weak: [], sameVerdict: [8], found: 7, stutters: 8, lostPct: 2.02, reached: true, scored: true, match: true },
+      { segment: 'gpu-load', startS: 60, endS: 90, designed: null, weak: [2, 3], found: 8, stutters: 5, lostPct: 0.43, reached: true, scored: true, match: true }
+    ],
+    matched: 3,
+    scored: 4,
+    score: '3 of 4 designed segments classified as designed'
+  };
+
+  it('renders under the causes as a table with a mark per scored segment', () => {
+    const r = bench();
+    r.report.benchCheck = check;
+    const html = renderToStaticMarkup(<ReportView report={r.report} session={r.session} />);
+    expect(html.indexOf('Bench check')).toBeGreaterThan(html.indexOf('What caused it'));
+    expect(html.indexOf('Bench check')).toBeLessThan(html.indexOf('CPU or GPU'));
+    expect(html).toContain('3 of 4 designed segments classified as designed.');
+    expect(html).not.toContain('carried no bench summary');
+    expect(html.match(/rp-bench-table.*?<\/table>/s)![0].match(/<tr/g)?.length).toBe(6);
+    expect(html).toContain('<td>shader-compile</td>');
+    expect(html).toContain('10–30 s');
+    expect(html).toContain('<td>Shader compilation</td><td>Shader compilation · 15 stutters · 2.7 % lost</td>');
+    expect(html).toContain('<td>clean, or VRAM exhaustion / storage on a weak machine</td><td>Engine tick · 5 stutters · 1.8 % lost</td>');
+    expect(html).toContain('<td>clean, or thermal throttling / the power limit on a weak machine</td><td>Engine stall · 5 stutters · 0.4 % lost, under the worth-fixing line</td>');
+    expect(html).toContain('<td>clean, ignored</td>');
+    expect(html).toContain('<td>Engine tick or an engine stall</td><td>Engine tick · 8 stutters · 2.0 % lost</td>');
+    expect(html.match(/figure ok">✓</g)?.length).toBe(3);
+    expect(html.match(/figure warn">✗</g)?.length).toBe(1);
+    expect(html.match(/figure idle">—</g)?.length).toBe(1);
+    expect(html).toContain('class="unscored"');
+  });
+
+  it('says when the timings were assumed and when a segment was never reached', () => {
+    const r = bench();
+    r.report.benchCheck = { ...check, assumedTimings: true, rows: check.rows.map((row) => (row.segment === 'gpu-load' ? { ...row, found: null, stutters: 0, lostPct: 0, reached: false, scored: false, match: false } : row)), matched: 2, scored: 3, score: '2 of 3 designed segments classified as designed' };
+    const html = renderToStaticMarkup(<ReportView report={r.report} session={r.session} />);
+    expect(html).toContain('this session carried no bench summary');
+    expect(html).toContain('<td>not reached</td>');
+    expect(html.match(/figure idle">—</g)?.length).toBe(2);
+  });
+
+  it('a game report has no bench table', () => {
+    const { report, session } = bench();
+    expect(renderToStaticMarkup(<ReportView report={report} session={session} />)).not.toContain('Bench check');
   });
 });
 

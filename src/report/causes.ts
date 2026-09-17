@@ -29,7 +29,7 @@ const CAUSES: CauseText[] = [
     case: 1,
     name: 'Shader compilation',
     inSentence: 'shader compilation',
-    paragraph: 'The GPU ran long on frames the CPU had already finished, and the rate fell as the session went on: the game was compiling shaders it had not run before.',
+    paragraph: 'Temporary: the game is compiling shaders the first time it meets new effects and caching them. The hitches came early and thinned out as the capture went on, which is the tell; this settles within a session.',
     label: 'Wait',
     action: 'It plays out. The second time through the same areas it is gone, and it comes back once after a driver or game update clears the cache.',
     fixable: true
@@ -146,7 +146,8 @@ export const SHORT_SUMMARY = 'The first 300 frames are treated as the level load
 /**
  * Headline verdict and the one-sentence summary (§11: % of playtime lost and the main
  * cause). A cause only becomes the title once there are three or more stutters and the
- * capture is over the worth-fixing line; the border then is never the calm green.
+ * capture is over the worth-fixing line; the border then is never the calm green. On
+ * one signal the title starts with "Probably" and the sentence keeps the hedge.
  */
 export function headline(r: StutterReport): Headline {
   const m = r.measurements;
@@ -157,16 +158,19 @@ export function headline(r: StutterReport): Headline {
   }
   const text = causeText(top.case);
   const lost = `${pct(m.lostPct)} % of playtime went to ${stutters(m.stutters)}`;
-  const mainly = top.case === 0 ? 'no cause lined up with them' : `the ${r.causes.length === 1 ? 'cause' : 'main cause'} was ${text.inSentence}`;
-  const summary = `${lost}; ${mainly}.`;
+  const which = r.causes.length === 1 ? 'cause' : 'main cause';
+  const summary = `${lost}; ${top.case === 0 ? 'no cause lined up with them' : `the ${which} was ${text.inSentence}`}.`;
   // Under the classifier's worth-fixing line the cause is a footnote, not the title.
   if (r.verdict === 'fine') return { title: 'No stutter worth fixing', summary, engine: false, tone: 'ok' };
   if (top.case === 0) return { title: 'No clear cause', summary, engine: false, tone: 'idle' };
   const engine = !text.fixable;
-  const title = m.stutters <= 2 ? (m.stutters === 1 ? 'One stutter' : 'Two stutters') : text.name;
+  // A cause the rule saw on one signal is a "probably", in the title and in the sentence; an engine cause hedges once, in the plan's sentence.
+  const hedge = top.confidence === 'low';
+  const sentence = hedge && !engine ? `${lost}; the ${which} was probably ${text.inSentence} — one signal only.` : summary;
+  const title = m.stutters <= 2 ? (m.stutters === 1 ? 'One stutter' : 'Two stutters') : hedge ? `Probably ${text.inSentence}` : text.name;
   return {
     title,
-    summary: engine ? `${summary} ${engineSentence(top)}` : summary,
+    summary: engine ? `${sentence} ${engineSentence(top)}` : sentence,
     engine,
     tone: engine ? 'idle' : m.lostPct >= 5 ? 'bad' : 'warn'
   };

@@ -69,6 +69,8 @@ export interface CaptureSession {
   hogs?: HogsResult | null;
   /** Host remarks and user marks, in order: PresentMon exit code, game exit, "boss fight here". */
   notes: string[];
+  /** A bench run's script (plan §11a), for the report's bench check; absent on a game capture. */
+  benchSummary?: BenchSummary | null;
 }
 
 /** Plan §11 case numbers and their ids, in first-match order. */
@@ -154,4 +156,62 @@ export interface StutterReport {
   events: StutterEvent[];
   /** The raw numbers for the table at the bottom of the report. */
   measurements: Record<string, number | string>;
+  /** Bench sessions only: the classifier against the script (plan §11a). */
+  benchCheck?: BenchCheck;
+}
+
+/**
+ * One segment of the bench script (plan §11a, collector/StrataTune.Bench/README.md) on
+ * the bench's own clock, which starts at its first present, and the case the script
+ * writes it to trip. The report's bench check holds the classifier to this.
+ */
+export interface BenchSegment {
+  name: string;
+  startS: number;
+  endS: number;
+  /** The §11 case the segment is written to trip; null for one that should run clean on a healthy machine. */
+  designedCause: CauseId | null;
+  /** What a weak machine rightly shows instead of clean: VRAM or storage under texture-stream, thermal or the power limit under gpu-load. */
+  weakCauses?: CauseId[];
+  /** Cases the check takes for the designed one because they carry its verdict: cpu-stall's spins are case 7 on the full script's beat and case 8 on the short script's three, both the engine's. */
+  sameVerdict?: CauseId[];
+}
+
+/** The bench's own account of its run, reduced to what the check needs; electron/bench-run.ts holds the full --json line. */
+export interface BenchSummary {
+  script: string;
+  segments: BenchSegment[];
+}
+
+/** One bench segment against what the classifier made of the stutters inside it. */
+export interface BenchCheckRow {
+  segment: string;
+  startS: number;
+  endS: number;
+  designed: ClassifiedCause['case'] | null;
+  weak: ClassifiedCause['case'][];
+  /** Cases taken for `designed` because they carry the same verdict (the engine's 7 and 8 under cpu-stall); absent in reports written before it. */
+  sameVerdict?: ClassifiedCause['case'][];
+  /** The case most of the segment's stutters were given; 0 when most matched no rule, null with no stutters. */
+  found: ClassifiedCause['case'] | 0 | null;
+  stutters: number;
+  /** Time lost inside the segment as a percentage of the segment, 0..100. */
+  lostPct: number;
+  /** False when the capture ended before the segment began (a run stopped early). */
+  reached: boolean;
+  /** False for a segment the script designs nothing for (the warm-up) or one the run never reached: shown, not scored. */
+  scored: boolean;
+  match: boolean;
+}
+
+/** Plan §11a: the bench exists to trip known cases, and this is the classifier's own honesty check against it. */
+export interface BenchCheck {
+  script: string;
+  /** True when the session carried no bench summary and the segments are the full script's fixed timings. */
+  assumedTimings: boolean;
+  rows: BenchCheckRow[];
+  matched: number;
+  scored: number;
+  /** "3 of 4 designed segments classified as designed". */
+  score: string;
 }
