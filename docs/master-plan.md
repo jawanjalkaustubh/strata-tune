@@ -371,6 +371,14 @@ assumes the reference unit count; when NVAPI reports fewer shaders than `gpus.js
 missing-units rule) the headline scales by that ratio too and says so. Still an estimate,
 still not a benchmark, and the tok/s estimate still uses bandwidth.
 
+Two corollaries from the same afternoon: `nvmlDeviceGetMaxClockInfo` (3090 MHz on every 5090) is
+the VF-curve top, not the board's boost — the BOOST tile leads with the SM clock *held under load*,
+then board boost (boards.json) · reference · driver ceiling, and the headline never scales by the
+ceiling. And the card keeps the highest clocks it has ever seen: when a run holds less than that
+record (the user's GPU Tweak was closed and its memory offset went with it — 14001 MHz held instead
+of 16032, so 1463 GB/s against a 1792 ceiling was *correct* and looked like a bug), the bandwidth
+block says so in one muted line instead of leaving the user to guess.
+
 **GPU identity and spec tiles (user, 2026-09-16, TechPowerUp as the reference).** The GPU
 panel header and the advisor's stats card open with a **spec-tile row** in the style hardware
 databases use — die · shading units · TMUs · ROPs · VRAM size + type · bus width · base/boost ·
