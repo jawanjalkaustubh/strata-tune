@@ -379,6 +379,13 @@ record (the user's GPU Tweak was closed and its memory offset went with it — 1
 of 16032, so 1463 GB/s against a 1792 ceiling was *correct* and looked like a bug), the bandwidth
 block says so in one muted line instead of leaving the user to guess.
 
+And a **MEMORY CLOCK** tile in MHz beside the Gbps one (user, 2026-09-16: "I don't see a memory
+frequency ref vs this"): people know their memory as GPU Tweak and GPU-Z print it — 1750 MHz
+reference, 1979 MHz tuned, "+229 MHz" — so the tile shows this card's clock in that convention
+(NVML memMhz ÷ 8 for GDDR7/GDDR6X, ÷ 4 for GDDR6; `gpus.json` carries `memoryClockMhz` from the
+cited page so nothing is derived from a marketing Gbps figure), the held clock first, the
+reference and the offset beneath.
+
 **GPU identity and spec tiles (user, 2026-09-16, TechPowerUp as the reference).** The GPU
 panel header and the advisor's stats card open with a **spec-tile row** in the style hardware
 databases use — die · shading units · TMUs · ROPs · VRAM size + type · bus width · base/boost ·
