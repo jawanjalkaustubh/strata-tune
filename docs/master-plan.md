@@ -690,6 +690,22 @@ points at +30 / +60: +1.1 % over your current tune, +19 % over a reference 5090"
 the certified values go on the §14 share card. A failure in the 2-minute run steps the failing
 ladder down one fine step and re-runs it once. Typical total ≈ 6 + 6 rungs + 2 × 2 min ≈ 16 min.
 
+**Save as .html — the comparison sheet (user, 2026-09-16: "an option to save as .html the details
+of the avg and boost clocks for everything — CPU, GPU, VRAM, RAM — avg temps, so they can compare
+among themselves; that's the fun part of people OCing and comparing scores").** Every scored run
+(the as-found run, the official 2-minute run, and the built-in bench) can be saved as one
+self-contained HTML file through the §19 report pipeline (same renderer, a *score* layout): the
+score and the certified values at the top with the share card image; then one table per
+component from the run's own telemetry — **GPU** core clock avg / max held, memory clock avg /
+max, core temp avg / max, hotspot and memory junction, board power avg / max and the cap, perf-
+limit reasons share, fan %; **CPU** effective clock avg / max (and per-CCD peak), package power,
+Tctl avg / max; **RAM** configured MT/s and DIMM voltage, tRAS-free (what the snapshot knows); the
+hardware line (board, BIOS, driver, Windows build), PSU as set, the run's validity block
+(fixed workload, hash checks passed, no thermal bit, background load under 5 %), date and
+app version. Serials, hostnames and user names never appear (§17 redaction is reused). The file
+opens anywhere with no app, so people paste it in forums and compare; two files side by side is
+the comparison — the app does not host anything (plan §27a privacy).
+
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
 third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set
