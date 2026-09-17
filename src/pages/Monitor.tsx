@@ -8,7 +8,7 @@ import { updateSettings, useSettings } from '../components/useSettings';
 import { takeIntent } from '../components/navigate';
 import { SensorIndex } from '../components/monitor/sensors';
 import { Ring } from '../components/monitor/history';
-import { cachedSensorMeta, cachedSnapshot, clearStaticCache, refreshSensorMeta } from '../components/monitor/cache';
+import { cachedSensorMeta, cachedSnapshot, clearStaticCache, refreshSensorMeta, rememberedSnapshot } from '../components/monitor/cache';
 import { CpuPanel, cpuKey, cpuPowerLimit } from '../components/monitor/CpuPanel';
 import { GpuPanel, gpuKey } from '../components/monitor/GpuPanel';
 import { BoardPanel, BOARD_KEY, boardName } from '../components/monitor/BoardPanel';
@@ -151,7 +151,8 @@ export const Monitor: React.FC = () => {
   const connected = status.status === 'connected';
   const settings = useSettings();
   const [index, setIndex] = useState<SensorIndex | null>(null);
-  const [snapshot, setSnapshot] = useState<StaticSnapshot | null>(null);
+  // Last launch's snapshot paints the vendor colours at once; the live one replaces it (cache.ts).
+  const [snapshot, setSnapshot] = useState<StaticSnapshot | null>(rememberedSnapshot);
   const [tick, setTick] = useState<Tick | null>(null);
   const [error, setError] = useState('');
   const [menu, setMenu] = useState(() => takeIntent() === 'cpu-ppt');

@@ -7,12 +7,44 @@ let meta: Promise<SensorMeta[]> | null = null;
 /** The snapshot walks WMI and the sensor list is fixed per collector run: fetch each once per connection. */
 export function cachedSnapshot(): Promise<StaticSnapshot> {
   if (!snapshot) {
-    snapshot = api!.collector.snapshot().catch((e) => {
-      snapshot = null;
-      throw e;
-    });
+    snapshot = api!.collector.snapshot()
+      .then((s) => {
+        rememberSnapshot(s);
+        return s;
+      })
+      .catch((e) => {
+        snapshot = null;
+        throw e;
+      });
   }
   return snapshot;
+}
+
+const REMEMBERED_KEY = 'strata-tune.lastSnapshot';
+
+/**
+ * The panels take their vendor colours and names from the snapshot, and the collector
+ * answers it a second or so after connecting (WMI). Without this the CPU and board panels
+ * open slate and turn red once it lands — the user saw the flip (2026-09-16). The machine is
+ * the same one as last launch nearly always, so the last snapshot paints the first frame and
+ * the live one replaces it when it arrives; a changed part still corrects itself in that
+ * second. Storage can be missing or refuse (private window, cleared data): then nothing.
+ */
+export function rememberedSnapshot(): StaticSnapshot | null {
+  try {
+    const raw = localStorage.getItem(REMEMBERED_KEY);
+    return raw ? (JSON.parse(raw) as StaticSnapshot) : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberSnapshot(s: StaticSnapshot) {
+  try {
+    localStorage.setItem(REMEMBERED_KEY, JSON.stringify(s));
+  } catch {
+    /* a full disk or a blocked store only costs the next launch its early colours */
+  }
 }
 
 export function cachedSensorMeta(): Promise<SensorMeta[]> {
