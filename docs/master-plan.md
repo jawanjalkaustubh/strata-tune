@@ -555,6 +555,22 @@ history.
 
 ## 16. OC auto-tune (Phase 8 — last, opt-in, behind a warning)
 
+**Find the numbers, hand them over, leave the card as found (user, 2026-09-16: "the user will
+just find the values; they would still have to use their vendor's software to put those OC
+values in manually, so it is even safer for us").** The hunt applies offsets only *while it
+tests* and always ends at 0 / 0 — the app never leaves a change on the card. Its product is a
+value set: "certified +45 core / +60 memory on top of your tune → 3270 / 16068; first silent
+error at +60 core", shown with a *Copy* button and the vendor tools' own units beside ours
+(GPU Tweak and Afterburner take the core in MHz as we do, the memory as the effective rate ×2,
+so +60 NVML MHz reads "+120 MHz" in their slider), and the user types them into GPU Tweak,
+Afterburner or the vendor app of their card. Consequences: no *Keep*, no `VALIDATING`, no
+promotion and no logon scheduled task — P0 deltas do not survive a reboot, so a hard hang
+mid-test self-heals at the next boot, and the only residual case (collector died, machine did
+not reboot) is covered by `--revert-if-pending` at every collector start. The state machine
+shrinks to `IDLE → PENDING (testing) → IDLE`, with `REVERTED` only as the attribution shown
+after a crash. The Phase 8 build that shipped Keep / validate / the logon task is trimmed to
+this in the follow-up; the tests that prove PENDING-before-apply and revert-at-start stay.
+
 The warning modal's wording and the acknowledgement it records are specified in §27a (the
 hardware-risk paragraph is shown every time Tune is enabled, not once).
 
@@ -584,18 +600,17 @@ crashes on the desktop is the common failure.
 **Bisect, one variable at a time.**
 
 **Rollback state machine** (in the collector, persisted to `tune-state.json` *before* each
-apply):
+apply; superseded 2026-09-16 by the paragraph at the top of this section — kept for the
+record of why PENDING exists):
 
 ```
-KNOWN_GOOD → PENDING → VALIDATING → KNOWN_GOOD
-                 ↓ (crash / flag found at next launch)
-              REVERTED  (tell the user exactly which value did it)
+IDLE → PENDING (a rung is on the card, testing) → IDLE (0 / 0 restored)
+            ↓ (crash / flag found at next collector start)
+         REVERTED  (tell the user exactly which value did it)
 ```
 
-`VALIDATING` requires one clean shutdown; only a clean boot after a clean shutdown
-promotes. Also register a Windows Task Scheduler entry at logon that runs
-`strata-tune-collector.exe --revert-if-pending`, so the revert happens even if the user
-never opens the app again.
+Every collector start runs the revert-if-pending pass first; a reboot clears P0 deltas by
+itself. No logon task, no Keep, no promotion.
 
 **Flight recorder.** During any test, the last 30 s of the timeline is flushed to disk every
 second. After a hard hang the app opens on "here is what temps, clocks, power and limit
@@ -661,7 +676,15 @@ still use its results, and so AMD users get something from day one.
 
 Five pages on the family's bottom-bar page switcher, in the order people need them:
 
-`Audit · Monitor · Capture · AI Models · Tune`
+`Tune · Monitor · Capture · AI Models`
+
+(2026-09-16, user: "what's the point of Audit as a separate window? it should be in the Tune
+section".) **Tune is the home page and holds both kinds of advice**, because both are things
+the user applies elsewhere: the top is the audit — score, ranked findings, what to change in
+BIOS or Windows — and below it, behind the settings switch and the §27a warning, the
+**Headroom** hunt that hands over OC values for the vendor tool. The app never changes a
+setting or leaves a clock on the card; everything on this page is "here is what we found,
+here is what to type where". The plan's older "Audit" page references mean this top half.
 
 - **Audit** is the home page: score at the top once it exists, five ranked findings, "All
   sensors" button, pinned-sensor strip.
@@ -981,7 +1004,7 @@ trade in one sentence.
 | R4 | The 2 Hz dashboard still perturbs a bandwidth sweep | GPU accel off app-wide; validity indicator; compare sweep results with the UI minimised |
 | R5 | EXPO detection from part numbers misses kits | `kits.json` grows; unknown kit → "could not determine rated speed", never a false flag |
 | R6 | Classifier over-confident on single-signal cases | Confidence shown; low-confidence cases render as "probably" |
-| R7 | A hard hang leaves the machine on a bad value | PENDING flag + logon revert task; state persisted *before* apply |
+| R7 | A hard hang leaves the machine on a bad value | PENDING flag persisted *before* apply, revert at every collector start; deltas are volatile across a reboot; nothing is kept after a run |
 | R8 | Elevated collector exposes an HTTP endpoint | Loopback only, random port, per-launch token, no writes without the token, exits with the UI |
 | R9 | Only one test machine | Phase 4 onward wants a laptop and an AMD box; ask the family/friends |
 
@@ -1105,6 +1128,6 @@ Video have none; Snap's is the camera), per the family freeware rule in §27.
 | PresentMon hosted by the collector (§4 diagram) | PresentMon hosted by Electron main (`electron/presentmon.ts`), unelevated | Phase 4 was built while another workflow owned `collector/`; PresentMon needs no elevation for a Performance Log Users member and stamps its own QPC, so correlation with the collector's sensor window is unchanged. Elevated games show as `<unknown>` — revisit if that bites. |
 | Monitor window: "disable GPU acceleration for the monitor window" | Whole app has GPU acceleration off | Electron only supports the switch app-wide before `ready`; nothing here needs a GPU |
 | Stress worker unspecified | ComputeSharp (DX12) second .NET exe | Vendor-neutral, deterministic, no CUDA toolkit |
-| Rollback on next app launch | Plus a logon scheduled task | The user might never reopen the app after a bad hang |
+| Rollback on next app launch | Revert at every collector start; no logon task (2026-09-16) | Offsets only exist while a rung is under test and P0 deltas do not survive a reboot; nothing is ever kept on the card |
 | Four capabilities (lists five) | Five | Counting |
 | Open source | Public repo, MIT | Stated explicitly because the other Strata repos are private |
