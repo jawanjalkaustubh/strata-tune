@@ -357,6 +357,20 @@ the number that predicts speed sit side by side. `gpus.json` therefore carries a
 `advertisedAiTops: { value, precision, sparse, source }` per row — verified from the vendor's
 own spec page, never derived. The tok/s estimate still uses bandwidth, never TOPS.
 
+**The headline is this card's, the advertised figure beneath (user, 2026-09-16, screenshot:
+"this is spec; I should see [the number] for this card").** Tensor and shader peaks scale with
+the SM clock at a fixed unit count, so the card's own figure is the reference peak × (this
+card's clock ÷ the reference boost): on this box 3,352 × 3090 / 2407 ≈ 4,303 AI TOPS FP4 sparse,
+and FP32 shader 21,760 × 2 × 3.09 GHz ≈ 134 TFLOPS. The clock is the same one the BOOST tile
+shows — the highest SM clock seen held under load, else the driver's ceiling — and the tag
+says which ("at 3090 MHz held under load"). The advertised number stays as the muted second
+line ("NVIDIA advertises 3,352 at the 2407 MHz reference boost"), and the dense / sparse
+table follows the same rule: this card's pairs, reference in the sub-line. When no clock is
+known (no collector) the card falls back to the advertised figure, tagged *spec*. The scaling
+assumes the reference unit count; when NVAPI reports fewer shaders than `gpus.json` (§8
+missing-units rule) the headline scales by that ratio too and says so. Still an estimate,
+still not a benchmark, and the tok/s estimate still uses bandwidth.
+
 **GPU identity and spec tiles (user, 2026-09-16, TechPowerUp as the reference).** The GPU
 panel header and the advisor's stats card open with a **spec-tile row** in the style hardware
 databases use — die · shading units · TMUs · ROPs · VRAM size + type · bus width · base/boost ·
