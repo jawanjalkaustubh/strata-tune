@@ -441,17 +441,24 @@ within ±100 ms of the frame's QPC stamp.
 
 | # | Signature | Verdict | Fixable |
 |---|---|---|---|
-| 1 | `GPUBusy` spike, `CPUBusy` normal, first visit to area, rate decays over the session | Shader compilation | plays out |
+| 1 | two shapes, both **decaying** over the session: (a) `GPUBusy` spike, `CPUBusy` normal; (b) DX12/Vulkan — `CPUBusy` spike with the GPU waiting (the driver compiles on the game's thread; same per-frame shape as case 8) whose rate in the last third is ≤ half the first third's, ≥ 6 stalls early; magnitude trend sets the confidence | Shader compilation | plays out |
 | 2 | SM clock drop + `HwThermalSlowdown`/`SwThermalSlowdown` bit or temp ≥ target | Thermal throttle | fan curve, airflow |
 | 3 | SM clock drop + `SwPowerCap` bit, temps normal | Power limit | raise limit / undervolt |
 | 4 | VRAM used ≥ 95 % + spike on new assets | VRAM exhaustion | lower textures |
 | 5 | disk queue depth spike concurrent | Storage | SSD, free space |
 | 6 | another PID's CPU spike concurrent | Background process | names it |
-| 7 | inter-stutter interval CV < 0.15 | GC / streaming tick | **no — engine** |
+| 7 | a **cluster** of stutters sharing one per-frame shape on one beat: ≥ 8 events at CV < 0.08 (high), 5–7 at CV < 0.02 (low); clusters split where a gap exceeds 3× the beat — session-wide CV claimed a tick in 94 % of randomly spaced sessions (Monte Carlo, 2026-09-16), per-cluster 1 % | GC / streaming tick | **no — engine** |
 | 8 | `CPUBusy` spike, `GPUWait` high, nothing else | Engine stall | **no — engine** |
 | 9 | alternating long/short, no resource correlation | Pacing / sync | cap FPS, check vsync/frame gen |
 
-Confidence: high if two signals agree, low if one weak correlation. Shown in the report.
+Confidence: high if two signals agree, low if one weak correlation. Shown in the report; a
+low-confidence single-signal verdict starts with "Probably". Order (2026-09-16): 1(a), 2–6,
+1(b), 7, 8, 9 — the CPU-side compile shape is decided only after the resource cases, since a
+resource can explain such a frame and a compile cannot be confirmed; stalls in the last third
+are left to case 8, because that third is the settled rate the decay was measured against.
+Bench sessions (§11a) carry `benchSummary` and the report renders a designed-vs-classified
+table per segment with a score ("3 of 4 designed segments classified as designed") — the
+classifier's own honesty check, shown to the user.
 The throttle-bit inputs (cases 2, 3) are why NVML matters: the GPU says *why* it slowed,
 we do not infer it from a temperature chart.
 
