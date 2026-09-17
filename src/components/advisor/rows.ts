@@ -92,6 +92,7 @@ export interface GpuSpecView {
     tdpW: number;
     suggestedPsuW: number | null;
   };
+  tpuUrl: string;
   source: string;
 }
 
@@ -126,25 +127,21 @@ export function gpuSpecOf(name: string, vramMiB?: number): GpuSpecView | null {
       tdpW: g.tdpW,
       suggestedPsuW: g.suggestedPsuW
     },
+    tpuUrl: g.tpuUrl,
     source: g.source
   };
 }
 
 export interface Bandwidth {
-  /** What a stream copy reaches: the worker's best pass, or the ceiling x STREAM_EFFICIENCY. */
+  /** What a stream copy reaches: the worker's best pass, or spec x STREAM_EFFICIENCY. */
   gbs: number;
   measured: boolean;
 }
 
-/**
- * The figure the estimates run on: a bench taken on this card, else the ceiling scaled to
- * what a copy reaches; null with neither. The ceiling is this card's own (live memory clock x
- * bus width, thisCard.ts) when the collector knows it, the reference spec otherwise:
- * STREAM_EFFICIENCY was measured against the dev box's tuned clock, not the table.
- */
-export function streamedBandwidth(bench: GpuBench | null, applies: boolean, ceilingGBs: number | null): Bandwidth | null {
+/** The figure the estimates run on: a bench taken on this card, else the spec scaled to what a copy reaches; null with neither. */
+export function streamedBandwidth(bench: GpuBench | null, applies: boolean, spec: GpuSpecView | null): Bandwidth | null {
   if (bench && applies) return { gbs: bench.bandwidthGBs, measured: true };
-  return ceilingGBs !== null ? { gbs: ceilingGBs * STREAM_EFFICIENCY, measured: false } : null;
+  return spec?.bandwidthGBs != null ? { gbs: spec.bandwidthGBs * STREAM_EFFICIENCY, measured: false } : null;
 }
 
 export function npuTopsOf(cpuName: string | null): number | null {
