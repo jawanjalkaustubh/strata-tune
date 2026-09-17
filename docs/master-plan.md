@@ -725,16 +725,17 @@ tells the user to re-apply in the vendor tool. The 2026-09-16 first-rung additiv
 as the proof that the arithmetic held.
 
 **A core cap, and the top of the clock table (user, 2026-09-17 00:25, watching the first live
-hunt: "don't go completely crazy — stay under 3300 on core clock").** The first vendor+step
+hunt: "don't go completely crazy — stay under 3300 on core clock" — meant as tonight's caution
+so a hang would not leave the overnight work incomplete, not as a product request; the optional
+cap field stays because the same caution is every user's on a night run, but nothing is set on
+this box by default).** The first vendor+step
 hunt worked for memory (as found 16041 → +15 held 16052, the +45 rung scored 12,536 against
 12,077 at the vendor tune) and the restore wrote +319 / +2036 back. The core ladder stopped at
 its first rung with "the driver is not adding our offset": the card held 3337 MHz at the top of
 the curve with the user's +319 and 3337 again with +15 on top — the VF table's highest bin, above
 which no offset does anything. Two rules: (1) a **user core cap** in the Headroom form, "never
 test above __ MHz core" (memory has its own), default empty; a rung whose predicted top-of-curve
-clock would exceed the cap is not written and the ladder ends with "stopped at your cap"; on
-this box the cap is 3300 and the tune already holds 3337, so the core ladder certifies +0 and
-says why; (2) when a core rung's top-of-curve clock does not move while the memory rung's did,
+clock would exceed the cap is not written and the ladder ends with "stopped at your cap"; (2) when a core rung's top-of-curve clock does not move while the memory rung's did,
 the verdict is "the card already runs at the top of its clock table (3337 MHz); no core headroom
 above it through offsets" — certified +0 core, a result, not a failure. The score climb never
 writes a stock rung: "−2036" (the vendor tune removed to measure stock) must not appear — the
