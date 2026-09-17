@@ -622,6 +622,24 @@ the overnight shutdown and logged it as "a hard hang, stage 4". The marker must 
 the collector saw an orderly stop (SIGTERM / `/shutdown` / session end event) so a clean
 shutdown mid-candidate reverts quietly and only a genuinely dirty exit is called a hang.
 
+**The power cap is the normal state, not an invalid rung (user, 2026-09-16: "600 W is the power
+budget, that's fine — we still have the core and memory knobs; look at my current OC vs spec").**
+Tonight's three test hunts declared every rung "Invalid: a power or thermal limit was set on
+77–80 % of the heavy pattern's samples" — on a 600 W 5090 every heavy pattern sits on the cap,
+and the user's own tune runs there: +319 core holds 3225 MHz *at* 600 W against a 2407 reference
+(3000 MHz on a light load, driver ceiling 3090), +4072 memory holds 16008 MHz (32.0 Gbps, +14 %
+bandwidth). A core offset under a cap shifts the V/F curve — same watts, higher clock — and a
+memory offset barely touches power. So a rung is judged by what matters: (1) the hash — no
+silent errors; (2) the **light and transient patterns**, which run at the top of the curve where
+the offset is actually exercised; (3) heavy-pattern **throughput at the cap** — did the offset
+buy work per watt; a rung whose light/transient patterns pass and whose heavy throughput did not
+fall is certified whether or not the cap bit was set. The memory ladder runs first and on its
+own (cheap win, orthogonal to the cap). The result page shows the user's current OC · the board's
+rated figures · the reference · the ladder's certified numbers in one table. Hunting on top of an
+active vendor tune (previous paragraph) is off by default because the driver's summing of the two
+routes is unknown; an explicit "hunt on top of my current tune" option takes the held clocks as
+the baseline for people who want to push further.
+
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
 third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set
