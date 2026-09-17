@@ -22,6 +22,8 @@ internal sealed class Options
     public bool Json { get; private set; }
     public string Kind { get; private set; } = "";
     public int Seconds { get; private set; }
+    /// <summary>--ladder's load shape; required there, meaningless elsewhere.</summary>
+    public Pattern? Pattern { get; private set; }
     /// <summary>--cpu-load threads; every logical CPU unless --threads says otherwise.</summary>
     public int Threads { get; private set; } = Environment.ProcessorCount;
 
@@ -37,9 +39,10 @@ internal sealed class Options
         {
             switch (args[i])
             {
-                case "--devices" or "--hash": options.Verb = args[i]; break;
+                case "--devices" or "--hash" or "--reference": options.Verb = args[i]; break;
                 case "--load": options.Verb = args[i]; options.Kind = LoadKind(Value("--load")); break;
-                case "--bench" or "--cpu-load": options.Verb = args[i]; break;
+                case "--bench" or "--cpu-load" or "--ladder": options.Verb = args[i]; break;
+                case "--pattern": options.Pattern = Patterns.Parse(Value("--pattern")); break;
                 case "--threads": options.Threads = Positive("--threads", Value("--threads"), MaxThreads); break;
                 case "--seconds": options.Seconds = Positive("--seconds", Value("--seconds"), MaxSeconds); break;
                 case "--elements": options.Elements = Positive("--elements", Value("--elements"), MaxElements); break;
@@ -55,12 +58,17 @@ internal sealed class Options
 
         if (options.Verb.Length == 0)
         {
-            throw new ArgumentException("expected --devices, --hash, --load, --cpu-load or --bench");
+            throw new ArgumentException("expected --devices, --hash, --reference, --load, --ladder, --cpu-load or --bench");
         }
 
         if (options.Verb is "--load" or "--cpu-load" && options.Seconds == 0)
         {
             throw new ArgumentException($"{options.Verb} needs --seconds N");
+        }
+
+        if (options.Verb == "--ladder" && (options.Pattern is null || options.Seconds == 0 || options.Expect is null))
+        {
+            throw new ArgumentException("--ladder needs --pattern heavy|light|transient, --seconds N and --expect HEX from --reference");
         }
 
         return options;

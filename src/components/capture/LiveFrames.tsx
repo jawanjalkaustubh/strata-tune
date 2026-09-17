@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { CaptureFrames } from '../../api';
+import benchmarks from '../../data/benchmarks.json';
 
 const W = 480;
 const H = 40;
@@ -39,8 +40,21 @@ function useElapsed(startedAt: string | null): number {
   return Number.isNaN(start) ? 0 : Math.max(0, Math.floor((now - start) / 1000));
 }
 
-/** Elapsed time, frame count, the rate over the last two seconds, and the sparkline, while a capture runs. */
-export const LiveFrames: React.FC<{ frames: CaptureFrames; startedAt: string | null }> = ({ frames, startedAt }) => {
+const SEGMENTS = benchmarks.builtIn.segments;
+
+/** The script's segment ids are the author's ("cpu-stall"); the live line and the report print the labels benchmarks.json pairs with them. */
+export function benchSegmentLabel(name: string): string {
+  return SEGMENTS.find((s) => s.name === name)?.label ?? name;
+}
+
+/** The bench segment playing at this many seconds into the run (plan section 11a's script is timed from the bench's start). */
+export function benchSegment(elapsedS: number): string {
+  const s = SEGMENTS.find((x) => elapsedS < x.end);
+  return s ? s.label : 'finishing';
+}
+
+/** Elapsed time, frame count, the rate over the last two seconds, and the sparkline, while a capture runs; a bench run names its segment. */
+export const LiveFrames: React.FC<{ frames: CaptureFrames; startedAt: string | null; bench?: boolean }> = ({ frames, startedAt, bench = false }) => {
   const elapsed = useElapsed(startedAt);
   const total = frames.recentMs.reduce((a, b) => a + b, 0);
   const fps = frames.recentMs.length > 1 && total > 0 ? (1000 * frames.recentMs.length) / total : null;
@@ -52,6 +66,13 @@ export const LiveFrames: React.FC<{ frames: CaptureFrames; startedAt: string | n
           <span className="label">Elapsed</span>
           <span className="figure text-[13px] text-studio-text">{clock(elapsed)}</span>
         </span>
+        {bench && (
+          <span className="inline-flex items-baseline gap-1.5">
+            <span className="label">Segment</span>
+            <span className="figure text-[13px] text-studio-text">{benchSegment(elapsed)}</span>
+            <span className="figure text-[11px] text-studio-subtle">of {benchmarks.builtIn.seconds} s</span>
+          </span>
+        )}
         <span className="inline-flex items-baseline gap-1.5">
           <span className="label">Frames</span>
           <span className="figure text-[13px] text-studio-text">{frames.count.toLocaleString()}</span>

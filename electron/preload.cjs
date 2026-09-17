@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('strata', {
     state: () => ipcRenderer.invoke('capture:state'),
     processes: () => ipcRenderer.invoke('capture:processes'),
     start: (pid) => ipcRenderer.invoke('capture:start', pid),
+    startBench: () => ipcRenderer.invoke('capture:startBench'),
     stop: () => ipcRenderer.invoke('capture:stop'),
     arm: (on) => ipcRenderer.invoke('capture:arm', on),
     onState: on('capture:state'),
@@ -59,12 +60,30 @@ contextBridge.exposeInMainWorld('strata', {
     delete: (id) => ipcRenderer.invoke('sessions:delete', id),
     setVerdict: (id, verdict) => ipcRenderer.invoke('sessions:verdict', id, verdict),
     reveal: (id) => ipcRenderer.invoke('sessions:reveal', id),
-    exportHtml: (data) => ipcRenderer.invoke('sessions:exportHtml', data)
+    exportHtml: (data) => ipcRenderer.invoke('sessions:exportHtml', data),
+    trashCount: () => ipcRenderer.invoke('sessions:trashCount'),
+    emptyTrash: () => ipcRenderer.invoke('sessions:emptyTrash')
   },
 
   // Fix verification (electron/history.ts): { what, before, after, date } entries in history.json.
   history: {
     list: () => ipcRenderer.invoke('history:list'),
     add: (entry) => ipcRenderer.invoke('history:add', entry)
+  },
+
+  // OC auto-tune (electron/tune.ts): the collector's /tune/* routes; run events flow only while the Tune page asks.
+  tune: {
+    state: () => ipcRenderer.invoke('tune:state'),
+    enable: (enabled, acknowledgedAt) => ipcRenderer.invoke('tune:enable', enabled, acknowledgedAt),
+    start: (kind, enabled) => ipcRenderer.invoke('tune:start', kind, enabled),
+    validate: () => ipcRenderer.invoke('tune:validate'),
+    stop: () => ipcRenderer.invoke('tune:stop'),
+    keep: () => ipcRenderer.invoke('tune:keep'),
+    revert: () => ipcRenderer.invoke('tune:revert'),
+    export: () => ipcRenderer.invoke('tune:export'),
+    flight: () => ipcRenderer.invoke('tune:flight'),
+    subscribe: () => ipcRenderer.send('tune:subscribe'),
+    unsubscribe: () => ipcRenderer.send('tune:unsubscribe'),
+    onRun: on('tune:run')
   }
 });

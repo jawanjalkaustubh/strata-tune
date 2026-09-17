@@ -10,6 +10,7 @@ import { headline } from '../../report/causes';
 import type { CaptureSession, CauseId, StutterEvent, StutterReport as AnalysisReport } from '../../analysis/session-types';
 import type { SensorMeta } from '../../collector-types';
 import type { CauseShare, Report, SessionSummary, StutterCase, StutterMark, TimelinePoint, StutterReport } from '../../report/report-types';
+import benchmarks from '../../data/benchmarks.json';
 
 const CASE_OF: Record<CauseId, StutterCase> = {
   'shader-compile': 1, thermal: 2, 'power-limit': 3, vram: 4, storage: 5, background: 6, periodic: 7, engine: 8, pacing: 9
@@ -105,7 +106,9 @@ export function toReport(s: CaptureSession, a: AnalysisReport, appVersion: strin
       sentence: a.bound.text
     },
     timeline: timeline(s, origin),
-    stutters: a.events.map((e) => mark(e, origin, s.qpcFrequency))
+    stutters: a.events.map((e) => mark(e, origin, s.qpcFrequency)),
+    // The classifier's own account of a bench run (plan section 11a) travels untouched: it keeps the analysis' case ids.
+    ...(a.benchCheck ? { benchCheck: a.benchCheck } : {})
   };
   const session: SessionSummary = {
     game: s.game.exe,
@@ -116,6 +119,8 @@ export function toReport(s: CaptureSession, a: AnalysisReport, appVersion: strin
     cpu: s.snapshot?.cpu.name ?? 'CPU not recorded',
     gpu: s.snapshot?.gpus[0]?.name ?? s.gpuTimeline[0]?.facts.name ?? 'GPU not recorded',
     presentMode: dominant(frames.map((f) => f.presentMode)),
+    // The built-in bench is known by its exe: the report header says "Bench report" (plan section 11a).
+    ...(s.game.exe.toLowerCase() === benchmarks.builtIn.exe ? { bench: true } : {}),
     appVersion
   };
   return { report, session };

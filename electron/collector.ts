@@ -298,6 +298,15 @@ export class CollectorClient extends EventEmitter {
     return this.request<T>('GET', route, undefined, timeoutMs);
   }
 
+  /** A route that answers text rather than JSON (the flight recorder's NDJSON, electron/tune.ts). */
+  async text(route: string, timeoutMs = 10_000): Promise<string> {
+    const h = this.requireHandshake();
+    const res = await fetch(`http://127.0.0.1:${h.port}${route}`, { headers: { Authorization: `Bearer ${h.token}` }, signal: AbortSignal.timeout(timeoutMs) });
+    const body = await res.text().catch(() => '');
+    if (!res.ok) throw new Error(`GET ${route} answered ${res.status} ${body.trim()}`.trim());
+    return body;
+  }
+
   post<T>(route: string, body: unknown, timeoutMs = 10_000): Promise<T> {
     return this.request<T>('POST', route, body, timeoutMs);
   }
@@ -383,7 +392,17 @@ export class CollectorClient extends EventEmitter {
       if (line.startsWith('event:')) event = line.slice(6).trim();
       else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
     }
-    if (event !== 'tick' || data.length === 0) return;
+    if (data.length === 0) return;
+    // Tune state changes (electron/tune.ts) ride the same stream; the payload is read by the renderer's adapter.
+    if (event === 'tune') {
+      try {
+        this.emit('tune', JSON.parse(data.join('\n')) as unknown);
+      } catch (e) {
+        console.warn('[collector] unreadable tune event:', (e as Error).message);
+      }
+      return;
+    }
+    if (event !== 'tick') return;
     try {
       this.emit('tick', JSON.parse(data.join('\n')) as Tick);
     } catch (e) {

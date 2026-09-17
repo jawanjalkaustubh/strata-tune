@@ -1,5 +1,6 @@
-// Copied unchanged from Strata Video (master plan section 20). The section and
-// phase numbers below refer to that app's plan, not this one's. Wired by
+// Copied from Strata Video (master plan section 20); the one change is that the
+// allowlist is exported for the capture picker (electron/picker.ts). The section
+// and phase numbers below refer to that app's plan, not this one's. Wired by
 // electron/capture.ts: an armed capture starts on 'enter'.
 // Game Mode (master plan section 9). Hotkey first, process allowlist second,
 // exclusive-fullscreen detection third. Never relies on detection alone,
@@ -15,7 +16,7 @@ import { EventEmitter } from 'events';
 export const GAME_MODE_HOTKEY = 'CommandOrControl+Shift+G';
 
 // Common launchers and engines. Users extend this in settings later.
-const DEFAULT_ALLOWLIST = [
+export const DEFAULT_ALLOWLIST = [
   'cyberpunk2077', 'witcher3', 'eldenring', 'helldivers2', 'cs2', 'dota2', 'valorant', 'overwatch',
   'fortniteclient-win64-shipping', 'rocketleague', 'gta5', 'rdr2', 'baldursgate3', 'bg3', 'starfield',
   'hogwartslegacy', 'monsterhunterwilds', 'blackmythwukong', 'palworld-win64-shipping'

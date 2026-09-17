@@ -12,6 +12,7 @@ internal sealed class CollectorState
     public required RingBuffer Buffer { get; init; }
     public required Sources Sources { get; init; }
     public required LoadRunner Loads { get; init; }
+    public required TuneSupervisor Tune { get; init; }
     public required bool PawnIoUsable { get; init; }
     public required string Version { get; init; }
     public required string StartedAt { get; init; }
@@ -30,7 +31,8 @@ internal sealed class CollectorState
         QpcFrequency: Stopwatch.Frequency,
         StartedAt: StartedAt,
         Uptime: (Stopwatch.GetTimestamp() - StartedQpc) / (double)Stopwatch.Frequency,
-        Warming: Sources.Warming);
+        Warming: Sources.Warming)
+    { Tune = Tune.Health() };
 
     public SensorMeta[] Metas() =>
         [.. Sources.Lhm?.Metas ?? [], .. Sources.NvmlSampler?.Metas ?? [], .. Sources.Pdh?.Metas ?? []];

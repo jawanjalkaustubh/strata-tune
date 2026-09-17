@@ -19,7 +19,19 @@ public sealed record GpuFacts(
     GpuUtilisation Utilisation,
     ClocksEventReasons ClocksEventReasons,
     GpuPciSubsystem? PciSubsystem,
-    GpuClockOffsets? ClockOffsets);
+    GpuClockOffsets? ClockOffsets,
+    GpuUnits? Units)
+{
+    /// <summary>The P0 offsets NVAPI reports (NvAPI_GPU_GetPstates20, NvapiPstates.cs), the
+    /// route GPU Tweak III and Afterburner apply through, so the audit's OC row can show an
+    /// offset that <see cref="ClockOffsets"/> reads as 0. Null without nvapi64.dll or the interface.</summary>
+    public PstateDeltas? PstateDeltas { get; init; }
+
+    /// <summary>nvmlDeviceGetPowerManagementDefaultLimit: the board's default limit, its TDP,
+    /// where <see cref="PowerMaxLimitMw"/> is the top of the slider (a Founders Edition 5090:
+    /// 575 W default, 600 W slider; the Astral: 600 / 600). 0 when the card answers NOT_SUPPORTED.</summary>
+    public uint PowerDefaultLimitMw { get; init; }
+}
 
 public sealed record GpuPcie(uint CurrentGen, uint CurrentWidth, uint MaxGen, uint MaxWidth, uint GpuMaxGen);
 
@@ -44,3 +56,15 @@ public sealed record GpuPciSubsystem(uint VendorId, uint DeviceId);
 /// for a field the card does not answer; the whole record is null when the driver lacks the
 /// offsets export.</summary>
 public sealed record GpuClockOffsets(int? SmMhz, int? MemMhz, uint? MaxClockSmMhz, uint? MaxClockMemMhz);
+
+/// <summary>Unit counts NVML never reports, read once per session through NVAPI (Nvapi.cs)
+/// and matched to the NVML device by PCI bus: shading units (NvAPI_GPU_GetGpuCoreCount) and
+/// ROPs (NvAPI_GPU_GetROPCount, a private interface id) are direct reads. SMs are the
+/// private NvAPI_GPU_GetTotalSMCount when the driver answers it, else the TPC count
+/// (NvAPI_GPU_GetShaderSubPipeCount) times the architecture's SMs per TPC, and TMUs are the
+/// SM count times the architecture's texture units per SM (two SMs of four TMUs per TPC since
+/// Volta, one of eight on Maxwell and Pascal, from NvAPI_GPU_GetArchInfo), so those two are
+/// derived, not read. A call the driver refuses leaves its field null, never 0; the whole
+/// record is null when nvapi64.dll is absent or the card was not found on the NVAPI side.
+/// This is the missing-ROPs check's direct reading (plan section 8).</summary>
+public sealed record GpuUnits(uint? Shaders, uint? Sms, uint? Rops, uint? Tmus, string Source);

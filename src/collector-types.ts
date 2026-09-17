@@ -28,6 +28,8 @@ export interface Health {
    * until this turns false. Re-fetch the meta once it does.
    */
   warming: boolean;
+  /** Tune's rollback state, so a crash revert shows in the status pill; absent until the store has opened. */
+  tune?: TuneHealth | null;
 }
 
 /** Written by the collector to %LOCALAPPDATA%\Strata Tune\collector.json once it is listening. */
@@ -89,6 +91,13 @@ export interface GpuFacts {
   powerMw: number;
   powerLimitMw: number;
   powerMaxLimitMw: number;
+  /**
+   * nvmlDeviceGetPowerManagementDefaultLimit: the board's default limit, its TDP (575 W on a
+   * Founders Edition 5090, 600 W on the Astral), where powerMaxLimitMw is the top of the
+   * slider. 0 when the card answers NOT_SUPPORTED; optional because saved snapshots from
+   * before 2026-09-16 have no such key.
+   */
+  powerDefaultLimitMw?: number;
   clocks: { smMhz: number; memMhz: number };
   temperatureC: number;
   utilisation: { gpu: number; memory: number };
@@ -106,6 +115,28 @@ export interface GpuFacts {
    * the export gives null for the whole block; a field the card does not answer is null alone.
    */
   clockOffsets: { smMhz: number | null; memMhz: number | null; maxClockSmMhz: number | null; maxClockMemMhz: number | null } | null;
+  /**
+   * The P0 offsets NVAPI reports (NvAPI_GPU_GetPstates20, the route GPU Tweak III and
+   * Afterburner apply through), so the audit's OC row can show an offset that clockOffsets
+   * reads as 0. Null without nvapi64.dll or the interface. Optional because saved snapshots
+   * from before 2026-09-16 have no such key; the live wire always carries it.
+   */
+  pstateDeltas?: { coreMhz: number; memMhz: number } | null;
+  /**
+   * Unit counts NVML never reports, read once per session through NVAPI (the way GPU-Z and
+   * HWiNFO read them) and matched to this device by PCI bus. `shaders`
+   * (NvAPI_GPU_GetGpuCoreCount) and `rops` (NvAPI_GPU_GetROPCount, a private interface id)
+   * are direct reads. `sms` is NvAPI_GPU_GetTotalSMCount when the driver answers it, else
+   * the TPC count (NvAPI_GPU_GetShaderSubPipeCount) times the architecture's SMs per TPC;
+   * `tmus` is the SM count times the architecture's texture units per SM (two SMs of four
+   * TMUs per TPC since Volta, one of eight on Maxwell and Pascal), so those two are derived
+   * and null on older or unknown architectures. A call the driver refused is null, never 0, so
+   * a missing-ROPs verdict (audit rule gpu-units) is only ever drawn from a real reading;
+   * the whole block is null when nvapi64.dll is absent or NVAPI did not list the card. The
+   * dev box reads 21760 / 170 / 176 / 680 on the RTX 5090. Optional because saved sessions
+   * and audits recorded before 2026-09-16 have no such key; the live wire always carries it.
+   */
+  units?: { shaders: number | null; sms: number | null; rops: number | null; tmus: number | null; source: 'nvapi' } | null;
 }
 
 export interface RamModule {
@@ -181,8 +212,13 @@ export interface HogsResult {
   processes: ProcessSample[];  // sorted by cpuPercent desc, own processes excluded
 }
 
-/** 'light' and 'heavy' run the GPU worker; 'cpu' runs the all-logical-CPU vector FMA (logistic map) kernel and leaves the GPU alone. */
-export type LoadKind = 'light' | 'heavy' | 'cpu';
+/**
+ * 'light' and 'heavy' run the GPU worker; 'cpu' runs the all-logical-CPU vector FMA (logistic
+ * map) kernel and leaves the GPU alone; 'fillrate' runs the bench's --fillrate mode (full-screen
+ * quads as fast as the card writes pixels) with the GPU sampled at 2 Hz like the worker kinds,
+ * so the pixel rate can be paired with the SM clock it was measured at (src/analysis/gpuUnits.ts).
+ */
+export type LoadKind = 'light' | 'heavy' | 'cpu' | 'fillrate';
 
 export interface LoadRunRequest {
   kind: LoadKind;
@@ -206,6 +242,14 @@ export interface LoadRun {
    * the box does not expose reads NaN on the wire as null.
    */
   cpuSamples: { qpc: number; packageW: number | null; tctlC: number | null; avgEffectiveMhz: number | null; maxCoreMhz: number | null }[];
+  /**
+   * The bench's one JSON line for a finished 'fillrate' run: pixels written per wall second
+   * over `seconds` of measurement (a 1 s warm-up is not counted), the frames that made them
+   * and the offscreen target they were drawn into. Null for every other kind, and for a
+   * fill-rate run that failed before printing it; optional because runs saved before
+   * 2026-09-16 have no such key, while the live wire always carries it.
+   */
+  fillRate?: { pixelsPerSecond: number; seconds: number; frames: number; width: number; height: number } | null;
   error: string | null;
 }
 
@@ -217,3 +261,176 @@ export interface Tick {
   /** Health.warming, on every tick, so a client sees the moment the sensor list is complete. */
   warming: boolean;
 }
+
+// ---- OC auto-tune (plan section 16): GET /tune/state, the SSE 'tune' event, the state file ----
+
+/**
+ * The rollback state machine. PENDING is on disk before any apply; VALIDATING is a kept
+ * result waiting for one clean shutdown and a start; KNOWN_GOOD is the only state in which
+ * nothing of Tune's is on the card; REVERTED says the last start found a candidate applied
+ * without a clean shutdown and put the baseline back.
+ */
+export type TuneRollback = 'KNOWN_GOOD' | 'PENDING' | 'VALIDATING' | 'REVERTED';
+export type TuneRunKind = 'core' | 'memory' | 'validate';
+export type TuneRunState = 'running' | 'done' | 'failed' | 'stopped';
+export type TunePattern = 'heavy' | 'light' | 'transient';
+export type TunePhase = 'reference' | 'coarse' | 'bisect' | 'sweep' | 'validate' | 'restore';
+/** Per candidate: 'invalid' means a throttle bit was set during the heavy pattern, so the rung proves nothing. */
+export type TuneVerdict = 'stable' | 'unstable' | 'invalid' | 'device-lost';
+export type TuneValidity = 'ok' | 'throttled' | 'unknown';
+export type TuneConfidence = 'high' | 'medium' | 'low';
+
+/** NVAPI's P0 frequency deltas in kHz (exact, what a revert restores) with the MHz pair the page shows. */
+export interface TuneDeltas {
+  coreKhz: number;
+  memKhz: number;
+  coreMhz: number;
+  memMhz: number;
+}
+
+export interface TuneReverted {
+  candidate: TuneDeltas;
+  baseline: TuneDeltas;
+  at: string;
+  reason: string;
+}
+
+export interface TuneHistoryEntry {
+  at: string;
+  state: TuneRollback;
+  candidate: TuneDeltas | null;
+  note: string;
+}
+
+/**
+ * What a finished hunt found, with the baseline it was measured from; `validated` flips after a
+ * validate run passes, `promoted` when a kept result went through a clean shutdown and a clean
+ * boot (the plan's known-good; the offsets are not re-applied after that boot). The reference
+ * clocks are what NVML saw under load with nothing applied; `throttledFraction` is the share of
+ * the validation's heavy samples with a limit bit set (a power-limited card passes and says so).
+ */
+export interface TuneResult {
+  kind: TuneRunKind;
+  deltas: TuneDeltas;
+  baseline: TuneDeltas;
+  bandwidthGBs: number | null;
+  referenceHash: string;
+  confidence: TuneConfidence;
+  validated: boolean;
+  foundAt: string;
+  promoted: boolean;
+  referenceSmMhz: number | null;
+  referenceMemMhz: number | null;
+  throttledFraction: number | null;
+}
+
+export interface TuneCandidate {
+  deltas: TuneDeltas;
+  verdict: TuneVerdict;
+  /** Failure-ladder stage that tripped (1 hash, 2 bandwidth, 3 TDR); null for stable and invalid. */
+  stage: number | null;
+  failedPattern: TunePattern | null;
+  bandwidthGBs: number | null;
+  /** Share of the heavy pattern's samples with a power or thermal limit bit set. */
+  throttledFraction: number;
+  note: string;
+}
+
+/** The live run: GET /tune/state `run` and the SSE `tune` event at 2 Hz while Tune is enabled or a run is going. */
+export interface TuneRun {
+  id: string;
+  kind: TuneRunKind;
+  state: TuneRunState;
+  startedAt: string;
+  elapsedS: number;
+  phase: TunePhase;
+  candidate: TuneDeltas | null;
+  stage: number | null;
+  pattern: TunePattern | null;
+  patternElapsedS: number;
+  patternSeconds: number;
+  deviceLostCount: number;
+  errorCount: number;
+  bandwidthGBs: number | null;
+  bestBandwidthGBs: number | null;
+  validity: TuneValidity;
+  lastEvent: string;
+  candidates: TuneCandidate[];
+  result: TuneResult | null;
+  error: string | null;
+}
+
+export interface TuneNvapi {
+  available: boolean;
+  reason: string | null;
+  deltas: TuneDeltas | null;
+  range: { deltas: TuneDeltas; coreMinKhz: number; coreMaxKhz: number; memMinKhz: number; memMaxKhz: number; editable: boolean } | null;
+}
+
+/** GET /tune/state, and the body of every successful POST /tune/* reply. */
+export interface TuneStatus {
+  enabled: boolean;
+  state: TuneRollback;
+  baseline: TuneDeltas | null;
+  candidate: TuneDeltas | null;
+  appliedAt: string | null;
+  lastCleanShutdown: string | null;
+  /** Set when a start found a crash: which candidate did it. */
+  reverted: TuneReverted | null;
+  result: TuneResult | null;
+  history: TuneHistoryEntry[];
+  nvapi: TuneNvapi;
+  run: TuneRun | null;
+  /** The logon task 'Strata Tune revert-if-pending' exists. */
+  revertTaskRegistered: boolean;
+  /** GET /tune/flight has a last-crash file. */
+  flightAvailable: boolean;
+  stateFile: string;
+  /** Why the logon task is not registered (this exe's folder is writable by others), or null. */
+  revertTaskProblem: string | null;
+  /** What stops Tune altogether (the state folder could not be restricted, the file does not parse, another user's collector owns it), or null. */
+  problem: string | null;
+}
+
+/** POST /tune/enable: on, the warning's acknowledgement travels with it (plan section 27a). */
+export interface TuneEnableRequest {
+  enabled: boolean;
+  acknowledgedAt?: string;
+  appVersion?: string;
+}
+
+/** POST /tune/start; `enabled` is the UI's own setting, checked beside the collector's file flag. */
+export interface TuneStartRequest {
+  kind: TuneRunKind;
+  enabled: boolean;
+  /** At most this many candidates tried, then the run ends unconverged (a bounded smoke test); absent is unlimited. */
+  maxCandidates?: number;
+}
+
+/** GET /tune/export: the copy-pasteable Afterburner / GPU Tweak value set. */
+export interface TuneExport {
+  coreMhz: number;
+  memMhz: number;
+  baseline: { coreMhz: number; memMhz: number };
+  text: string;
+  validated: boolean;
+  confidence: TuneConfidence;
+  measuredAt: string;
+}
+
+export interface TuneHealth {
+  state: TuneRollback;
+  reverted: TuneReverted | null;
+  runActive: boolean;
+  /** Set while a run's baseline could not be put back: the candidate may still be on the card. */
+  restoreFailure: string | null;
+}
+
+/**
+ * One line of GET /tune/flight (application/x-ndjson): the last 30 s before a hard hang,
+ * samples at 2 Hz and the ladder's events merged by time. `sensors` holds the /nvml/ and
+ * /gpu-* ids only.
+ */
+export type FlightLine =
+  | { kind: 'sample'; at: string; qpc: number; gpu: GpuFacts | null; cpu: { qpc: number; packageW: number | null; tctlC: number | null; avgEffectiveMhz: number | null; maxCoreMhz: number | null } | null; sensors: Record<string, number> }
+  | { kind: 'event'; at: string; text: string; candidate: TuneDeltas | null; stage: number | null; pattern: TunePattern | null };

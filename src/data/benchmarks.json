@@ -1,0 +1,52 @@
+{
+  "_comment": "The capture picker's curated groups (plan section 11): the built-in bench (its script's segment ids with the labels the live line and the report print, and the frame-rate cap it paces itself to), the benchmark tools it recognises by exe, the game libraries it recognises by path (an exe under a library's notUnder folders is the launcher's own or an editor's, not a game), and the launchers whose own windows are never a capture. Exe patterns are lower-case; a * matches anything.",
+  "builtIn": {
+    "exe": "strata-tune-bench.exe",
+    "label": "Strata Tune stutter bench (90 s)",
+    "seconds": 90,
+    "fpsCap": 120,
+    "segments": [
+      { "name": "warm-up", "label": "Warm-up", "start": 0, "end": 10 },
+      { "name": "shader-compile", "label": "Shader compile", "start": 10, "end": 30 },
+      { "name": "texture-stream", "label": "Texture streaming", "start": 30, "end": 45 },
+      { "name": "cpu-stall", "label": "CPU stall", "start": 45, "end": 60 },
+      { "name": "gpu-load", "label": "GPU load", "start": 60, "end": 90 }
+    ]
+  },
+  "benchmarks": [
+    { "name": "Geekbench", "exes": ["geekbench*.exe"] },
+    { "name": "Cinebench", "exes": ["cinebench.exe"] },
+    { "name": "3DMark", "exes": ["3dmark.exe", "3dmarktimespy.exe", "3dmarkspeedway.exe", "3dmarksteelnomad*.exe", "3dmarkportroyal.exe", "3dmarkfirestrike.exe", "3dmarknightraid.exe", "3dmarkwildlife.exe", "3dmarksolarbay.exe"] },
+    { "name": "Unigine Superposition", "exes": ["superposition*.exe"] },
+    { "name": "Unigine Heaven", "exes": ["heaven*.exe"] },
+    { "name": "Unigine Valley", "exes": ["valley*.exe"] },
+    { "name": "FurMark", "exes": ["furmark.exe", "furmark2.exe", "furmark_gui.exe"] },
+    { "name": "OCCT", "exes": ["occt.exe"] },
+    { "name": "Blender benchmark", "exes": ["blender-benchmark.exe", "benchmark-launcher-cli.exe"] }
+  ],
+  "libraries": [
+    { "name": "Steam", "segment": "\\steamapps\\common\\" },
+    { "name": "Epic Games", "segment": "\\Epic Games\\", "notUnder": ["\\Epic Games\\Launcher\\", "\\Epic Games\\UE_"] },
+    { "name": "Riot Games", "segment": "\\Riot Games\\", "notUnder": ["\\Riot Games\\Riot Client\\"] },
+    { "name": "Rockstar Games", "segment": "\\Rockstar Games\\", "notUnder": ["\\Rockstar Games\\Launcher\\"] },
+    { "name": "Battle.net", "segment": "\\Battle.net\\" },
+    { "name": "Battle.net", "segment": "\\Blizzard\\" },
+    { "name": "GOG Galaxy", "segment": "\\GOG Galaxy\\Games\\" },
+    { "name": "Ubisoft Connect", "segment": "\\Ubisoft Game Launcher\\games\\" },
+    { "name": "EA app", "segment": "\\EA Games\\" },
+    { "name": "EA app", "segment": "\\Origin Games\\" },
+    { "name": "Xbox", "segment": "\\XboxGames\\" }
+  ],
+  "launchers": [
+    "steam", "steamwebhelper", "epicgameslauncher", "epicwebhelper", "battle.net", "battle.net launcher", "agent",
+    "riotclientservices", "riotclientux", "riotclientuxrender", "riotclientcrashhandler", "launcher", "socialclubhelper", "rockstarservice",
+    "ubisoftconnect", "upc", "eadesktop", "eabackgroundservice", "galaxyclient", "galaxyclient helper"
+  ],
+  "storePublishers": [
+    "BethesdaSoftworks.", "ElectronicArts.", "Ubisoft.", "SEGA.", "CAPCOM.", "SquareEnix.", "505Games.", "DevolverDigital.",
+    "ParadoxInteractive.", "WarnerBros.", "BANDAINAMCO", "FocusHomeInteractive.", "Rockstar", "TakeTwo", "2K",
+    "Microsoft.Halo", "Microsoft.Forza", "Microsoft.Gears", "Microsoft.Minecraft", "Microsoft.SeaofThieves", "Microsoft.FlightSimulator",
+    "Microsoft.AgeofEmpires", "Microsoft.StateofDecay", "Microsoft.Starfield", "Microsoft.MicrosoftFlightSimulator", "Microsoft.Indiana",
+    "Microsoft.Fable", "Microsoft.Avowed", "Microsoft.Grounded", "Microsoft.Pentiment", "Microsoft.Hellblade", "Microsoft.Psychonauts"
+  ]
+}

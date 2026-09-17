@@ -1,6 +1,7 @@
 import React from 'react';
 import { Timer, RotateCcw } from 'lucide-react';
 import type { OllamaBench, OllamaInstalled } from '../../api';
+import { openExternal } from '../../support';
 import { Card } from './Card';
 import { Pill } from '../monitor/Pill';
 import { MtpTag, Tag } from './Tag';
@@ -31,10 +32,47 @@ interface Props {
 
 const HEAD = 'label text-studio-subtle font-normal text-left';
 
-/** Plan section 10: a timed 256-token generation per installed model beside the estimate; the median ratio becomes the factor. */
+/** The plan's one quiet line when there is nothing to time: no model, no table, no card frame, no factor chip. */
+const Quiet: React.FC<{ title?: string; children: React.ReactNode }> = ({ title, children }) => (
+  <p className="text-mini text-studio-muted px-1" title={title}>
+    {children}
+  </p>
+);
+
+/**
+ * Plan section 10: a timed 256-token generation per installed model beside the estimate;
+ * the median ratio becomes the factor. Most people have no Ollama (plan section 10, 'No
+ * local model is the normal case'), so without it the whole block is one muted install
+ * line; the shipped factor already carries the dev-box calibration for them. A factor the
+ * user set earlier still applies to the estimates, so it stays visible with its reset.
+ */
 export const Calibration: React.FC<Props> = (p) => {
   const busy = p.calibrating !== null;
   const outOfBand = p.derived !== null && (p.derived < FACTOR_BAND[0] || p.derived > FACTOR_BAND[1]);
+  const keptFactor = p.factorIsSet && (
+    <>
+      {' '}
+      Estimates use the factor <span className="figure text-studio-text">{p.factor.toFixed(2)}</span> measured here earlier
+      <button className="ml-1 underline decoration-dotted underline-offset-2 hover:text-studio-text" onClick={p.onResetFactor}>
+        reset to {p.defaultFactor}
+      </button>
+      .
+    </>
+  );
+  if (!p.available) return <Quiet>Calibration needs the app: the plain browser cannot reach Ollama.{keptFactor}</Quiet>;
+  if (p.ollamaAbsent) {
+    return (
+      <Quiet title={p.listError}>
+        <button className="underline decoration-dotted underline-offset-2 hover:text-studio-text" onClick={() => openExternal('https://ollama.com')} title="https://ollama.com">
+          Install Ollama
+        </button>{' '}
+        to measure real tokens/s on your models.{keptFactor}
+      </Quiet>
+    );
+  }
+  if (p.listError) return <Quiet>{p.listError}{keptFactor}</Quiet>;
+  // Still asking: the table appears when Ollama answers, and nothing stands in for it meanwhile.
+  if (!p.installed) return null;
   return (
     <Card
       title="Tokens/s calibration"
@@ -46,17 +84,7 @@ export const Calibration: React.FC<Props> = (p) => {
         </span>
       }
     >
-      {!p.available ? (
-        <p className="text-mini text-studio-muted">Calibration needs the app: the plain browser cannot reach Ollama.</p>
-      ) : p.ollamaAbsent ? (
-        <p className="text-mini text-studio-muted" title={p.listError}>
-          Install Ollama to measure real tokens/s on your models.
-        </p>
-      ) : p.listError ? (
-        <p className="text-mini text-studio-muted">{p.listError}</p>
-      ) : !p.installed ? (
-        <p className="text-mini text-studio-muted">Asking Ollama for its models…</p>
-      ) : p.installed.length === 0 ? (
+      {p.installed.length === 0 ? (
         <p className="text-mini text-studio-muted">Ollama is running but has no models; pull one to calibrate.</p>
       ) : (
         <div className="overflow-x-auto">
@@ -139,7 +167,7 @@ export const Calibration: React.FC<Props> = (p) => {
         </div>
       )}
       {p.calibrateError && <p className="text-mini text-rose-300">{p.calibrateError}</p>}
-      {p.available && p.installed && p.installed.length > 0 && (
+      {p.installed.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap pt-1">
           <button className="btn" disabled={p.derived === null || busy} onClick={p.onSetFactor} title="Median of measured ÷ estimated over the calibrated models">
             Set factor from measurements{p.derived !== null && <span className="figure text-studio-text">→ {p.derived.toFixed(2)}</span>}

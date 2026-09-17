@@ -9,7 +9,8 @@ const OUTSIDE_ELECTRON: CaptureState = {
   startedAt: null,
   frames: 0,
   message: '',
-  lastSessionId: null
+  lastSessionId: null,
+  lastTrigger: null
 };
 
 /** The main process owns the capture; this is its state as pushed, seeded by one query on mount. */
@@ -35,7 +36,7 @@ export function useCaptureState(): CaptureState {
 
 /** The capture's word for the bottom bar, or null when nothing is running or armed. */
 export function captureStatusLabel(s: CaptureState): string | null {
-  if (s.status === 'capturing') return `Capturing${s.target ? ` ${s.target.exe}` : ''}`;
+  if (s.status === 'capturing') return s.target?.trigger === 'bench' ? 'Running the stutter bench' : `Capturing${s.target ? ` ${s.target.exe}` : ''}`;
   if (s.status === 'saving') return 'Saving capture';
   return s.armed ? 'Game Mode armed' : null;
 }

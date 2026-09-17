@@ -76,7 +76,9 @@ internal static class BenchRun
             rates.Count);
     }
 
-    private static (long Bytes, List<double> SortedGBs) Bandwidth(GraphicsDevice device, int seconds)
+    /// <summary>The stream copy alone, for the ladder's stage-2 number: the buffer size it
+    /// got (1 GiB, or 512 MiB on a card that cannot hold the pair) and every pass's GB/s sorted.</summary>
+    public static (long Bytes, List<double> SortedGBs) Bandwidth(GraphicsDevice device, int seconds)
     {
         (ReadOnlyBuffer<UInt4> source, ReadWriteBuffer<UInt4> destination) = AllocatePair(device);
 

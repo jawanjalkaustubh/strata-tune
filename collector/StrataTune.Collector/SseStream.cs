@@ -32,6 +32,9 @@ internal static class SseStream
             {
                 var json = JsonSerializer.Serialize(state.Tick(), WireJson.Default.Tick);
                 await response.WriteAsync($"event: tick\ndata: {json}\n\n", stopping);
+                // The tune monitor's numbers ride the same 2 Hz (plan section 16); nothing is sent while no run goes (a finished one rides a few seconds more so the page sees it end).
+                if (state.Tune.RunForStream() is { } run)
+                    await response.WriteAsync($"event: tune\ndata: {JsonSerializer.Serialize(run, WireJson.Default.TuneRun)}\n\n", stopping);
 
                 var now = DateTimeOffset.UtcNow;
                 if (now - lastHeartbeat >= HeartbeatPeriod)

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Play, Copy, Check, ChevronDown, ChevronUp, Settings2 } from 'lucide-react';
 import { api, ipcErrorMessage } from '../api';
-import { runAudit, rankTop, type AuditFinding } from '../analysis/audit';
+import { needsFillRateCrossCheck, runAudit, rankTop, type AuditFinding } from '../analysis/audit';
 import type { LoadKind, LoadRun } from '../collector-types';
 import { useCollectorStatus } from '../components/useCollectorStatus';
 import { CollectorStatusPill } from '../components/CollectorStatusPill';
@@ -23,18 +23,29 @@ interface Saved {
   skipped: string[];
 }
 
+interface Step {
+  label: string;
+  seconds: number;
+}
+
 /** Expected seconds per step drive the progress line; the whole run is about 50 s. */
-const STEPS = [
+const STEPS: Step[] = [
   { label: 'Reading the system snapshot', seconds: 2 },
   { label: 'Sampling idle background load', seconds: 5 },
   { label: 'PCIe link under a light load', seconds: 3 },
   { label: 'Thermal headroom under a heavy load', seconds: 20 },
   { label: 'CPU under an all-core load', seconds: 20 }
 ];
+/**
+ * Appended only when the driver gave no direct ROP count (audit rule gpu-units): 6 s of
+ * measured fill after the bench's start-up and 1 s warm-up.
+ */
+const FILL_RATE_STEP: Step = { label: 'Fill-rate cross-check (the driver gave no ROP count)', seconds: 8 };
+const FILL_RATE_SECONDS = 6;
 
 /** The CPU package-power rule judges against the limit the user sets on the Monitor page (phase1-polish item 2); the card links there. */
 const LINKS_TO_CPU_PPT = 'cpu-package-power';
-const TOTAL_SECONDS = STEPS.reduce((a, s) => a + s.seconds, 0);
+const totalSeconds = (steps: Step[]) => steps.reduce((a, s) => a + s.seconds, 0);
 
 function loadSaved(): Saved | null {
   try {
@@ -106,7 +117,7 @@ const Card: React.FC<{ f: AuditFinding }> = ({ f }) => (
 export const Audit: React.FC = () => {
   const status = useCollectorStatus();
   const [saved, setSaved] = useState<Saved | null>(loadSaved);
-  const [running, setRunning] = useState<{ step: number; stepStartedAt: number } | null>(null);
+  const [running, setRunning] = useState<{ steps: Step[]; step: number; stepStartedAt: number } | null>(null);
   const [now, setNow] = useState(0);
   const [error, setError] = useState('');
   const [showAll, setShowAll] = useState(false);
@@ -124,7 +135,9 @@ export const Audit: React.FC = () => {
     const c = api.collector;
     setError('');
     setShowAll(false);
-    const step = (i: number) => setRunning({ step: i, stepStartedAt: Date.now() });
+    // The snapshot decides whether the fill-rate step is worth its seconds, so the list is per run.
+    let steps = STEPS;
+    const step = (i: number) => setRunning({ steps, step: i, stepStartedAt: Date.now() });
     // The snapshot is the audit; the sampled steps are optional inputs (AuditInputs
     // takes null), so one failed worker run costs its checks, not the whole result.
     const skipped: string[] = [];
@@ -133,7 +146,7 @@ export const Audit: React.FC = () => {
       try {
         return await read();
       } catch (e) {
-        skipped.push(`${STEPS[i].label}: ${ipcErrorMessage(e)}`);
+        skipped.push(`${steps[i].label}: ${ipcErrorMessage(e)}`);
         return null;
       }
     };
@@ -141,7 +154,7 @@ export const Audit: React.FC = () => {
     const load = async (i: number, kind: LoadKind, seconds: number): Promise<LoadRun | null> => {
       const r = await optional(i, () => c.load(kind, seconds));
       if (r && r.state !== 'done') {
-        skipped.push(`${STEPS[i].label}: ${r.error ?? `the worker exited ${r.exitCode ?? 'without a code'}`}`);
+        skipped.push(`${steps[i].label}: ${r.error ?? `the worker exited ${r.exitCode ?? 'without a code'}`}`);
         return null;
       }
       return r;
@@ -149,13 +162,15 @@ export const Audit: React.FC = () => {
     try {
       step(0);
       const snapshot = await c.snapshot();
+      if (needsFillRateCrossCheck(snapshot)) steps = [...STEPS, FILL_RATE_STEP];
       const hogs = await optional(1, () => c.hogs(5));
       const pcieUnderLoad = await load(2, 'light', 3);
       const thermalRamp = await load(3, 'heavy', 20);
       const cpuLoad = await load(4, 'cpu', 20);
+      const fillRate = steps.length > STEPS.length ? await load(STEPS.length, 'fillrate', FILL_RATE_SECONDS) : null;
       const nowIso = new Date().toISOString();
       const settings = loadSettings();
-      const findings = runAudit({ snapshot, hogs, pcieUnderLoad, thermalRamp, cpuLoad, cpuPptW: settings.cpuPptW, nowIso });
+      const findings = runAudit({ snapshot, hogs, pcieUnderLoad, thermalRamp, cpuLoad, cpuPptW: settings.cpuPptW, fillRate, nowIso });
       // The names the Monitor shows (the user's own where set); " / " because a GPU title carries " · " of its own.
       const gpu = snapshot.gpus[0];
       const result: Saved = {
@@ -188,8 +203,9 @@ export const Audit: React.FC = () => {
   const top = ranked.slice(0, TOP);
   const rest = ranked.slice(TOP);
 
+  const total = totalSeconds(running?.steps ?? STEPS);
   const progress = running
-    ? (STEPS.slice(0, running.step).reduce((a, s) => a + s.seconds, 0) + Math.min(Math.max((now - running.stepStartedAt) / 1000, 0), STEPS[running.step].seconds)) / TOTAL_SECONDS
+    ? (totalSeconds(running.steps.slice(0, running.step)) + Math.min(Math.max((now - running.stepStartedAt) / 1000, 0), running.steps[running.step].seconds)) / total
     : 0;
 
   return (
@@ -212,9 +228,9 @@ export const Audit: React.FC = () => {
         <div className="rounded-md border border-studio-border bg-studio-panel px-3 py-2.5 space-y-2">
           <div className="flex items-center justify-between gap-3 text-mini">
             <span className="text-studio-text">
-              Step {running.step + 1} of {STEPS.length}: {STEPS[running.step].label}…
+              Step {running.step + 1} of {running.steps.length}: {running.steps[running.step].label}…
             </span>
-            <span className="figure text-studio-subtle">{Math.round(progress * TOTAL_SECONDS)} / ~{TOTAL_SECONDS} s</span>
+            <span className="figure text-studio-subtle">{Math.round(progress * total)} / ~{total} s</span>
           </div>
           <div className="relative h-1.5 rounded-full bg-studio-border">
             <div className="absolute inset-y-0 left-0 rounded-full bg-studio-accent transition-[width] duration-200 ease-linear" style={{ width: `${(progress * 100).toFixed(1)}%` }} />

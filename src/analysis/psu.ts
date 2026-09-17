@@ -84,8 +84,8 @@ export interface PsuVerdict {
 
 /** Common retail sizes, so the recommendation is a supply the user can buy. */
 const SIZES = [450, 550, 650, 750, 850, 1000, 1200, 1300, 1600];
-/** Peak at or under 70 % of the rating leaves room for the millisecond excursions modern cards draw above their sustained power. */
-const COMFORTABLE = 0.7;
+/** Peak at or under 70 % of the rating leaves room for the millisecond excursions modern cards draw above their sustained power; the Monitor speaks the verdict only past it. */
+export const COMFORTABLE = 0.7;
 /** Above 80 % of the rating a card's excursions reach the rating itself. */
 const TIGHT = 0.8;
 /** Under 40 % the supply is fine, just bigger than the machine needs. */

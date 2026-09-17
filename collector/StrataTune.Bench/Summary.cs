@@ -39,6 +39,26 @@ internal sealed record Summary(
     }
 }
 
+/// <summary>The one JSON line of <c>--fillrate --json</c>: pixels per wall second over the
+/// measured seconds (the warm-up is not counted), the frames that made them and the
+/// offscreen target's size. Interruption is the exit code's business, not the line's.</summary>
+internal sealed record FillRateSummary(
+    double PixelsPerSecond,
+    double Seconds,
+    int Frames,
+    int Width,
+    int Height,
+    [property: JsonIgnore] bool Completed)
+{
+    public string ToJson() => JsonSerializer.Serialize(this, SummaryJson.Default.FillRateSummary);
+
+    public IEnumerable<string> Lines()
+    {
+        yield return $"fill rate {PixelsPerSecond / 1e9:F1} Gpixel/s over {Seconds:F2} s, {Frames} frames of {FillRate.QuadsPerFrame} quads at {Width}x{Height}{(Completed ? "" : ", interrupted")}";
+    }
+}
+
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(Summary))]
+[JsonSerializable(typeof(FillRateSummary))]
 internal sealed partial class SummaryJson : JsonSerializerContext;

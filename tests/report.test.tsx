@@ -236,7 +236,8 @@ describe('bench check (plan §11a)', () => {
     expect(html).toContain('3 of 4 designed segments classified as designed.');
     expect(html).not.toContain('carried no bench summary');
     expect(html.match(/rp-bench-table.*?<\/table>/s)![0].match(/<tr/g)?.length).toBe(6);
-    expect(html).toContain('<td>shader-compile</td>');
+    // The script's id prints as its label (benchmarks.json), the same word the live line used.
+    expect(html).toContain('<td>Shader compile</td>');
     expect(html).toContain('10–30 s');
     expect(html).toContain('<td>Shader compilation</td><td>Shader compilation · 15 stutters · 2.7 % lost</td>');
     expect(html).toContain('<td>clean, or VRAM exhaustion / storage on a weak machine</td><td>Engine tick · 5 stutters · 1.8 % lost</td>');

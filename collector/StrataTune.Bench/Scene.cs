@@ -54,7 +54,7 @@ internal sealed unsafe class Scene : IDisposable
         ]);
         rootSignature = device.CreateRootSignature(signature);
 
-        string source = ShaderSource();
+        string source = ShaderSource("Scene.hlsl");
         ShaderMacro[] plain = [new ShaderMacro("VARIANT", 0), new ShaderMacro("SALT", 0)];
         background = Pipeline(Compile(source, plain, "BackgroundVS", "vs"), Compile(source, plain, "BackgroundPS", "ps"), depth: false);
         cubeVertexShader = Compile(source, plain, "CubeVS", "vs");
@@ -145,13 +145,14 @@ internal sealed unsafe class Scene : IDisposable
         return device.CreateGraphicsPipelineState(description);
     }
 
-    private static ReadOnlyMemory<byte> Compile(string source, ShaderMacro[] macros, string entryPoint, string stage) =>
-        Compiler.Compile(source, macros, entryPoint, "Scene.hlsl", $"{stage}_{Profile}", ShaderFlags.OptimizationLevel3);
+    /// <summary>d3dcompiler_47 at start-up (the build needs no shader toolchain); shared with the fill-rate pass.</summary>
+    internal static ReadOnlyMemory<byte> Compile(string source, ShaderMacro[] macros, string entryPoint, string stage, string sourceName = "Scene.hlsl") =>
+        Compiler.Compile(source, macros, entryPoint, sourceName, $"{stage}_{Profile}", ShaderFlags.OptimizationLevel3);
 
-    private static string ShaderSource()
+    internal static string ShaderSource(string resource)
     {
-        using Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Scene.hlsl")
-            ?? throw new InvalidOperationException("Scene.hlsl is not embedded in this build");
+        using Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resource)
+            ?? throw new InvalidOperationException($"{resource} is not embedded in this build");
         using StreamReader reader = new(stream);
         return reader.ReadToEnd();
     }

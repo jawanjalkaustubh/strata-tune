@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { app, type IpcMain } from 'electron';
+import type { CollectorClient } from './collector';
 
 /** One --bench --json line from the worker plus what the cache needs to decide reuse. */
 export interface GpuBench {
@@ -26,6 +27,13 @@ export interface GpuBench {
   /** The GPU driver the caller knew at measure time (from the collector snapshot); null standalone. */
   driver: string | null;
   measuredAt: string;
+  /**
+   * The highest SM and memory clocks the collector saw while the sweep ran (plan section 10):
+   * the ceiling the measurement is judged against is the one in force when it was taken, not
+   * the card's record. Null without the collector; absent in bench.json files from before it.
+   */
+  heldSmMhz?: number | null;
+  heldMemMhz?: number | null;
 }
 
 export interface BenchGpuRequest {
@@ -171,22 +179,47 @@ function runWorker(exe: string): Promise<{ code: number | null; stdout: string; 
 let inFlight: Promise<GpuBench | BenchError> | null = null;
 
 /** A second Measure while one runs joins it: two kernels on the card at once would measure each other. */
-function benchGpu(driver: string | null): Promise<GpuBench | BenchError> {
-  if (!inFlight) inFlight = doBenchGpu(driver).finally(() => (inFlight = null));
+function benchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
+  if (!inFlight) inFlight = doBenchGpu(driver, collector).finally(() => (inFlight = null));
   return inFlight;
 }
 
-async function doBenchGpu(driver: string | null): Promise<GpuBench | BenchError> {
+/** The sweep reaches P0 within its first pass; 4 Hz sees it many times over in a 3 s run. */
+const HELD_POLL_MS = 250;
+
+/** Polls the collector's /gpu while `until` runs and answers the highest clocks seen; null without a connected collector or a reading. */
+async function heldDuring<T>(collector: CollectorClient | null, until: Promise<T>): Promise<{ smMhz: number; memMhz: number } | null> {
+  if (collector?.state.status !== 'connected') return null;
+  let held: { smMhz: number; memMhz: number } | null = null;
+  const timer = setInterval(() => {
+    collector
+      .gpu()
+      .then((g) => {
+        const c = g[0]?.clocks;
+        if (c) held = { smMhz: Math.max(held?.smMhz ?? 0, c.smMhz), memMhz: Math.max(held?.memMhz ?? 0, c.memMhz) };
+      })
+      .catch(() => {
+        /* the collector went away mid-run; the bench line stands without its clocks */
+      });
+  }, HELD_POLL_MS);
+  await until.finally(() => clearInterval(timer));
+  return held;
+}
+
+async function doBenchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
   const exe = workerExe();
   if (!fs.existsSync(exe)) return { error: `Worker not built: ${exe}. Run dotnet build collector\\StrataTune.sln -c Release.` };
-  const run = await runWorker(exe);
+  const running = runWorker(exe);
+  const held = await heldDuring(collector, running);
+  const run = await running;
   if (run.timedOut) return { error: `The GPU benchmark did not finish within ${BENCH_TIMEOUT_MS / 1000} s` };
   const firstErr = run.stderr.trim().split(/\r?\n/)[0] || '';
   if (run.code === 3) return { error: 'No hardware GPU: the worker was given the software rasteriser (WARP)' };
   if (run.code === 10) return { error: 'The GPU was lost during the benchmark (TDR); the driver reset it' };
   if (run.code !== 0) return { error: `The worker exited with code ${run.code}${firstErr ? `: ${firstErr}` : ''}` };
-  const result = parseBenchLine(run.stdout, driver);
-  if (!result) return { error: 'The worker finished but printed no bench result line' };
+  const parsed = parseBenchLine(run.stdout, driver);
+  if (!parsed) return { error: 'The worker finished but printed no bench result line' };
+  const result: GpuBench = { ...parsed, heldSmMhz: held?.smMhz ?? null, heldMemMhz: held?.memMhz ?? null };
   writeCache(result);
   return result;
 }
@@ -277,8 +310,9 @@ async function ollamaList(): Promise<OllamaList | BenchError> {
 
 // --------------------------------------------------------------------- IPC
 
-export function registerAdvisorIpc(ipcMain: IpcMain) {
-  ipcMain.handle('bench:gpu', (_e, req: BenchGpuRequest) => (req.run ? benchGpu(req.driver) : usable(readCache(), req.driver)));
+/** `collector` is read per run: the client is created after this registration and may not be connected. */
+export function registerAdvisorIpc(ipcMain: IpcMain, collector: () => CollectorClient | null) {
+  ipcMain.handle('bench:gpu', (_e, req: BenchGpuRequest) => (req.run ? benchGpu(req.driver, collector()) : usable(readCache(), req.driver)));
   ipcMain.handle('bench:ollama', (_e, model: string) => benchOllama(model));
   ipcMain.handle('ollama:list', () => ollamaList());
 }

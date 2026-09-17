@@ -1,13 +1,13 @@
 import type { SupportLinks } from './support';
-import type { GpuFacts, HogsResult, LoadKind, LoadRun, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, Tick } from './collector-types';
+import type { FlightLine, GpuFacts, HogsResult, LoadKind, LoadRun, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, Tick, TuneExport, TuneRun, TuneStatus } from './collector-types';
 import type { BenchError, BenchGpuRequest, GpuBench, OllamaBench, OllamaList } from '../electron/bench';
-import type { CaptureFrames, CaptureState, ProcessInfo, SessionListItem } from '../electron/capture';
+import type { CaptureFrames, CaptureState, ProcessPick, SessionListItem } from '../electron/capture';
 import type { CaptureSession } from './analysis/session-types';
 import type { Report } from './report/report-types';
 import type { HistoryEntry } from './analysis/history';
 
 export type { BenchError, BenchGpuRequest, GpuBench, OllamaBench, OllamaInstalled, OllamaList } from '../electron/bench';
-export type { CaptureFrames, CaptureState, CaptureStatus, ProcessInfo, SessionListItem } from '../electron/capture';
+export type { BenchSummary, CaptureFrames, CaptureState, CaptureStatus, PickGroup, ProcessInfo, ProcessPick, SessionListItem } from '../electron/capture';
 
 /** Measurements for the AI stats card (electron/bench.ts); every call answers { error } rather than throwing. */
 export interface AdvisorApi {
@@ -47,15 +47,18 @@ export interface CollectorApi {
 /** Frame capture (electron/capture.ts): PresentMon on one pid, Game Mode when armed; state and live frames are pushed. */
 export interface CaptureApi {
   state(): Promise<CaptureState>;
-  processes(): Promise<ProcessInfo[]>;
+  /** Windowed processes in the picker's groups (electron/picker.ts); the built-in bench is not among them. */
+  processes(): Promise<ProcessPick[]>;
   start(pid: number): Promise<CaptureState>;
+  /** The built-in stutter bench (electron/bench-run.ts): rejects with the reason when the GPU is not free. */
+  startBench(): Promise<CaptureState>;
   stop(): Promise<CaptureState>;
   arm(on: boolean): Promise<CaptureState>;
   onState(cb: (state: CaptureState) => void): () => void;
   onFrames(cb: (frames: CaptureFrames) => void): () => void;
 }
 
-/** Saved sessions (electron/sessions.ts). delete moves to .trash; exportHtml fills the built report template and asks where to save it. */
+/** Saved sessions (electron/sessions.ts). delete moves to .trash; emptyTrash asks first and answers the count removed, or null when kept; exportHtml fills the built report template and asks where to save it. */
 export interface SessionsApi {
   list(): Promise<SessionListItem[]>;
   load(id: string): Promise<CaptureSession>;
@@ -63,12 +66,39 @@ export interface SessionsApi {
   setVerdict(id: string, verdict: string): Promise<void>;
   reveal(id: string): Promise<void>;
   exportHtml(data: Report): Promise<string | null>;
+  trashCount(): Promise<number>;
+  emptyTrash(): Promise<number | null>;
 }
 
 /** Fix verification (electron/history.ts, plan section 15): add appends and answers the whole list. */
 export interface HistoryApi {
   list(): Promise<HistoryEntry[]>;
   add(entry: HistoryEntry): Promise<HistoryEntry[]>;
+}
+
+/**
+ * OC auto-tune (electron/tune.ts, plan section 16). Every write answers the whole
+ * TuneStatus; a refusal rejects with the collector's reason. Run events are pushed
+ * only between subscribe and unsubscribe.
+ */
+export interface TuneApi {
+  state(): Promise<TuneStatus>;
+  /** On registers the revert-at-logon task and records the warning's acknowledgement (`acknowledgedAt`); off takes anything of Tune's off the card and removes it. */
+  enable(enabled: boolean, acknowledgedAt?: string): Promise<TuneStatus>;
+  /** `enabled` is this side's setting, checked beside the collector's file flag so neither can start a hunt alone. */
+  start(kind: 'core' | 'memory', enabled: boolean): Promise<TuneStatus>;
+  validate(): Promise<TuneStatus>;
+  stop(): Promise<TuneStatus>;
+  /** A validated result goes on the card as VALIDATING; a clean shutdown and a start promote it. */
+  keep(): Promise<TuneStatus>;
+  revert(): Promise<TuneStatus>;
+  /** Null until a hunt has a result. */
+  export(): Promise<TuneExport | null>;
+  /** The last 30 s before a hard hang; null when no crash has been found at a start. */
+  flight(): Promise<FlightLine[] | null>;
+  subscribe(): void;
+  unsubscribe(): void;
+  onRun(cb: (run: TuneRun) => void): () => void;
 }
 
 /** What electron/preload.cjs exposes as window.strata. Keep the two in step. */
@@ -85,6 +115,7 @@ export interface StrataApi {
   capture: CaptureApi;
   sessions: SessionsApi;
   history: HistoryApi;
+  tune: TuneApi;
 }
 
 declare global {

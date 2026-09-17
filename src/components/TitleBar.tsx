@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Minus, Square, X, HelpCircle, Heart, Info } from 'lucide-react';
+import { Minus, Square, X, HelpCircle, Heart, Info, Settings2 } from 'lucide-react';
 import { api } from '../api';
 import { SupportLinks, openExternal } from '../support';
 import { Monogram } from './Monogram';
@@ -7,6 +7,8 @@ import { Monogram } from './Monogram';
 export interface TitleBarProps {
   support: SupportLinks;
   onOpenAbout: () => void;
+  /** Help → Settings: the Tune switch behind its warning (plan 17). */
+  onOpenSettings: () => void;
 }
 
 /**
@@ -14,7 +16,7 @@ export interface TitleBarProps {
  * Strata Video shows a "soon" placeholder instead; Tune is a public repo, so
  * an entry that goes nowhere would only draw issues.
  */
-const HelpMenu: React.FC<TitleBarProps> = ({ support, onOpenAbout }) => {
+const HelpMenu: React.FC<TitleBarProps> = ({ support, onOpenAbout, onOpenSettings }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -55,6 +57,9 @@ const HelpMenu: React.FC<TitleBarProps> = ({ support, onOpenAbout }) => {
               <span className="text-micro text-studio-accent font-semibold">Free</span>
             </button>
           )}
+          <button className="w-full flex items-center gap-2 px-3 py-1.5 text-mini text-studio-text hover:bg-studio-panel-hi" onClick={() => run(onOpenSettings)}>
+            <Settings2 size={13} /> Settings
+          </button>
           <button className="w-full flex items-center gap-2 px-3 py-1.5 text-mini text-studio-text hover:bg-studio-panel-hi" onClick={() => run(onOpenAbout)}>
             <Info size={13} /> About Strata Tune
           </button>

@@ -14,6 +14,8 @@ import { Tag } from '../components/advisor/Tag';
 import { gib, tokens } from '../components/advisor/format';
 import { factsFromPicker, factsFromSnapshot, freeRamBytes, sameGpu, type HardwareFacts, type PickerChoice } from '../components/advisor/hardware';
 import { ALL_TAGS, DEFAULT_FACTOR, GPU_NAMES, MAX_CONTEXT, adviseRows, bestRows, derivedFactor, gpuSpecOf, npuTopsOf, streamedBandwidth } from '../components/advisor/rows';
+import { thisCard } from '../components/advisor/thisCard';
+import { useHeldClocks } from '../components/advisor/useHeldClocks';
 
 const DEFAULT_CONTEXT = 8192;
 const MEASUREMENTS_KEY = 'strata-tune.calibration';
@@ -98,6 +100,9 @@ export const Advisor: React.FC = () => {
 
   const facts: HardwareFacts = snapshotFacts ?? factsFromPicker(picker, gpuSpecOf(picker.gpuName)?.vramGiB ?? 0);
   const spec = gpuSpecOf(facts.gpuName, snapshotFacts ? snapshotFacts.vramBytes / 1024 ** 2 : undefined);
+  // This card against the reference row (plan section 10): the driver's limits and the clocks it holds when the page loads it.
+  const { held, latest, watch } = useHeldClocks(facts);
+  const card = facts.gpu ? thisCard(facts.gpu, spec?.tiles.busBits ?? null, held) : null;
 
   // bench.json is reused until the driver changes, so the cached line is read once the driver is known.
   useEffect(() => {
@@ -110,7 +115,7 @@ export const Advisor: React.FC = () => {
   }, [facts.driver]);
 
   const benchApplies = !!bench && sameGpu(bench.device, facts.gpuName);
-  const bandwidth = streamedBandwidth(bench, benchApplies, spec);
+  const bandwidth = streamedBandwidth(bench, benchApplies, card?.bandwidthGBs ?? spec?.bandwidthGBs ?? null);
   const bandwidthGBs = bandwidth?.gbs ?? null;
   const factor = settings.calibrationFactor ?? DEFAULT_FACTOR;
 
@@ -131,11 +136,15 @@ export const Advisor: React.FC = () => {
   const measuredByTag = useMemo(() => Object.fromEntries(Object.values(measurements).map((m) => [m.model, m.tokPerSec])), [measurements]);
   const derived = useMemo(() => derivedFactor(measurements, estimates, factor), [measurements, estimates, factor]);
 
+  // Both runs load the card, so both are watched for the clocks it holds; only a run that finished counts.
   const measure = async () => {
     if (!api || measuring) return;
     setMeasuring(true);
     setBenchError('');
+    const stop = watch();
     const r = await api.advisor.benchGpu({ driver: facts.driver, run: true });
+    const ok = !!r && !('error' in r);
+    stop(ok);
     if (r && 'error' in r) setBenchError(r.error);
     else if (r) setBench(r);
     setMeasuring(false);
@@ -145,7 +154,9 @@ export const Advisor: React.FC = () => {
     if (!api || calibrating) return;
     setCalibrating(model);
     setCalibrateError('');
+    const stop = watch();
     const r = await api.advisor.benchOllama(model);
+    stop(!('error' in r));
     if ('error' in r) setCalibrateError(`${model}: ${r.error}`);
     else {
       const next = { ...stored, [model]: { ...r, device: facts.gpuName, driver: facts.driver } };
@@ -155,8 +166,9 @@ export const Advisor: React.FC = () => {
     setCalibrating(null);
   };
 
+  // Merged over what storage holds now: the PSU form and the Monitor write their own fields in between.
   const setFactor = (calibrationFactor: number | null) => {
-    const next = { ...settings, calibrationFactor };
+    const next = { ...loadSettings(), calibrationFactor };
     saveSettings(next);
     setSettings(next);
   };
@@ -193,6 +205,8 @@ export const Advisor: React.FC = () => {
         gpuName={facts.gpuName}
         gpuColour={vendorOf(facts.gpuName).colour}
         spec={spec}
+        card={card}
+        latest={latest}
         npuTops={npuTopsOf(facts.cpuName)}
         bench={bench}
         applies={benchApplies}

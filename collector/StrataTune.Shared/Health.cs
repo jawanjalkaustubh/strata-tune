@@ -17,7 +17,11 @@ public sealed record Health(
     long QpcFrequency,
     string StartedAt,
     double Uptime,
-    bool Warming);
+    bool Warming)
+{
+    /// <summary>Tune's rollback state, so a crash revert shows in the status pill; null until the store has opened.</summary>
+    public TuneHealth? Tune { get; init; }
+}
 
 /// <summary><see cref="Installed"/> is whether the driver's device actually opened, not the
 /// registry entry: the entry answers true from a non-elevated shell while every CPU and

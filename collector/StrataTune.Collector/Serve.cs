@@ -16,6 +16,9 @@ internal static class Serve
     private const int ExitOk = 0, ExitFailure = 1, ExitNotElevated = 2;
     private const int TokenBytes = 32;
     private const string WorkerExe = "strata-tune-worker.exe";
+    // The fill-rate cross-check (plan section 8) runs the bench, installed beside this exe
+    // under the same rule as the worker; it is never named on the command line.
+    private const string BenchExe = "strata-tune-bench.exe";
     private static readonly TimeSpan LoopDrain = TimeSpan.FromSeconds(2);
     // The no-orphan rule gives the process 5 s after the UI is gone; a stuck ioctl inside a
     // sampler's Dispose must not spend them.
@@ -94,6 +97,7 @@ internal static class Serve
             Console.Error.WriteLine($"--worker must name {WorkerExe} inside {AppContext.BaseDirectory}");
             return ExitFailure;
         }
+        var benchPath = Path.Combine(Path.GetDirectoryName(workerPath)!, BenchExe);
 
         AppPaths.Configure(handshake, logPath);
         if (HandshakeFile.LiveCollectorPid() is { } live)
@@ -105,7 +109,7 @@ internal static class Serve
         var log = new Log(AppPaths.Log);
         try
         {
-            return RunAsync(parentPid.Value, workerPath, log).GetAwaiter().GetResult();
+            return RunAsync(parentPid.Value, workerPath, benchPath, log).GetAwaiter().GetResult();
         }
         catch (Exception e)
         {
@@ -123,7 +127,7 @@ internal static class Serve
         return path.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase) ? path : null;
     }
 
-    private static async Task<int> RunAsync(int parentPid, string workerPath, Log log)
+    private static async Task<int> RunAsync(int parentPid, string workerPath, string benchPath, Log log)
     {
         var version = typeof(Serve).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0";
         var startedAt = DateTimeOffset.UtcNow.ToString("O");
@@ -141,6 +145,7 @@ internal static class Serve
         var sources = new Sources();
         Lhm.ReportNodeFailure = log.Write;
         Nvml.ReportOffsetsFailure = log.Write;
+        Nvapi.Report = log.Write;
 
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory });
         builder.Logging.ClearProviders();
@@ -153,13 +158,19 @@ internal static class Serve
             Log = log,
             Buffer = buffer,
             Sources = sources,
-            Loads = new LoadRunner(sources, workerPath, log),
+            Loads = new LoadRunner(sources, workerPath, benchPath, log),
+            Tune = new TuneSupervisor(sources, buffer, workerPath, log),
             PawnIoUsable = pawnIo.Usable,
             Version = version,
             StartedAt = startedAt,
             StartedQpc = startedQpc,
             Stopping = app.Lifetime.ApplicationStopping,
         };
+        // The last-resort revert: if this process dies with a candidate on the card (a sampler
+        // thread's unhandled exception, the exit deadline, End Task), the baseline still goes
+        // back on the way out. Abort is idempotent, so the orderly stop below can call it too.
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => state.Tune.Abort();
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => state.Tune.Abort();
         var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(TokenBytes));
         app.UseBearerToken(token);
         Endpoints.Map(app, state);
@@ -200,6 +211,9 @@ internal static class Serve
                     lock (loops)
                         loops.Add(sampler.RunAsync(log, stopping));
                 log.Write($"{T()} NVML {(nvml is null ? "absent" : $"open, driver {nvml.Driver}{(sampler is null ? ", not streaming" : "")}")}");
+                if (nvml is not null)
+                    foreach (var (bus, u) in nvml.UnitsByBus)
+                        log.Write($"{T()} NVAPI units, bus {bus}: shaders {u.Shaders?.ToString() ?? "-"}, SMs {u.Sms?.ToString() ?? "-"}, ROPs {u.Rops?.ToString() ?? "-"}, TMUs {u.Tmus?.ToString() ?? "-"}");
 
                 var lhm = Open("LibreHardwareMonitor", () => new LhmSampler(buffer), log);
                 sources.Lhm = lhm;
@@ -234,21 +248,26 @@ internal static class Serve
             {
                 sources.Warming = false;
                 log.Write($"{T()} warm: every source has had its turn");
+                // After the sources, never before: a crash revert is an NVAPI write, and it must
+                // not sit between the handshake and the first tick on every ordinary start.
+                state.Tune.Reconcile();
             }
         });
         _ = WatchParentAsync();
 
         await app.WaitForShutdownAsync();
         log.Write("stopping: sampling halted");
-        state.Loads.Abort();
-        HandshakeFile.Delete();
-        // From here the OS reclaims everything anyway; closing the sensor tree is a courtesy
-        // that must not outlive the deadline if a driver call has hung inside a sampler.
+        // From here the OS reclaims everything anyway; the deadline is armed before the
+        // aborts so a hung NVAPI call inside the tune restore cannot hold an elevated
+        // process open either (the file stays PENDING and the next start reverts).
         _ = Task.Delay(ShutdownDeadline).ContinueWith(_ =>
         {
-            log.Write("exit 0 (a sampler did not stop in time; leaving it to the OS)");
+            log.Write("exit 0 (a sampler or the tune restore did not stop in time; leaving it to the OS)");
             Environment.Exit(ExitOk);
         });
+        state.Loads.Abort();
+        state.Tune.Abort();
+        HandshakeFile.Delete();
         await Task.WhenAny(warming, Task.Delay(LoopDrain));
         Task[] running;
         lock (loops)

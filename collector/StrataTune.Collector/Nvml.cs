@@ -61,11 +61,12 @@ internal static class Nvml
     private struct Utilization { public uint Gpu, Memory; }
 
     // nvmlPciInfo_t: busIdLegacy[16], domain, bus, device, pciDeviceId, pciSubSystemId,
-    // busId[32]. Only the two ids are read, so the char arrays are left as padding and the
-    // struct stays blittable.
+    // busId[32]. Only the bus (the key the NVAPI unit counts are matched on) and the two ids
+    // are read, so the char arrays are left as padding and the struct stays blittable.
     [StructLayout(LayoutKind.Explicit, Size = 68)]
     private struct PciInfo
     {
+        [FieldOffset(20)] public uint Bus;
         [FieldOffset(28)] public uint PciDeviceId;
         [FieldOffset(32)] public uint PciSubSystemId;
     }
@@ -109,6 +110,7 @@ internal static class Nvml
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetPowerUsage(IntPtr device, out uint milliwatts);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetPowerManagementLimit(IntPtr device, out uint milliwatts);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetPowerManagementLimitConstraints(IntPtr device, out uint minMilliwatts, out uint maxMilliwatts);
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetPowerManagementDefaultLimit(IntPtr device, out uint milliwatts);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetClockInfo(IntPtr device, uint type, out uint mhz);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetTemperature(IntPtr device, uint sensor, out uint celsius);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)] private static extern int nvmlDeviceGetMemoryInfo(IntPtr device, out Memory memory);
@@ -157,7 +159,9 @@ internal static class Nvml
             var driver = new byte[80];
             Check(nvmlSystemGetDriverVersion(driver, (uint)driver.Length), nameof(nvmlSystemGetDriverVersion));
             Check(nvmlDeviceGetCount_v2(out var count), nameof(nvmlDeviceGetCount_v2));
-            return new Session(AsciiZ(driver), count, ResolveReasons(), ResolveClockOffsets());
+            // The unit counts come from NVAPI, once: they cannot change while the driver is
+            // loaded, and a 10 Hz sampler must not initialise NVAPI ten times a second.
+            return new Session(AsciiZ(driver), count, ResolveReasons(), ResolveClockOffsets(), Nvapi.ReadByBus());
         }
         catch
         {
@@ -166,11 +170,14 @@ internal static class Nvml
         }
     }
 
-    internal sealed class Session(string driver, uint count, ReasonsFn? reasons, ClockOffsetsFn? clockOffsets) : IDisposable
+    internal sealed class Session(string driver, uint count, ReasonsFn? reasons, ClockOffsetsFn? clockOffsets, IReadOnlyDictionary<uint, GpuUnits> unitsByBus) : IDisposable
     {
         private readonly Lock _gate = new();
 
         public string Driver { get; } = driver;
+
+        /// <summary>The NVAPI unit counts by PCI bus, for the log line at open; empty when NVAPI gave nothing.</summary>
+        public IReadOnlyDictionary<uint, GpuUnits> UnitsByBus { get; } = unitsByBus;
 
         /// <summary>One GPU that fails a mandatory call (a driver reset in progress, a mobile
         /// part answering NOT_SUPPORTED) is skipped, so a second card never blanks the first.
@@ -185,7 +192,7 @@ internal static class Nvml
                 {
                     try
                     {
-                        list.Add(ReadOne(i, Driver, reasons, clockOffsets));
+                        list.Add(ReadOne(i, Driver, reasons, clockOffsets, UnitsByBus) with { PstateDeltas = i == 0 ? NvapiPstates.Cached() : null });
                     }
                     catch (InvalidOperationException e)
                     {
@@ -226,7 +233,7 @@ internal static class Nvml
             ? Marshal.GetDelegateForFunctionPointer<ClockOffsetsFn>(fn)
             : null;
 
-    private static GpuFacts ReadOne(uint index, string driver, ReasonsFn? reasons, ClockOffsetsFn? clockOffsets)
+    private static GpuFacts ReadOne(uint index, string driver, ReasonsFn? reasons, ClockOffsetsFn? clockOffsets, IReadOnlyDictionary<uint, GpuUnits> unitsByBus)
     {
         Check(nvmlDeviceGetHandleByIndex_v2(index, out var dev), nameof(nvmlDeviceGetHandleByIndex_v2));
         var name = new byte[96];
@@ -250,6 +257,8 @@ internal static class Nvml
         var power = Optional<uint>(nvmlDeviceGetPowerUsage, dev) ?? 0;
         var limit = Optional<uint>(nvmlDeviceGetPowerManagementLimit, dev) ?? 0;
         var maxLimit = OptionalMaxLimit(dev);
+        // The board's default limit is its TDP; the constraints maximum above is the slider's top (the stats card's TDP tile).
+        var defaultLimit = Optional<uint>(nvmlDeviceGetPowerManagementDefaultLimit, dev) ?? 0;
         var util = Optional<Utilization>(nvmlDeviceGetUtilizationRates, dev);
         var bits = reasons is null ? null : Optional<ulong>(reasons.Invoke, dev, "clocks event reasons");
         var pci = Optional<PciInfo>(nvmlDeviceGetPciInfo_v3, dev);
@@ -266,7 +275,11 @@ internal static class Nvml
             new ClocksEventReasons(bits ?? 0, DecodeReasons(bits ?? 0)),
             // pciSubSystemId packs the subsystem device id in the high half and the vendor id in the low half.
             pci is { } p ? new GpuPciSubsystem(p.PciSubSystemId & 0xFFFF, p.PciSubSystemId >> 16) : null,
-            clockOffsets is null ? null : ReadClockOffsets(clockOffsets, dev));
+            clockOffsets is null ? null : ReadClockOffsets(clockOffsets, dev),
+            // Matched on the PCI bus number NVAPI's GetBusId reports; a card NVAPI did not
+            // enumerate, or a driver without nvapi64.dll, has no unit counts rather than zeros.
+            pci is { } q && unitsByBus.TryGetValue(q.Bus, out var units) ? units : null)
+        { PowerDefaultLimitMw = defaultLimit };
     }
 
     /// <summary>Where an offsets call that answers something other than success, INVALID_ARGUMENT

@@ -30,15 +30,18 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\StrataTune.Shared\StrataTune.Shared.csproj" />
-    <!-- Build order only: the worker's output is copied beside this exe below, never referenced. -->
+    <!-- Build order only: the worker's and the bench's outputs are copied beside this exe below, never referenced. -->
     <ProjectReference Include="..\StrataTune.Worker\StrataTune.Worker.csproj" ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\StrataTune.Bench\StrataTune.Bench.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
-  <!-- The worker lives beside the collector in both layouts: publish puts both exes in one
-       folder, and the dev build copies the worker's output here, so the elevated collector
-       starts only the worker installed next to it and never one named on its command line. -->
+  <!-- The worker and the bench live beside the collector in both layouts: publish puts the
+       exes in one folder, and the dev build copies their outputs here, so the elevated
+       collector starts only the programs installed next to it and never one named on its
+       command line. The bench is the fill-rate cross-check's workload (plan section 8). -->
   <Target Name="CopyWorkerBesideCollector" AfterTargets="Build">
     <ItemGroup>
       <WorkerFiles Include="$(MSBuildThisFileDirectory)..\StrataTune.Worker\bin\x64\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\*" />
+      <WorkerFiles Include="$(MSBuildThisFileDirectory)..\StrataTune.Bench\bin\x64\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\*" />
     </ItemGroup>
     <Copy SourceFiles="@(WorkerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>

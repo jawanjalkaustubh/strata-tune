@@ -20,10 +20,11 @@ third is the review re-run after the 20 ms pass change in `BenchRun.cs`:
 
 | Figure | Spec (`gpus.json`, reference design) | This card | Measured | Gap |
 |---|---|---|---|---|
-| Memory bandwidth, best pass | 1792 GB/s (28 Gbps x 512-bit) | ~2027 GB/s: the memory runs at 1979 MHz against the 1750 MHz reference (+229 MHz, HWiNFO, `docs/dependencies.md`) | 1611 / 1595 / 1603 GB/s | −10 % vs spec, **−21 % vs this card's bus** |
+| Memory bandwidth, best pass, memory offset on | 1792 GB/s (28 Gbps x 512-bit) | ~2027 GB/s: the memory runs at 1979 MHz against the 1750 MHz reference (+229 MHz, HWiNFO, `docs/dependencies.md`) | 1611 / 1595 / 1603 GB/s | −10 % vs spec, **−21 % vs this card's bus** |
+| Memory bandwidth, best pass, no offset on the card (polish 2 integrate, in the app) | 1792 GB/s | 1792 GB/s: the driver's ceiling `maxClockMemMhz` 14001 x 2 = 28.0 Gbps, offsets 0 / 0, held 14001 MHz under the sweep | 1463 GB/s (median 1446) | −18 % of this card's ceiling, **+2 % vs the expected copy** |
 | Memory bandwidth, median pass | — | — | 1446 / 1463 / 1449 GB/s | −19 % vs spec |
-| Matmul 4096 fp32, shader cores | 104.8 TFLOPS (21760 x 2 x 2407 MHz) | — | 52.1 / 52.4 / 52.7 TFLOPS | the cs_6_0 kernel is bound by group-shared bandwidth, see `collector/README.md` |
-| Matmul 4096 fp16 storage, float maths | 419 TFLOPS tensor FP16 | — | 54.3 / 58.7 / 58.2 TFLOPS | not comparable: no tensor cores from cs_6_0 |
+| Matmul 4096 fp32, shader cores | 104.8 TFLOPS (21760 x 2 x 2407 MHz) | — | 52.1 / 52.4 / 52.7 TFLOPS; 49.9 in the app at the integrate | the cs_6_0 kernel is bound by group-shared bandwidth, see `collector/README.md` |
+| Matmul 4096 fp16 storage, float maths | 419 TFLOPS tensor FP16 | — | 54.3 / 58.7 / 58.2 TFLOPS; 56.1 in the app at the integrate | not comparable: no tensor cores from cs_6_0 |
 
 The best pass of a 1 GiB copy is the figure the advisor uses (`bench.json` keeps the last
 run per GPU and driver); the median shows the same card 10 % lower once clocks and the
@@ -41,9 +42,18 @@ nobody has measured is estimated at spec x 0.8, and the stats card prints the ex
 rate beside the spec so a measurement reads against the right number ("+12 % vs expected copy"
 on this box, which is the memory offset showing).
 
-The "this card" column above is from HWiNFO by hand; the collector does not yet expose
-`nvmlDeviceGetMaxClockInfo(MEM)`, so the page cannot compute it (plan section 10's three-column
-card is a follow-up once the Phase 1 polish's clock fields land).
+The first "this card" row is from HWiNFO by hand; since the Phase 3 polish 2 (2026-09-16) the
+page computes the column itself (`src/components/advisor/thisCard.ts`): the driver's memory
+ceiling (`clockOffsets.maxClockMemMhz`, 14001 MHz on this card, which NVML reports at half the
+per-pin data rate, so x 2 = 28.0 Gbps, checked against `nvidia-smi -q -d CLOCK`) plus any NVML
+offset, or the higher clock the card was seen holding under load (`useHeldClocks`, so a
+vendor-tool offset the offsets API reads as 0 still shows), x bus width / 8. The second row is
+the integrate's own run in the app with no memory offset on the card (NVAPI P-state deltas 0 / 0,
+NVML offsets 0 / 0, 14001 MHz held): 1463 GB/s is 81.6 % of the 1792 GB/s bus, the ~1425 GB/s
+the paragraph above predicted for a stock clock, and the page reads "−18 % of this card's
+ceiling · +2 % vs expected copy". The 0.8 stream efficiency holds at both clocks, and with the
+offset back on the card the same code shows the held clock (32.1 Gbps, 2052 GB/s, the figures
+`tests/advisor-card.test.tsx` pins from `docs/phase1-verification.md`).
 
 ## Ollama: timed 256-token generations
 

@@ -145,6 +145,7 @@ internal static class ProbeReport
             w.WriteLine($"  Clocks event  0x{g.ClocksEventReasons.Raw:X} → {string.Join(", ", g.ClocksEventReasons.Names)}");
             w.WriteLine($"  Subsystem     {(g.PciSubsystem is { } p ? $"vendor 0x{p.VendorId:X4} device 0x{p.DeviceId:X4}" : "not reported")}");
             w.WriteLine($"  Offsets       {(g.ClockOffsets is { } o ? $"SM {Signed(o.SmMhz)} MHz, MEM {Signed(o.MemMhz)} MHz, driver max SM {Opt(o.MaxClockSmMhz ?? 0)} MHz, MEM {Opt(o.MaxClockMemMhz ?? 0)} MHz" : "no nvmlDeviceGetClockOffsets export")}");
+            w.WriteLine($"  Units (NVAPI) {(g.Units is { } u ? $"shaders {Opt(u.Shaders ?? 0)}, SMs {Opt(u.Sms ?? 0)}, ROPs {Opt(u.Rops ?? 0)}, TMUs {Opt(u.Tmus ?? 0)}" : "no nvapi64.dll, or the card was not found on the NVAPI side")}");
         }
     }
 

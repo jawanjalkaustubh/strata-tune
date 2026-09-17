@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import type { StaticSnapshot, Tick } from '../../collector-types';
 import type { SensorIndex } from './sensors';
 import type { Ring } from './history';
@@ -7,6 +7,9 @@ import { Sparkline } from './Sparkline';
 import { BAR_GRID } from './Bar';
 import { TONE } from './Pill';
 import { systemPower, type SystemPower as Estimate } from '../../analysis/power';
+import { COMFORTABLE, PSU_TRANSIENT_NOTE, psuVerdict, wallWatts } from '../../analysis/psu';
+import { useSettings } from '../useSettings';
+import { PsuForm, psuBadge, psuOf } from '../advisor/PsuForm';
 
 interface Props {
   index: SensorIndex;
@@ -19,10 +22,12 @@ interface Props {
 /**
  * The SYSTEM POWER row (plan §13, shipped in Phase 1): package and board power
  * measured, the rest flat estimates, one bar with the split visible and every
- * part tagged. DC side only: no PSU model yet, so no wall-side figure and the
- * scale is the session's own high-water mark.
+ * part tagged. With the PSU set (the form sits here and on the stats card) the
+ * wall-side figure follows from the 80 PLUS curve, and the session's peak DC
+ * against the rating answers "bigger PSU?" in one line once it passes 70 %.
  */
 export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, panel }) => {
+  const psu = psuOf(useSettings());
   const ids = useMemo(() => {
     const cpu = index.hardware(/^cpu$/i);
     const io = index.hardware(/^(SuperIO|EmbeddedController)$/i);
@@ -45,6 +50,9 @@ export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, pane
     });
 
   const now = estimate(tick);
+  // The ring holds a minute; the PSU verdict wants the whole session's peak, kept across renders.
+  const sessionPeak = useRef(0);
+  sessionPeak.current = Math.max(sessionPeak.current, now.totalW);
   if (now.measuredW === 0) return null;
   const high = Math.max(ring.high((t) => estimate(t).totalW), now.totalW);
   const max = Math.max(high * 1.2, 400);
@@ -52,9 +60,20 @@ export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, pane
   const measured = now.parts.filter((p) => p.tag === 'measured');
   const estimated = now.parts.filter((p) => p.tag === 'estimated');
   const part = (p: { label: string; watts: number }) => `${p.label} ${p.watts.toFixed(0)} W`;
+  const verdict = psu ? psuVerdict(sessionPeak.current, psu.watts) : null;
 
   return (
-    <Panel kind="System power" {...panel}>
+    <Panel
+      kind="System power"
+      {...panel}
+      aside={
+        psu ? (
+          <span className="figure text-[12px] text-studio-muted whitespace-nowrap" title={`${PSU_TRANSIENT_NOTE} The 80 PLUS ${psuBadge(psu.rating)} minimum curve at this load; real units do a little better.`}>
+            ≈ {wallWatts(now.totalW, psu.watts, psu.rating).toFixed(0)} W at the wall <span className="text-studio-subtle">(est., {psuBadge(psu.rating)})</span>
+          </span>
+        ) : undefined
+      }
+    >
       <div className={BAR_GRID}>
         <span className="label truncate">Total</span>
         <div className="min-w-0 py-1">
@@ -70,6 +89,18 @@ export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, pane
       <p className="text-micro text-studio-subtle pl-0.5">
         <span className={TONE.ok.text}>measured</span> {measured.map(part).join(' · ')} <span className="mx-1 text-studio-border-light">|</span>
         <span className="text-slate-400">estimated</span> {estimated.map(part).join(' · ')}
+      </p>
+      <p className="text-micro text-studio-subtle pl-0.5 flex items-center gap-2 flex-wrap">
+        <span className="label">PSU</span>
+        <PsuForm />
+        {verdict && (
+          <span title={PSU_TRANSIENT_NOTE}>
+            {verdict.loadFraction > COMFORTABLE
+              ? verdict.sentence
+              : `headroom fine: peak ${sessionPeak.current.toFixed(0)} W DC this session, ${Math.round(verdict.loadFraction * 100)} % of the rating`}
+          </span>
+        )}
+        {!psu && <span>for the wall-side figure and the headroom verdict</span>}
       </p>
     </Panel>
   );

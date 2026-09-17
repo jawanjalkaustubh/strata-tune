@@ -8,6 +8,9 @@ public enum LoadKind
     [JsonStringEnumMemberName("heavy")] Heavy,
     /// <summary>The all-logical-CPU vector FMA (logistic map) kernel; the GPU is left alone.</summary>
     [JsonStringEnumMemberName("cpu")] Cpu,
+    /// <summary>The bench's --fillrate mode instead of the worker: full-screen quads as fast as
+    /// the card writes pixels, GPU sampled like the worker kinds so the pixel rate has its clock.</summary>
+    [JsonStringEnumMemberName("fillrate")] FillRate,
 }
 
 public enum LoadRunState
@@ -31,7 +34,13 @@ public sealed record LoadRun(
     long? QpcEnd,
     IReadOnlyList<GpuSample> GpuSamples,
     IReadOnlyList<CpuSample> CpuSamples,
+    FillRateResult? FillRate,
     string? Error);
+
+/// <summary>The bench's one --fillrate --json line, as printed: pixels per wall second over
+/// <see cref="Seconds"/> of measurement (the warm-up is not counted), the frames that made
+/// them and the offscreen target they were drawn into. Null for every other kind.</summary>
+public sealed record FillRateResult(double PixelsPerSecond, double Seconds, int Frames, int Width, int Height);
 
 /// <summary>GPU 0 at 2 Hz for the run's duration, so the caller can judge the steady window (t ≥ 3 s) against the start.</summary>
 public sealed record GpuSample(

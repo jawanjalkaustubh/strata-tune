@@ -16,5 +16,6 @@
   <ItemGroup>
     <!-- Compiled at start-up with d3dcompiler_47 (ships with Windows), so the build needs no shader toolchain. -->
     <EmbeddedResource Include="Scene.hlsl" LogicalName="Scene.hlsl" />
+    <EmbeddedResource Include="Fill.hlsl" LogicalName="Fill.hlsl" />
   </ItemGroup>
 </Project>

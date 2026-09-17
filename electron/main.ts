@@ -6,6 +6,7 @@ import { CollectorClient } from './collector';
 import { registerAdvisorIpc } from './bench';
 import { registerHistoryIpc } from './history';
 import { CaptureController, registerCaptureIpc } from './capture';
+import { registerTuneIpc } from './tune';
 import { GameMode } from './game-mode';
 import type { CollectorState } from '../src/api';
 import type { LoadKind, Tick } from '../src/collector-types';
@@ -364,7 +365,7 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       // work (Ctrl+W closes, Ctrl+R reloads mid-session, F11, Ctrl+Shift+I).
       Menu.setApplicationMenu(null);
       registerIpc();
-      registerAdvisorIpc(ipcMain);
+      registerAdvisorIpc(ipcMain, () => collector);
       registerCapture();
       registerHistoryIpc(ipcMain);
       createWindow();
@@ -372,6 +373,9 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       // Audit page shows with a Retry, not a failure of the app.
       collector = new CollectorClient();
       registerCollectorIpc(collector);
+      registerTuneIpc(ipcMain, collector, (channel, payload) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+      });
       collector.start().catch((e) => console.error('[collector] start failed:', e));
     })
     .catch((e) => fatal('Startup failed', e));

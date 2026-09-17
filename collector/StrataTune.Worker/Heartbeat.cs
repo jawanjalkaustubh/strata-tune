@@ -44,7 +44,14 @@ internal sealed class Heartbeat : IDisposable
         }
     }
 
-    private void Write() => File.WriteAllText(path, $"{Environment.ProcessId} {DateTime.UtcNow:O}\n");
+    // Shares read, write and delete so the supervisor's 2 Hz read never collides with a
+    // write (a sharing violation on either side read as a dead heartbeat before).
+    private void Write()
+    {
+        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        using var writer = new StreamWriter(stream);
+        writer.Write($"{Environment.ProcessId} {DateTime.UtcNow:O}\n");
+    }
 
     public void Dispose() => timer.Dispose();
 }

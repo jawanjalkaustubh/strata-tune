@@ -185,4 +185,27 @@ Ryzen 9 9950X (32 logical CPUs), MSI MAG X870E TOMAHAWK WIFI (MS-7E59) BIOS 2.A6
 - **This card runs above every reference number** (user's custom OC on the Astral LC OC): memory
   1979 MHz (stock 1750) → ~31.7 Gbps → ~2,026 GB/s theoretical vs the 1,792 GB/s spec; core held
   3,204–3,225 MHz under heavy load vs 2,580 rated / 2,407 reference. Any "measured exceeds spec"
-  check must use live clocks as the ceiling, not the table.
+  check must use live clocks as the ceiling, not the table. The 1979 MHz is HWiNFO's reading at
+  the moment above (an earlier snapshot of the offset); NVML at the Phase 1 verification read
+  16032 MHz (÷ 8 = 2004 MHz, 32.1 Gbps, 2052 GB/s), which is what the app, README and tests
+  pin — a 25 MHz difference in offset between two moments, not a unit error (the reference
+  ceiling reads 14001 = 28 Gbps either way; 7001 is the idle half-rate P-state).
+- **HWiNFO is closed-source freeware** (Pro tier paid; OEM licensing for bundling), not open
+  source: it cannot be built on or shipped. LibreHardwareMonitor (MPL-2.0) is the open base we
+  use; HWiNFO is reachable only through its documented shared-memory interface when the user
+  runs it (plan section 9b).
+- **NVAPI unit counts**: NVML has no shader/ROP/TMU counts. GPU-Z and HWiNFO read them through
+  NVAPI (`NvAPI_GPU_GetGpuCoreCount`, public; `NvAPI_GPU_GetROPCount`, a private interface id
+  verified against open-source readers before use). This is the basis of the missing-ROPs check.
+  Measured 2026-09-16 on driver 616.92 through `Nvapi.cs` (ids verified against falahati/NvAPIWrapper
+  and arcnmx/nvapi-rs, the public ones also against LibreHardwareMonitor; `GetROPCount` = 0xFDC129FA):
+  shaders 21760, SMs 170, ROPs 176, TMUs 680 on the Astral LC OC — HWiNFO's figures exactly.
+  `NvAPI_GPU_GetTotalSMCount` answers NVAPI_NOT_SUPPORTED on 616.92, so SMs come from the TPC count
+  (`GetShaderSubPipeCount` 85 × 2). The fill-rate cross-check (`strata-tune-bench --fillrate --seconds 6
+  --json`, 64 full-screen quads per frame into a 4096² RGBA8 target) read 456.5 GPixel/s over 6.007 s
+  (2554 frames) with the SM clock held at 2993 MHz: 0.867 of the 176-ROP ceiling (526.8 GPixel/s,
+  band 448–527 with the band's floor at the 0.85 achieved fraction, so that a 168-ROP card at this
+  very efficiency, 0.827 of the 176 ceiling, is flagged rather than passed), i.e. consistent with
+  176 ROPs; the 168-ROP band at that clock is 427–503, so this reading fits both, the line says
+  so, and the cross-check is a consistency test, never a count.
+- **PSU: Lian Li Edge 1300 W, 80 PLUS Platinum** (user, 2026-09-16). Settings must read psuWatts 1300 / psuRating 'platinum' on this box — a pass that entered Gold as a placeholder must be corrected.

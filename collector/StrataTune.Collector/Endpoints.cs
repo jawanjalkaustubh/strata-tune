@@ -46,6 +46,39 @@ internal static class Endpoints
         app.MapGet("/load/{id}", (string id) => state.Loads.Get(id) is { } run
             ? Json(run, WireJson.Default.LoadRun)
             : Error(StatusCodes.Status404NotFound, "no such load run"));
+
+        MapTune(app, state.Tune);
+    }
+
+    // Plan section 16: every reply carries the whole status, so the page never needs a second
+    // round trip to learn what a POST did to the state file.
+    private static void MapTune(WebApplication app, TuneSupervisor tune)
+    {
+        IResult Status() => Json(tune.Status(), WireJson.Default.TuneStatus);
+        IResult Outcome((bool Ok, string Message) r) => r.Ok ? Status() : Error(TuneSupervisor.Conflict, r.Message);
+
+        app.MapGet("/tune/state", Status);
+        app.MapPost("/tune/enable", (TuneEnableRequest request) => Outcome(tune.SetEnabled(request)));
+        app.MapPost("/tune/start", async (TuneStartRequest request) =>
+        {
+            var (status, refusal) = await tune.TryStartAsync(request);
+            return status == StatusCodes.Status200OK ? Status() : Error(status, refusal);
+        });
+        // The validate run is a kind of start; the client spells it as its own route.
+        app.MapPost("/tune/validate", async () =>
+        {
+            var (status, refusal) = await tune.TryStartAsync(new TuneStartRequest(TuneRunKind.Validate, null, null));
+            return status == StatusCodes.Status200OK ? Status() : Error(status, refusal);
+        });
+        app.MapPost("/tune/stop", () => Outcome(tune.Stop()));
+        app.MapPost("/tune/keep", () => Outcome(tune.Keep()));
+        app.MapPost("/tune/revert", () => Outcome(tune.Revert()));
+        app.MapGet("/tune/export", () => tune.Export() is { } export
+            ? Json(export, WireJson.Default.TuneExport)
+            : Error(StatusCodes.Status404NotFound, "no result yet: run a hunt first"));
+        app.MapGet("/tune/flight", () => FlightRecorder.ReadLastCrash() is { } ndjson
+            ? Results.Text(ndjson, "application/x-ndjson")
+            : Error(StatusCodes.Status404NotFound, "no flight file: no crash has been found at a start"));
     }
 
     private static IResult Json<T>(T value, JsonTypeInfo<T> typeInfo) => Results.Json(value, typeInfo);

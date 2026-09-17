@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using StrataTune.Shared;
 
 namespace StrataTune.Collector;
@@ -8,8 +9,11 @@ namespace StrataTune.Collector;
 /// starts until it exits, so the audit can judge the steady window (t ≥ 3 s) against the
 /// start and the first sample is the idle reference. The worker is the one beside this exe
 /// (<see cref="Serve"/> resolves it), inherits this process's token (plan section 5), and
-/// its exit code is reported as is: 0 ok, 3 no hardware GPU, 10 device lost.</summary>
-internal sealed class LoadRunner(Sources sources, string workerPath, Log log)
+/// its exit code is reported as is: 0 ok, 3 no hardware GPU, 10 device lost. The fillrate
+/// kind starts the bench beside this exe instead (--fillrate --json), samples the GPU the
+/// same way, and keeps the bench's result line, so the pixel rate and the SM clock it was
+/// measured at travel together (the missing-ROPs cross-check, plan section 8).</summary>
+internal sealed class LoadRunner(Sources sources, string workerPath, string benchPath, Log log)
 {
     public enum Start { Started, Busy, Rejected }
 
@@ -36,8 +40,9 @@ internal sealed class LoadRunner(Sources sources, string workerPath, Log log)
         public Process? Process { get; set; }
         public List<GpuSample> Samples { get; } = [];
         public List<CpuSample> CpuSamples { get; } = [];
+        public FillRateResult? FillRate { get; set; }
 
-        public LoadRun Snapshot() => new(Id, Kind, Seconds, State, ExitCode, QpcStart, QpcEnd, Samples.ToList(), CpuSamples.ToList(), Error);
+        public LoadRun Snapshot() => new(Id, Kind, Seconds, State, ExitCode, QpcStart, QpcEnd, Samples.ToList(), CpuSamples.ToList(), FillRate, Error);
     }
 
     public Start TryStart(LoadRunRequest request, out LoadRun? run, out string refusal)
@@ -48,9 +53,10 @@ internal sealed class LoadRunner(Sources sources, string workerPath, Log log)
             refusal = $"seconds must be 1..{MaxSeconds}";
             return Start.Rejected;
         }
-        if (!File.Exists(workerPath))
+        var exe = Executable(request.Kind);
+        if (!File.Exists(exe))
         {
-            refusal = $"worker not found: {workerPath}";
+            refusal = $"{Program(request.Kind)} not found: {exe}";
             return Start.Rejected;
         }
 
@@ -104,31 +110,45 @@ internal sealed class LoadRunner(Sources sources, string workerPath, Log log)
         }
     }
 
+    private string Executable(LoadKind kind) => kind == LoadKind.FillRate ? benchPath : workerPath;
+
+    private static string Program(LoadKind kind) => kind == LoadKind.FillRate ? "bench" : "worker";
+
     private async Task RunAsync(ActiveRun run)
     {
         var heartbeat = Path.Combine(Path.GetTempPath(), $"strata-tune-load-{run.Id}.heartbeat");
-        var kind = run.Kind switch { LoadKind.Light => "light", LoadKind.Heavy => "heavy", _ => "cpu" };
-        var info = new ProcessStartInfo(workerPath)
+        var kind = run.Kind switch { LoadKind.Light => "light", LoadKind.Heavy => "heavy", LoadKind.FillRate => "fillrate", _ => "cpu" };
+        var exe = Executable(run.Kind);
+        var info = new ProcessStartInfo(exe)
         {
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        if (run.Kind == LoadKind.Cpu)
+        switch (run.Kind)
         {
-            info.ArgumentList.Add("--cpu-load");
-        }
-        else
-        {
-            info.ArgumentList.Add("--load");
-            info.ArgumentList.Add(kind);
+            case LoadKind.Cpu:
+                info.ArgumentList.Add("--cpu-load");
+                break;
+            case LoadKind.FillRate:
+                info.ArgumentList.Add("--fillrate");
+                info.ArgumentList.Add("--json");
+                break;
+            default:
+                info.ArgumentList.Add("--load");
+                info.ArgumentList.Add(kind);
+                break;
         }
         info.ArgumentList.Add("--seconds");
         info.ArgumentList.Add(run.Seconds.ToString());
-        info.ArgumentList.Add("--heartbeat");
-        info.ArgumentList.Add(heartbeat);
-        log.Write($"load {run.Id}: {kind} for {run.Seconds} s, worker {workerPath}");
+        // The bench has no heartbeat flag: its window and the deadline below are its liveness.
+        if (run.Kind != LoadKind.FillRate)
+        {
+            info.ArgumentList.Add("--heartbeat");
+            info.ArgumentList.Add(heartbeat);
+        }
+        log.Write($"load {run.Id}: {kind} for {run.Seconds} s, {Program(run.Kind)} {exe}");
 
         try
         {
@@ -155,14 +175,21 @@ internal sealed class LoadRunner(Sources sources, string workerPath, Log log)
             }
 
             await process.WaitForExitAsync();
-            await stdout;
+            var output = await stdout;
             var error = (await stderr).Trim();
+            // The bench promises exactly one JSON line on stdout; a run that ended 0 without
+            // it has nothing to pair with the clock samples and is a failure, not a done run.
+            var fillRate = run.Kind == LoadKind.FillRate && process.ExitCode == 0 ? ParseFillRate(output) : null;
+            var ok = process.ExitCode == 0 && (run.Kind != LoadKind.FillRate || fillRate is not null);
             lock (_gate)
             {
                 run.ExitCode = process.ExitCode;
                 run.QpcEnd = Stopwatch.GetTimestamp();
-                run.State = process.ExitCode == 0 ? LoadRunState.Done : LoadRunState.Failed;
-                run.Error = process.ExitCode == 0 ? null : $"worker exited {process.ExitCode}: {error}";
+                run.State = ok ? LoadRunState.Done : LoadRunState.Failed;
+                run.FillRate = fillRate;
+                run.Error = ok ? null
+                    : process.ExitCode == 0 ? "the bench exited 0 without its result line"
+                    : $"{Program(run.Kind)} exited {process.ExitCode}: {error}";
             }
             var count = run.Kind == LoadKind.Cpu ? $"{run.CpuSamples.Count} CPU samples" : $"{run.Samples.Count} GPU samples";
             log.Write($"load {run.Id}: exit {process.ExitCode}, {count}{(error.Length > 0 ? $", stderr: {error}" : "")}");
@@ -189,6 +216,24 @@ internal sealed class LoadRunner(Sources sources, string workerPath, Log log)
             {
             }
         }
+    }
+
+    private static FillRateResult? ParseFillRate(string stdout)
+    {
+        foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Reverse())
+        {
+            if (!line.StartsWith('{'))
+                continue;
+            try
+            {
+                return JsonSerializer.Deserialize(line, WireJson.Default.FillRateResult);
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+        return null;
     }
 
     private void Sample(ActiveRun run)

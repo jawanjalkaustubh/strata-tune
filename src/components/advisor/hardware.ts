@@ -1,4 +1,4 @@
-import type { SensorMeta, SensorRow, StaticSnapshot, Volume } from '../../collector-types';
+import type { GpuFacts, SensorMeta, SensorRow, StaticSnapshot, Volume } from '../../collector-types';
 import { DEFAULT_RAM_BANDWIDTH_GBS, ramBandwidthFromModules } from '../../analysis/advisor';
 
 const MIB = 1024 ** 2;
@@ -8,6 +8,8 @@ const GIB = 1024 ** 3;
 export interface HardwareFacts {
   source: 'collector' | 'picker';
   gpuName: string;
+  /** The driver's facts for the card in the slot (power limits, clocks, ceilings): what "this card" means on the stats card. null standalone. */
+  gpu: GpuFacts | null;
   cpuName: string | null;
   driver: string | null;
   vramBytes: number;
@@ -44,6 +46,7 @@ export function factsFromSnapshot(s: StaticSnapshot, freeRam: number | null, mod
   return {
     source: 'collector',
     gpuName: gpu?.name ?? 'No NVML GPU',
+    gpu: gpu ?? null,
     cpuName: s.cpu.name,
     driver: s.gpuDriver.version || gpu?.driver || null,
     vramBytes: (gpu?.vram.totalMiB ?? 0) * MIB,
@@ -69,6 +72,7 @@ export function factsFromPicker(p: PickerChoice, vramGiB: number): HardwareFacts
   return {
     source: 'picker',
     gpuName: p.gpuName,
+    gpu: null,
     cpuName: null,
     driver: null,
     vramBytes: vramGiB * GIB,

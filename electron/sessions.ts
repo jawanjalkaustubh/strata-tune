@@ -7,7 +7,8 @@
  * written as they arrive, so the writer holds nothing however long the capture;
  * a load reads the whole folder back into one CaptureSession for the analysis,
  * and that one does sit in memory. Deleting a session moves its folder to
- * .trash; only a capture that saw no frames is removed outright.
+ * .trash, and only "Empty trash" (behind a confirm) removes anything for good;
+ * a capture that saw no frames is the one thing removed outright.
  */
 import * as fs from 'fs';
 import * as os from 'os';
@@ -15,6 +16,8 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import type { HogsResult, SensorRow, StaticSnapshot } from '../src/collector-types';
 import type { CaptureSession, FrameRow, GpuSample } from '../src/analysis/session-types';
+import { benchSegments } from '../src/analysis/stutter';
+import type { BenchSummary } from './bench-run';
 
 const SESSION_EXT = '.stsession';
 const TRASH = '.trash';
@@ -27,7 +30,7 @@ export interface SessionMeta {
   startedAt: string;
   endedAt: string;
   game: CaptureSession['game'];
-  /** 'manual', 'process:<name>', 'fullscreen' or 'hotkey' (Game Mode's words). */
+  /** 'manual', 'bench' (the built-in stutter bench), or Game Mode's words: 'process:<name>', 'fullscreen', 'hotkey'. */
   trigger: string;
   qpcFrequency: number;
   /** QPC of the first and last frame. */
@@ -42,6 +45,8 @@ export interface SessionMeta {
   notes: string[];
   /** The report headline, written back once the renderer has analysed the session. */
   verdict: string | null;
+  /** The bench's own --json line for a 'bench' session (plan section 11a); absent otherwise. */
+  benchSummary?: BenchSummary | null;
 }
 
 /** What the list shows per session. */
@@ -59,6 +64,7 @@ export interface SessionListItem {
 export const sessionsDir = () => path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune', 'sessions');
 
 const folderOf = (id: string) => path.join(sessionsDir(), id + SESSION_EXT);
+const trashDir = () => path.join(sessionsDir(), TRASH);
 
 /** Ids are folder names of our own making; anything else is refused before it reaches the filesystem. */
 function checkId(id: string): string {
@@ -121,10 +127,6 @@ export class SessionWriter {
     this.frames = new NdjsonGz(path.join(this.dir, FILES.frames));
     this.sensors = new NdjsonGz(path.join(this.dir, FILES.sensors));
     this.gpu = new NdjsonGz(path.join(this.dir, FILES.gpu));
-  }
-
-  get frameCount(): number {
-    return this.frames.rows;
   }
 
   writeFrames(rows: readonly FrameRow[]): void {
@@ -225,7 +227,9 @@ export function load(id: string): CaptureSession {
     snapshot: meta.snapshot,
     gpuTimeline: readNdjsonGz<GpuSample>(path.join(dir, FILES.gpu)),
     hogs: meta.hogs ?? null,
-    notes: meta.notes
+    notes: meta.notes,
+    // The bench's own segment timings reach the classifier's bench check (plan section 11a); a game capture has none.
+    benchSummary: meta.benchSummary ? { script: meta.benchSummary.script, segments: benchSegments(meta.benchSummary.segments) } : null
   };
 }
 
@@ -244,9 +248,35 @@ export function setVerdict(id: string, verdict: string): void {
 /** Moves the folder into sessions/.trash; a same-named folder already there gets a suffix, nothing is overwritten. */
 export function remove(id: string): void {
   const from = folderOf(checkId(id));
-  const trash = path.join(sessionsDir(), TRASH);
+  const trash = trashDir();
   fs.mkdirSync(trash, { recursive: true });
   let to = path.join(trash, id + SESSION_EXT);
   for (let n = 2; fs.existsSync(to); n++) to = path.join(trash, `${id}-${n}${SESSION_EXT}`);
   fs.renameSync(from, to);
+}
+
+/** Session folders waiting in .trash. */
+export function trashCount(): number {
+  try {
+    return fs.readdirSync(trashDir(), { withFileTypes: true }).filter((e) => e.isDirectory() && e.name.endsWith(SESSION_EXT)).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Removes every session folder in .trash for good; the count taken. Only session folders, nothing else that may have landed there. */
+export function emptyTrash(): number {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(trashDir(), { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const e of entries) {
+    if (!e.isDirectory() || !e.name.endsWith(SESSION_EXT)) continue;
+    fs.rmSync(path.join(trashDir(), e.name), { recursive: true, force: true });
+    removed++;
+  }
+  return removed;
 }

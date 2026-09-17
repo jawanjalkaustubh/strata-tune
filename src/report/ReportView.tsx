@@ -4,6 +4,8 @@ import { LOGO_DATA_URL } from '../assets/logo';
 import { FrameTimeChart, dotTone } from './FrameTimeChart';
 import { causeText, engineSentence, headline, pct } from './causes';
 import type { BenchCheck, BenchCheckRow, BoundVerdict, CauseShare, Measurements, SessionSummary, StutterReport } from './report-types';
+import benchmarks from '../data/benchmarks.json';
+import { benchSegmentLabel } from '../components/capture/LiveFrames';
 import './report.css';
 
 interface Props {
@@ -149,7 +151,7 @@ const BenchTable: React.FC<{ check: BenchCheck }> = ({ check }) => (
       <tbody>
         {check.rows.map((r) => (
           <tr key={r.segment} className={r.scored ? '' : 'unscored'}>
-            <td>{r.segment}</td>
+            <td>{benchSegmentLabel(r.segment)}</td>
             <td className="figure">
               {r.startS}–{r.endS} s
             </td>
@@ -217,6 +219,23 @@ const Table: React.FC<{ m: Measurements }> = ({ m }) => (
 const causesLabel = (fine: boolean, stutters: number) =>
   fine ? `The ${stutters === 1 ? 'one stutter' : `${stutters} stutters`}, for the record` : 'What caused it — share of lost time';
 
+/** A typical frame this far over the bench's cap period was not the bench's own pacing. */
+const COMPOSED_SLACK = 1.25;
+
+/**
+ * Plan §11a promises bench runs compare across runs; one the desktop composed does not
+ * (the window came up behind others: DWM paces its presents at the display's refresh, 64 fps
+ * against the 120 fps cap on the dev box). Said once under the verdict; null for a game or
+ * a bench in front.
+ */
+const composedNote = (s: SessionSummary, m: Measurements) => {
+  if (!s.bench) return null;
+  const composed = s.presentMode?.startsWith('Composed') || (benchmarks.builtIn.fpsCap > 0 && m.typicalMs > (1000 / benchmarks.builtIn.fpsCap) * COMPOSED_SLACK);
+  return composed
+    ? 'The bench window was composed by the desktop (not in front): frame pacing is the compositor’s, so this run is not comparable — keep the bench window in front and run again.'
+    : null;
+};
+
 /** The level-load note for the footer: how many of the captured frames the analysis skipped. */
 const skipNote = (s: SessionSummary) => {
   if (s.framesCaptured === undefined) return null;
@@ -239,6 +258,7 @@ export const ReportView: React.FC<Props> = ({ report, session, brand = true }) =
   const short = report.verdict === 'short';
   const fine = report.verdict === 'fine';
   const skip = skipNote(session);
+  const composed = short ? null : composedNote(session, m);
   return (
     <div className="rp">
       <div className="rp-page">
@@ -268,6 +288,7 @@ export const ReportView: React.FC<Props> = ({ report, session, brand = true }) =
           <div className="label">Verdict</div>
           <h1>{h.title}</h1>
           <p>{h.summary}</p>
+          {composed && <p>{composed}</p>}
           {!short && (
             <div className="rp-figures">
               <div>

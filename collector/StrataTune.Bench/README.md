@@ -35,6 +35,7 @@ is the same on every card and the hitches stand out against a machine-independen
 ```
 strata-tune-bench [--script full|short] [--vsync] [--vram-target PERCENT] [--fps-cap N]
                   [--width W] [--height H] [--adapter LUID] [--json] [--debug]
+strata-tune-bench --fillrate [--seconds N] [--width W] [--height H] [--adapter LUID] [--json] [--debug]
 ```
 
 | Flag | Default | Meaning |
@@ -47,6 +48,8 @@ strata-tune-bench [--script full|short] [--vsync] [--vram-target PERCENT] [--fps
 | `--adapter LUID` | DXGI high-performance adapter | the luid `strata-tune-worker --devices` prints; the same number the summary reports |
 | `--json` | | one JSON line on stdout at exit, nothing else on stdout |
 | `--debug` | | D3D12 debug layer when the Graphics Tools feature is installed; its messages land on stderr at exit |
+| `--fillrate` | | the pixel-rate measurement instead of the script (below); `--vsync`, `--vram-target`, `--fps-cap` and `--script` do not apply |
+| `--seconds N` | 6 | seconds of measured fill after the 1 s warm-up, 1–60; only with `--fillrate` |
 
 Esc or the close button ends the run early.
 
@@ -66,6 +69,46 @@ With `--json` the same as one line, member order fixed:
 `avgGpuMs` is the GPU time of the bench's own command list per frame (timestamp queries);
 `heavyIterations` is where the gpu-load controller settled, a rough speed figure for the card.
 `pid` is what a PresentMon host passes to `--process_id`.
+
+## The fill-rate mode (plan §8, the missing-ROPs cross-check)
+
+`--fillrate` is a second workload in the same process, for one question: how many pixels per
+second does this card write? Early RTX 50-series batches shipped with a raster engine disabled
+(a 5090 with 168 ROPs instead of 176, about 4 % slower; NVIDIA confirmed it in February 2025),
+and while the collector reads the ROP count directly through NVAPI, a driver that refuses that
+private call leaves the audit with this measurement instead.
+
+Each frame draws 64 full-screen quads (one oversized triangle each, `Fill.hlsl`) into a
+4096×4096 RGBA8 offscreen target with a constant-colour pixel shader, no blend and no depth.
+That is 1.07 Gpixel per frame: about 2 ms on a 5090, tens of milliseconds on a small laptop
+part, far under the 2 s TDR budget with three frames in flight. After a 1 s warm-up the queue
+is drained, the clock starts, frames are submitted until `--seconds` have passed, the queue is
+drained again and the clock stops, so every counted pixel was written inside the measured span.
+
+The measured frames never touch the swapchain (`Gpu.BeginOffscreen`, fence-bounded at three in
+flight like any frame): the audit starts this mode from the collector while Strata Tune holds
+the foreground, so the window comes up behind it and the desktop composes it, and a composed
+window's `Present` is throttled to the display's refresh — 64 quads × 16.8 Mpixel × 60 Hz is
+~64 GPixel/s, a tenth of a 5090, and the cross-check would answer "did not reach the raster
+limit" every time. The window is presented at most every 50 ms, one small uncounted quad, only
+to show the run is alive; a 60 Hz compositor never queues a present at 20 Hz, so `Present`
+returns at once and paces nothing.
+
+The bench is deliberately NVML-free and prints only what it measured:
+
+```
+{"pixelsPerSecond":461000000000,"seconds":6.004,"frames":2580,"width":4096,"height":4096}
+```
+
+The collector's load runner (`POST /load { kind: "fillrate", seconds }`) starts this mode,
+samples the SM clock at 2 Hz while it runs and keeps the line as `LoadRun.fillRate`;
+`src/analysis/gpuUnits.ts` divides the two, because the raster back end writes at most one
+32-bit pixel per ROP per clock, and judges the result against the reference count's band
+(85–100 % of ROPs × clock) and the band of the next lower plausible count. A 4.5 % question is
+never decided from a bare number: the audit line always carries its band, and a reading that
+fits no band is "no conclusion".
+
+Esc, the close button and Ctrl+C end the run early with exit 2; the JSON line is still printed.
 
 ## Exit codes
 

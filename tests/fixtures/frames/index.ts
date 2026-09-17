@@ -62,6 +62,28 @@ export function spikesAt(marks: number[], ms: number, kind: Kind = 'wait'): (t: 
   };
 }
 
+/** A seeded PRNG (mulberry32) in [0, 1), so a test on random spacing is the same run every time. */
+function seeded(seed: number): () => number {
+  let a = seed | 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Stutter times at random gaps of `minS` to `maxS`, `count` of them from `fromS`. */
+export function randomMarks(seed: number, count: number, minS: number, maxS: number, fromS = 10): number[] {
+  const rnd = seeded(seed);
+  const out: number[] = [];
+  for (let t = fromS, k = 0; k < count; k++) {
+    out.push(Number(t.toFixed(3)));
+    t += minS + (maxS - minS) * rnd();
+  }
+  return out;
+}
+
 export function marks(from: number, to: number, step: number): number[] {
   const out: number[] = [];
   for (let t = from; t < to; t += step) out.push(Number(t.toFixed(3)));

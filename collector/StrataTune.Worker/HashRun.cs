@@ -24,12 +24,21 @@ internal static class HashRun
 
     public static HashResult Run(GraphicsDevice device, int elements, int rounds, uint seed)
     {
+        using ReadWriteBuffer<uint> slots = device.AllocateReadWriteBuffer<uint>(elements, AllocationMode.Clear);
+
+        return Run(device, slots, rounds, seed, new uint[Math.Min(ReadbackChunk, elements)]);
+    }
+
+    /// <summary>The same run over a cleared buffer the caller keeps, with the readback
+    /// scratch it keeps too: the ladder's verified pass repeats this many times a second and
+    /// must not allocate a GPU buffer and a large-object array every time.</summary>
+    public static HashResult Run(GraphicsDevice device, ReadWriteBuffer<uint> slots, int rounds, uint seed, uint[] chunk)
+    {
+        int elements = slots.Length;
         int slice = Math.Min(elements, MaxSlice);
         int roundsPerDispatch = (int)Math.Clamp(StepsPerDispatch / slice, 1, rounds);
         int dispatches = 0;
         int passes = 0;
-
-        using ReadWriteBuffer<uint> slots = device.AllocateReadWriteBuffer<uint>(elements, AllocationMode.Clear);
 
         // The driver compiles the DXIL on the first dispatch of a process (~150 ms cold, then
         // served from its cache); a zero-round pass leaves the data untouched and keeps that
@@ -59,7 +68,7 @@ internal static class HashRun
         TimeSpan elapsed = Stopwatch.GetElapsedTime(started);
 
         return new HashResult(
-            Fold(slots, elements),
+            Fold(slots, elements, chunk),
             dispatches,
             elapsed,
             BytesTouched: 2L * sizeof(uint) * elements * passes,
@@ -68,9 +77,8 @@ internal static class HashRun
 
     // FNV-1a 64 over the little-endian bytes of the buffer, read back in chunks so a large
     // run never needs one managed array the size of the GPU buffer.
-    private static ulong Fold(ReadWriteBuffer<uint> slots, int elements)
+    private static ulong Fold(ReadWriteBuffer<uint> slots, int elements, uint[] chunk)
     {
-        uint[] chunk = new uint[Math.Min(ReadbackChunk, elements)];
         ulong hash = 0xCBF29CE484222325;
 
         for (int offset = 0; offset < elements; offset += chunk.Length)

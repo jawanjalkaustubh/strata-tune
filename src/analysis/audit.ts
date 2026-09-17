@@ -11,7 +11,10 @@
  * never opened a BIOS.
  */
 import type { HogsResult, LoadRun, StaticSnapshot } from '../collector-types';
+import { boardPartnerOf } from '../components/monitor/vendors';
 import { cpuSpec } from './cpuSpec';
+import { fillRateEstimate } from './gpuUnits';
+import { lookupGpu } from './hardware-tables';
 import { cleanPartNumber, ratedSpeedFor } from './kits';
 import { hasAny, hasBit, SW_POWER_CAP, THERMAL_OR_BRAKE } from './nvmlBits';
 
@@ -41,6 +44,8 @@ export interface AuditInputs {
   cpuLoad: LoadRun | null;
   /** Settings.cpuPptW: the socket power limit the user configured; null falls back to the stock value in cpus.json. */
   cpuPptW: number | null;
+  /** The optional 6 s fill-rate cross-check (kind 'fillrate'), the gpu-units rule's fallback when the direct NVAPI read is unavailable. */
+  fillRate?: LoadRun | null;
   nowIso: string;
 }
 
@@ -632,10 +637,82 @@ function checkCpuIdleClock(run: LoadRun | null): AuditFinding {
   return finding(base, info(`Idle: ${Math.round(idle.avgEffectiveMhz)} MHz effective while the cores report up to ${Math.round(idle.maxCoreMhz)} MHz; the effective figure is the real rate, the other is the boost the cores stand ready to reach.`));
 }
 
-/** Family-aware: this box keeps an Ollama model resident for Strata Photo and Code. */
-function checkAiModel(s: StaticSnapshot): AuditFinding {
+/**
+ * The missing-ROPs check (plan §8, user 2026-09-16): early RTX 50-series batches shipped with
+ * a raster engine disabled (168 ROPs on a 5090 instead of 176; NVIDIA confirmed it in
+ * February 2025 for the 5090, 5090 D and 5070 Ti, later the 5080), about 4 % slower, and
+ * the vendors replace affected cards. The direct read is NVAPI's own count (GpuFacts.units,
+ * the number GPU-Z shows); when the driver did not answer it, the fill-rate cross-check
+ * (gpuUnits.ts) stands in with its band, and a 4.5 % question is never decided from a bare
+ * number. The reference is the gpus.json row for the card.
+ */
+const ROPS_COST = 0.04;
+const RTX_50 = /RTX\s*50\d0/i;
+
+/**
+ * Whether the audit should spend the 6 s fill-rate run (kind 'fillrate'): only when the card
+ * is in the reference table and the driver gave no direct ROP count, since with a direct read
+ * the cross-check is appended but never decisive, and without a reference it judges nothing.
+ */
+export function needsFillRateCrossCheck(s: StaticSnapshot): boolean {
+  const gpu = s.gpus[0];
+  return !!gpu && lookupGpu(gpu.name, gpu.vram.totalMiB) !== null && (gpu.units?.rops ?? null) === null;
+}
+
+function checkGpuUnits(s: StaticSnapshot, fillRate: LoadRun | null | undefined): AuditFinding {
+  const base: Base = { id: 'gpu-units', title: 'GPU unit counts (missing ROPs)', costText: 'About 4 %: a card with a raster unit disabled renders that much slower in every game.', fixWhere: 'hardware' };
+  const gpu = s.gpus[0];
+  if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
+  const spec = lookupGpu(gpu.name, gpu.vram.totalMiB);
+  if (!spec) return finding(base, unknown(`${gpu.name} is not in the reference table (src/data/gpus.json), so there is nothing to compare its unit counts with.`));
+  const partner = boardPartnerOf(gpu.pciSubsystem?.vendorId) ?? 'the card\'s vendor';
+  const rma = `The vendor replaces affected cards — contact ${partner} support with a GPU-Z screenshot or this report.`;
+  const estimate = fillRateEstimate(fillRate, spec.rops);
+  const crossCheck = estimate ? ` Fill-rate cross-check: ${estimate.line}.` : '';
+  const rops = gpu.units?.rops ?? null;
+  if (rops !== null) {
+    const shaders = gpu.units?.shaders ? `, ${gpu.units.shaders.toLocaleString('en-US')} shaders` : '';
+    if (rops < spec.rops) {
+      const why = RTX_50.test(spec.name)
+        ? 'Early RTX 50-series batches shipped with a raster unit disabled (NVIDIA confirmed, Feb 2025), about 4 % slower.'
+        : 'A card with fewer raster units than its reference design renders slower in every game.';
+      return finding(base, {
+        state: 'bad', severity: 3, costEstimate: ROPS_COST,
+        detail: `Your card reports ${rops} ROPs; a ${spec.name} has ${spec.rops}. ${why}${crossCheck}`,
+        fix: rma
+      });
+    }
+    if (rops > spec.rops) {
+      return finding(base, info(`Your card reports ${rops} ROPs, more than the ${spec.rops} in the reference row for a ${spec.name}: the table row is wrong for this card, not the card.${crossCheck}`));
+    }
+    return finding(base, ok(`${rops} of ${spec.rops} ROPs${shaders}: the full ${spec.name} configuration.${crossCheck}`));
+  }
+  const noDirect = 'The driver did not answer the unit-count query (NVAPI), so the ROP count could not be read directly.';
+  if (!estimate) {
+    return finding(base, unknown(noDirect, `Run the audit again with nothing else using the GPU: it then runs the 6-second fill-rate cross-check, which draws full-screen quads as fast as the GPU writes pixels and compares the rate with the ${spec.rops} ROPs a ${spec.name} has.`));
+  }
+  if (estimate.verdict === 'consistent') {
+    return finding(base, ok(`Fill-rate cross-check: ${estimate.line}. ${noDirect} A consistency check, not a count: a GPU-Z screenshot is the exact figure.`));
+  }
+  if (estimate.verdict === 'inconsistent') {
+    return finding(base, {
+      state: 'warn', severity: 2, costEstimate: ROPS_COST,
+      detail: `Fill-rate cross-check: ${estimate.line}. ${noDirect} A ${spec.name} has ${spec.rops} ROPs; early RTX 50-series batches shipped with a raster unit disabled (NVIDIA confirmed, Feb 2025).`,
+      fix: `Confirm the count with GPU-Z (it reads the ROPs directly). ${rma}`
+    });
+  }
+  return finding(base, unknown(`Fill-rate cross-check: ${estimate.line}. ${noDirect}`, 'Close anything else using the GPU and run the audit again.'));
+}
+
+/**
+ * Family-aware: this box keeps an Ollama model resident for Strata Photo and Code. Most
+ * people never install Ollama (plan §10, "no local model is the normal case"): when it is
+ * not running there is no row at all, because this is an observation for AI users, not a
+ * finding for everyone.
+ */
+function checkAiModel(s: StaticSnapshot): AuditFinding | null {
   const base: Base = { id: 'ai-model-resident', title: 'AI model in video memory', costText: 'Games get less video memory while a model is loaded.', fixWhere: 'app' };
-  if (s.ollama === null) return finding(base, ok('Ollama is not running.'));
+  if (s.ollama === null) return null;
   if (s.ollama.length === 0) return finding(base, ok('Ollama is running but holds no model.'));
   const held = s.ollama.map(m => `${m.name} holds ${Number((m.sizeVramBytes / 1e9).toFixed(1))} GB of VRAM`);
   return finding(base, {
@@ -673,6 +750,7 @@ export function runAudit(inputs: AuditInputs): AuditFinding[] {
     checkHogs(inputs.hogs, s),
     checkPowerLimit(s),
     checkGpuOffsets(s, inputs.thermalRamp),
+    checkGpuUnits(s, inputs.fillRate),
     checkCpuThermal(s, inputs.cpuLoad),
     checkCpuAllCoreClock(s, inputs.cpuLoad),
     checkCpuPackagePower(s, inputs.cpuLoad, inputs.cpuPptW),

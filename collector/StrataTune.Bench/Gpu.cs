@@ -50,6 +50,9 @@ internal sealed unsafe class Gpu : IDisposable
     /// <summary>The back-buffer index of the frame between BeginFrame and EndFrame.</summary>
     public int Slot => slot;
 
+    /// <summary>The render-target view of that back buffer, for a pass that draws elsewhere first.</summary>
+    public CpuDescriptorHandle CurrentBackBufferView => Rtv(slot);
+
     /// <exception cref="NoHardwareAdapterException">Only WARP or nothing was found.</exception>
     public Gpu(nint hwnd, int width, int height, string? luid, bool debug)
     {
@@ -156,6 +159,31 @@ internal sealed unsafe class Gpu : IDisposable
 
         slotFence[slot] = nextFence;
         slotSegment[slot] = segment;
+        queue.Signal(fence, nextFence++).CheckError();
+    }
+
+    /// <summary>A frame that never touches the swapchain, for work that must not be paced by
+    /// Present (FillRate.cs): a window the desktop composes rather than flips has its presents
+    /// throttled to the display's refresh, which would time the compositor, not the card. The
+    /// slot ring turns on its own here and the fence still bounds frames in flight at FrameCount;
+    /// a presented frame in between takes whichever slot its back buffer has, as always.</summary>
+    public void BeginOffscreen()
+    {
+        slot = (slot + 1) % FrameCount;
+        if (slotFence[slot] != 0)
+        {
+            WaitFor(slotFence[slot]);
+        }
+
+        allocators[slot].Reset();
+        List.Reset(allocators[slot], null);
+    }
+
+    public void EndOffscreen()
+    {
+        List.Close();
+        queue.ExecuteCommandList(List);
+        slotFence[slot] = nextFence;
         queue.Signal(fence, nextFence++).CheckError();
     }
 

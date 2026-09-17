@@ -71,6 +71,8 @@ export interface ViewRow {
 
 export interface GpuSpecView {
   name: string;
+  /** Who advertises the headline figure: "NVIDIA advertises 3,352". */
+  vendor: string;
   vramGiB: number;
   /** null when nobody publishes a figure: the card says so and tok/s waits for a measurement. */
   bandwidthGBs: number | null;
@@ -92,7 +94,6 @@ export interface GpuSpecView {
     tdpW: number;
     suggestedPsuW: number | null;
   };
-  tpuUrl: string;
   source: string;
 }
 
@@ -107,6 +108,7 @@ export function gpuSpecOf(name: string, vramMiB?: number): GpuSpecView | null {
     Object.fromEntries(PRECISIONS.flatMap((p) => (from?.[p] !== undefined ? [[p, from[p]]] : []))) as Partial<Record<Precision, number>>;
   return {
     name: g.name,
+    vendor: g.vendor,
     vramGiB: g.vramGiB,
     bandwidthGBs: g.bandwidthGBs,
     tops: pick(g.tops),
@@ -127,21 +129,25 @@ export function gpuSpecOf(name: string, vramMiB?: number): GpuSpecView | null {
       tdpW: g.tdpW,
       suggestedPsuW: g.suggestedPsuW
     },
-    tpuUrl: g.tpuUrl,
     source: g.source
   };
 }
 
 export interface Bandwidth {
-  /** What a stream copy reaches: the worker's best pass, or spec x STREAM_EFFICIENCY. */
+  /** What a stream copy reaches: the worker's best pass, or the ceiling x STREAM_EFFICIENCY. */
   gbs: number;
   measured: boolean;
 }
 
-/** The figure the estimates run on: a bench taken on this card, else the spec scaled to what a copy reaches; null with neither. */
-export function streamedBandwidth(bench: GpuBench | null, applies: boolean, spec: GpuSpecView | null): Bandwidth | null {
+/**
+ * The figure the estimates run on: a bench taken on this card, else the ceiling scaled to
+ * what a copy reaches; null with neither. The ceiling is this card's own (live memory clock x
+ * bus width, thisCard.ts) when the collector knows it, the reference spec otherwise:
+ * STREAM_EFFICIENCY was measured against the dev box's tuned clock, not the table.
+ */
+export function streamedBandwidth(bench: GpuBench | null, applies: boolean, ceilingGBs: number | null): Bandwidth | null {
   if (bench && applies) return { gbs: bench.bandwidthGBs, measured: true };
-  return spec?.bandwidthGBs != null ? { gbs: spec.bandwidthGBs * STREAM_EFFICIENCY, measured: false } : null;
+  return ceilingGBs !== null ? { gbs: ceilingGBs * STREAM_EFFICIENCY, measured: false } : null;
 }
 
 export function npuTopsOf(cpuName: string | null): number | null {

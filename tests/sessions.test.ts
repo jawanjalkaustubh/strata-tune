@@ -58,6 +58,7 @@ describe('the .stsession store (plan section 6)', () => {
     expect(s.sensorWindow?.qpcNow).toBe(rows[9].timeInQpc);
     expect(s.gpuTimeline[0].facts.name).toBe('RTX');
     expect(s.hogs?.processes[0].name).toBe('ffmpeg.exe');
+    expect(s.benchSummary).toBeNull();
     expect(s.notes).toEqual(['PresentMon exit code 0']);
 
     sessions.setVerdict(w.id, 'Smooth');
@@ -66,6 +67,36 @@ describe('the .stsession store (plan section 6)', () => {
     sessions.remove(w.id);
     expect(sessions.list()).toEqual([]);
     expect(fs.existsSync(path.join(sessions.sessionsDir(), '.trash', w.id + '.stsession', 'frames.ndjson.gz'))).toBe(true);
+  });
+
+  it("keeps a bench run's summary with the session and empties the trash only on request (plan section 11a)", async () => {
+    const w = new sessions.SessionWriter(new Date(2026, 8, 16, 4, 0), 'strata-tune-bench.exe');
+    w.writeFrames(rows);
+    const segment = { name: 'cpu-stall', start: 45, end: 60, frames: 900, avgFps: 60, maxFrameMs: 95, avgGpuMs: 0.03 };
+    const summary = { script: 'full', device: 'RTX', luid: 1, pid: 5, width: 1920, height: 1080, vsync: false, fpsCap: 120, vramTargetPercent: 40, completed: true, frames: 10, seconds: 90, segments: [segment], pipelineStates: 85, texturesUploaded: 60, uploadedMiB: 3840, heavyIterations: 1 };
+    await w.finish({
+      startedAt: '2026-09-16T04:00:00.000Z', endedAt: '2026-09-16T04:01:30.000Z',
+      game: { pid: 5, exe: 'strata-tune-bench.exe', path: null }, trigger: 'bench',
+      qpcFrequency: 10_000_000, qpcStart: rows[0].timeInQpc, qpcEnd: rows[9].timeInQpc,
+      snapshot: null, hogs: null, notes: [], verdict: null, benchSummary: summary
+    });
+    expect(sessions.list()[0]).toMatchObject({ exe: 'strata-tune-bench.exe', trigger: 'bench', durationS: 90 });
+    expect(JSON.parse(fs.readFileSync(path.join(w.dir, 'session.json'), 'utf-8')).benchSummary).toEqual(summary);
+    // The load path hands the classifier the segment timings with their designed cases; a game capture carries none.
+    const loaded = sessions.load(w.id).benchSummary;
+    expect(loaded?.script).toBe('full');
+    expect(loaded?.segments).toMatchObject([{ name: 'cpu-stall', startS: 45, endS: 60 }]);
+    expect(typeof loaded?.segments[0].designedCause).toBe('string');
+
+    expect(sessions.trashCount()).toBe(1);
+    sessions.remove(w.id);
+    expect(sessions.trashCount()).toBe(2);
+    // A stray file in .trash is not ours to delete.
+    fs.writeFileSync(path.join(sessions.sessionsDir(), '.trash', 'note.txt'), 'keep');
+    expect(sessions.emptyTrash()).toBe(2);
+    expect(sessions.trashCount()).toBe(0);
+    expect(fs.readdirSync(path.join(sessions.sessionsDir(), '.trash'))).toEqual(['note.txt']);
+    expect(sessions.emptyTrash()).toBe(0);
   });
 
   it('discards an empty capture and refuses ids that are not its own', async () => {

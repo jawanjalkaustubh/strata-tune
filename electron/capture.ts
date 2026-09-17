@@ -3,17 +3,20 @@
  * → capturing → saving → done. A capture is PresentMon on one pid (electron/
  * presentmon.ts) with the collector's sensor rows and GPU facts written beside
  * the frames as they arrive (electron/sessions.ts). It starts by button with a
- * picked process, or by Game Mode when a capture is armed: the allowlist names
- * the exe, the fullscreen probe and the hotkey take whatever window is in front.
- * It ends by button, when the game exits, or with the app.
+ * picked process or with the built-in bench (electron/bench-run.ts, a child of
+ * ours whose exit ends the capture), or by Game Mode when a capture is armed: the
+ * allowlist names the exe, the fullscreen probe and the hotkey take whatever
+ * window is in front. It ends by button, when the game exits, or with the app.
  */
 import { execFile } from 'child_process';
 import { EventEmitter } from 'events';
-import { app, BrowserWindow, dialog, shell, type IpcMain, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, screen, shell, type IpcMain, type IpcMainInvokeEvent } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import { BENCH_EXE, BENCH_SECONDS, benchSize, preflight, spawnBench, type BenchChild, type BenchExit } from './bench-run';
 import type { CollectorClient } from './collector';
-import type { GameMode, GameModeState } from './game-mode';
+import { DEFAULT_ALLOWLIST, type GameMode, type GameModeState } from './game-mode';
+import { curate, type ProcessInfo, type ProcessPick } from './picker';
 import { availability, PresentMonHost, type PresentMonAvailability, type PresentMonExit } from './presentmon';
 import * as sessions from './sessions';
 import type { CaptureSession, FrameRow, GpuSample } from '../src/analysis/session-types';
@@ -23,12 +26,15 @@ import type { Report } from '../src/report/report-types';
 
 export type { PresentMonAvailability } from './presentmon';
 export type { SessionListItem } from './sessions';
+export type { ProcessInfo, ProcessPick, PickGroup } from './picker';
+export type { BenchSummary } from './bench-run';
 
 export type CaptureStatus = 'idle' | 'armed' | 'capturing' | 'saving' | 'done' | 'error';
 
 export interface CaptureTarget {
   pid: number;
   exe: string;
+  /** 'manual', 'bench', or Game Mode's words. */
   trigger: string;
 }
 
@@ -43,19 +49,14 @@ export interface CaptureState {
   /** The last thing worth saying: the error, or where the capture was saved. */
   message: string;
   lastSessionId: string | null;
+  /** How the last saved session started, so a finished bench opens its report on its own. */
+  lastTrigger: string | null;
 }
 
 /** 2 Hz while capturing: the count and the last two seconds of frame times, oldest first, for the live sparkline. */
 export interface CaptureFrames {
   count: number;
   recentMs: number[];
-}
-
-export interface ProcessInfo {
-  pid: number;
-  exe: string;
-  path: string | null;
-  title: string;
 }
 
 const FRAMES_PUSH_MS = 500;
@@ -68,6 +69,10 @@ const SAVE_TIMEOUT_MS = 20_000;
 const SNAPSHOT_WAIT_MS = 5000;
 /** The collector's per-process sample at capture start, the classifier's only input for a background hog (§11 case 6). */
 const HOGS_SAMPLE_S = 5;
+/** PresentMon ends itself when the bench exits; the bench's own exit is waited for this long past that for its summary line. */
+const BENCH_EXIT_WAIT_MS = 5000;
+/** A bench that exits before presenting (lock held, no adapter) never trips PresentMon's proc-exit rule; it is stopped after this. */
+const BENCH_GRACE_MS = 1500;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -102,12 +107,12 @@ function psList(json: string): PsProcess[] {
 
 const toInfo = (p: PsProcess): ProcessInfo => ({ pid: p.Id, exe: `${p.ProcessName}.exe`, path: p.Path || null, title: p.MainWindowTitle || '' });
 
-/** Everything with a main window, our own window excluded: the picker for a manual start. */
-export async function listProcesses(): Promise<ProcessInfo[]> {
+const ALLOWLIST: ReadonlySet<string> = new Set(DEFAULT_ALLOWLIST);
+
+/** Everything with a main window, our own window excluded, sorted into the picker's groups (electron/picker.ts). */
+export async function listProcesses(): Promise<ProcessPick[]> {
   const out = await powershell(`Get-Process | Where-Object { $_.MainWindowTitle -and $_.Id -ne ${process.pid} } | Select-Object Id, ProcessName, Path, MainWindowTitle | ConvertTo-Json -Compress`);
-  return psList(out)
-    .map(toInfo)
-    .sort((a, b) => a.exe.localeCompare(b.exe) || a.pid - b.pid);
+  return curate(psList(out).map(toInfo), ALLOWLIST);
 }
 
 async function processInfo(pid: number): Promise<ProcessInfo | null> {
@@ -161,6 +166,8 @@ interface Run {
   sensorTimer: NodeJS.Timeout | null;
   pushTimer: NodeJS.Timeout | null;
   onTick: ((t: Tick) => void) | null;
+  /** The built-in bench when this run is one: its exit is the capture's end and its summary goes in session.json. */
+  bench: BenchChild | null;
 }
 
 export class CaptureController extends EventEmitter {
@@ -176,7 +183,7 @@ export class CaptureController extends EventEmitter {
     private readonly gameMode: GameMode
   ) {
     super();
-    this.state = { status: 'idle', armed: false, presentMon: availability(), target: null, startedAt: null, frames: 0, message: '', lastSessionId: null };
+    this.state = { status: 'idle', armed: false, presentMon: availability(), target: null, startedAt: null, frames: 0, message: '', lastSessionId: null, lastTrigger: null };
     this.presentMon.on('frame', (rows: FrameRow[]) => this.frames(rows));
     this.presentMon.on('exit', (exit: PresentMonExit) => void this.finish(exit));
     // The fullscreen probe (a PowerShell spawn) runs only while armed; the faster poll too, so a game is caught within 10 s.
@@ -235,18 +242,42 @@ export class CaptureController extends EventEmitter {
     }
   }
 
-  private launch(pid: number, trigger: string): Promise<CaptureState> {
-    if (!Number.isInteger(pid) || pid <= 0) throw new Error('Pick a process first');
-    if (pid === process.pid) throw new Error("Strata Tune's own window is never captured");
-    return this.begin(pid, trigger);
+  /**
+   * The built-in stutter bench (plan section 11a): refused while the GPU is not free
+   * (section 20), then spawned sized for the primary display and captured like a game
+   * whose exit ends the capture. The report opens on its own once the session is saved.
+   */
+  async startBench(): Promise<CaptureState> {
+    if (this.busy) throw new Error('A capture is already running');
+    this.starting = true;
+    try {
+      const refusal = await preflight();
+      if (refusal) throw new Error(refusal);
+      const bench = spawnBench(benchSize(screen.getPrimaryDisplay()));
+      try {
+        return await this.begin({ pid: bench.pid, exe: BENCH_EXE, path: bench.path, title: 'Strata Tune bench' }, 'bench', [], bench);
+      } catch (e) {
+        await bench.close();
+        throw e;
+      }
+    } finally {
+      this.starting = false;
+    }
   }
 
-  private async begin(pid: number, trigger: string): Promise<CaptureState> {
+  private async launch(pid: number, trigger: string): Promise<CaptureState> {
+    if (!Number.isInteger(pid) || pid <= 0) throw new Error('Pick a process first');
+    if (pid === process.pid) throw new Error("Strata Tune's own window is never captured");
     const info = await processInfo(pid);
     if (!info) throw new Error(`Process ${pid} is gone`);
-    this.qpcFrequencyOnce ??= qpcFrequency();
     // Several processes under one name is a multi-process app: the window's pid is not the presenting one.
     const siblings = (await pidsByName(info.exe)).filter((p) => p !== pid);
+    return this.begin(info, trigger, siblings);
+  }
+
+  private async begin(info: ProcessInfo, trigger: string, siblings: number[], bench: BenchChild | null = null): Promise<CaptureState> {
+    const { pid } = info;
+    this.qpcFrequencyOnce ??= qpcFrequency();
 
     const target: CaptureTarget = { pid, exe: info.exe, trigger };
     const startedAt = new Date();
@@ -265,7 +296,8 @@ export class CaptureController extends EventEmitter {
       sensorQpc: 0,
       sensorTimer: null,
       pushTimer: null,
-      onTick: null
+      onTick: null,
+      bench
     };
     if (siblings.length > 0) run.notes.push(`captured by image name: ${siblings.length + 1} processes share ${info.exe}`);
     // The run is held only once PresentMon is up: a failed start leaves nothing to orphan.
@@ -278,15 +310,24 @@ export class CaptureController extends EventEmitter {
     this.run = run;
     this.attachCollector(run);
     run.pushTimer = setInterval(() => this.pushFrames(run), FRAMES_PUSH_MS);
-    this.set({ status: 'capturing', target, startedAt: startedAt.toISOString(), frames: 0, message: `Capturing ${info.exe} (pid ${pid})`, lastSessionId: null });
+    if (bench) {
+      // PresentMon's proc-exit rule needs a present to have happened; a bench that never got that far is ended from here.
+      void bench.done.then(() => delay(BENCH_GRACE_MS)).then(() => {
+        if (this.run === run && this.presentMon.running) void this.presentMon.stop();
+      });
+    }
+    const message = bench ? `Running the stutter bench (${BENCH_SECONDS} s); the report opens when it ends` : `Capturing ${info.exe} (pid ${pid})`;
+    this.set({ status: 'capturing', target, startedAt: startedAt.toISOString(), frames: 0, message, lastSessionId: null, lastTrigger: null });
     return this.state;
   }
 
-  /** Ends the capture; the save runs from PresentMon's exit, so the state is 'saving' when this resolves. */
+  /** Ends the capture; the save runs from PresentMon's exit, so the state is 'saving' when this resolves. A bench is asked to close, and PresentMon follows it. */
   async stop(): Promise<CaptureState> {
-    if (this.run && this.presentMon.running) {
-      this.run.notes.push('stopped by the user');
-      await this.presentMon.stop();
+    const run = this.run;
+    if (run && this.presentMon.running) {
+      run.notes.push('stopped by the user');
+      if (run.bench) await run.bench.close();
+      else await this.presentMon.stop();
     }
     return this.state;
   }
@@ -296,6 +337,7 @@ export class CaptureController extends EventEmitter {
     if (!this.run) return;
     this.run.notes.push('stopped with the app');
     const saved = new Promise<void>((resolve) => this.once('saved', resolve));
+    if (this.run.bench) await this.run.bench.close();
     await this.presentMon.abandon();
     await Promise.race([saved, delay(SAVE_TIMEOUT_MS)]);
   }
@@ -370,15 +412,24 @@ export class CaptureController extends EventEmitter {
 
   // ------------------------------------------------------------ finish
 
-  private async finish(exit: PresentMonExit): Promise<void> {
+  private async finish(presentMonExit: PresentMonExit): Promise<void> {
     const run = this.run;
     if (!run) return;
     if (run.pushTimer) clearInterval(run.pushTimer);
     run.pushTimer = null;
     this.pushFrames(run);
     this.set({ status: 'saving', message: `Saving ${run.frames} frames…` });
+    let exit = presentMonExit;
+    // A note is a remark the report shows: the plain sentence a bad exit carries (presentmon.ts exitMessage), never a raw exit code, and nothing for a clean run.
     if (exit.message) run.notes.push(exit.message);
-    if (exit.code !== null) run.notes.push(`PresentMon exit code ${exit.code}`);
+    // The bench's own exit says how the run went: its summary is the session's, and its message outranks PresentMon's.
+    const bench: BenchExit | null = run.bench ? await Promise.race([run.bench.done, delay(BENCH_EXIT_WAIT_MS).then(() => null)]) : null;
+    if (bench) {
+      if (bench.message) {
+        run.notes.push(bench.message);
+        exit = { ...exit, message: bench.message };
+      } else if (bench.summary?.completed === false) run.notes.push('The bench was ended early, so its script did not play to the end');
+    }
 
     // The last slice covers everything since the previous one, plus a margin for the collector's own lag.
     const elapsedS = Math.ceil((Date.now() - run.startedAt.getTime()) / 1000);
@@ -404,10 +455,11 @@ export class CaptureController extends EventEmitter {
         snapshot: await Promise.race([run.snapshot, delay(SNAPSHOT_WAIT_MS).then(() => null)]),
         hogs: await Promise.race([run.hogs, delay(SNAPSHOT_WAIT_MS).then(() => null)]),
         notes: run.notes,
-        verdict: null
+        verdict: null,
+        ...(bench ? { benchSummary: bench.summary } : {})
       });
       this.run = null;
-      this.set({ status: 'done', target: null, lastSessionId: meta.id, message: exit.message ? `${exit.message}; saved ${meta.frames} frames as ${meta.id}` : `Saved ${meta.frames} frames as ${meta.id}` });
+      this.set({ status: 'done', target: null, lastSessionId: meta.id, lastTrigger: run.target.trigger, message: exit.message ? `${exit.message}; saved ${meta.frames} frames as ${meta.id}` : `Saved ${meta.frames} frames as ${meta.id}` });
     } catch (e) {
       this.run = null;
       this.set({ status: 'error', target: null, message: `Could not save the session: ${(e as Error).message}` });
@@ -424,6 +476,7 @@ export function registerCaptureIpc(ipc: IpcMain, controller: CaptureController, 
   ipc.handle('capture:state', () => controller.state);
   ipc.handle('capture:processes', () => listProcesses());
   ipc.handle('capture:start', (_e, pid: number) => controller.start(pid, 'manual'));
+  ipc.handle('capture:startBench', () => controller.startBench());
   ipc.handle('capture:stop', () => controller.stop());
   ipc.handle('capture:arm', (_e, on: boolean) => controller.arm(!!on));
   ipc.handle('sessions:list', () => sessions.list());
@@ -431,9 +484,30 @@ export function registerCaptureIpc(ipc: IpcMain, controller: CaptureController, 
   ipc.handle('sessions:delete', (_e, id: string) => sessions.remove(id));
   ipc.handle('sessions:verdict', (_e, id: string, verdict: string) => sessions.setVerdict(id, String(verdict).slice(0, 300)));
   ipc.handle('sessions:reveal', (_e, id: string) => shell.showItemInFolder(sessions.folder(id)));
+  ipc.handle('sessions:trashCount', () => sessions.trashCount());
+  ipc.handle('sessions:emptyTrash', (e: IpcMainInvokeEvent) => emptyTrash(e));
   ipc.handle('sessions:exportHtml', (e: IpcMainInvokeEvent, data: Report) => exportHtml(e, data));
   controller.on('state', (s: CaptureState) => send('capture:state', s));
   controller.on('frames', (f: CaptureFrames) => send('capture:frames', f));
+}
+
+/** Permanent, so the question is asked here in a native dialog; resolves the count removed, or null when the user kept the trash. */
+async function emptyTrash(e: IpcMainInvokeEvent): Promise<number | null> {
+  const count = sessions.trashCount();
+  if (count === 0) return 0;
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    title: 'Empty trash',
+    message: `Delete ${count} trashed session${count === 1 ? '' : 's'} for good?`,
+    detail: 'They are removed from disk; this cannot be undone.',
+    buttons: ['Empty trash', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true
+  };
+  const r = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+  return r.response === 0 ? sessions.emptyTrash() : null;
 }
 
 /** The single-file renderer from npm run build:report, beside dist/ in dev and in the package alike. */

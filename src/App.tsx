@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
 import { SupportLinks, EMPTY_SUPPORT, loadSupport } from './support';
-import { Settings, loadSettings } from './settings';
+import { useSettings } from './components/useSettings';
 import { TitleBar } from './components/TitleBar';
 import { BottomBar, Page } from './components/BottomBar';
 import { AboutModal } from './components/AboutModal';
+import { SettingsModal } from './components/SettingsModal';
 import { useCollectorStatus, statusLabel } from './components/useCollectorStatus';
 import { captureStatusLabel, useCaptureState } from './components/capture/useCapture';
 import { onNavigate } from './components/navigate';
@@ -18,10 +19,12 @@ const PAGES: Record<Page, React.FC> = { audit: Audit, monitor: Monitor, capture:
 
 export const App: React.FC = () => {
   const [page, setPage] = useState<Page>('audit');
-  const [settings] = useState<Settings>(loadSettings);
+  // Live, not a startup copy: the Tune tab appears the moment Settings turns it on (plan 17).
+  const settings = useSettings();
   const [support, setSupport] = useState<SupportLinks>(EMPTY_SUPPORT);
   const [version, setVersion] = useState('');
   const [showAbout, setShowAbout] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const collector = useCollectorStatus();
   const capture = useCaptureState();
 
@@ -70,12 +73,13 @@ export const App: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col bg-studio-bg text-studio-text">
-      <TitleBar support={support} onOpenAbout={() => setShowAbout(true)} />
+      <TitleBar support={support} onOpenAbout={() => setShowAbout(true)} onOpenSettings={() => setShowSettings(true)} />
       <main className="flex-1 flex flex-col min-h-0 overflow-auto">
         <Current />
       </main>
       <BottomBar page={current} onSelect={setPage} enableTune={settings.enableTune} status={[`Collector: ${statusLabel(collector)}`, captureStatusLabel(capture)].filter(Boolean).join(' · ')} />
       <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} version={version} support={support} />
+      <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 };

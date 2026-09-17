@@ -23,9 +23,11 @@ internal static class Program
         usage:
           strata-tune-bench [--script full|short] [--vsync] [--vram-target PERCENT] [--fps-cap N]
                             [--width W] [--height H] [--adapter LUID] [--json] [--debug]
+          strata-tune-bench --fillrate [--seconds N] [--width W] [--height H] [--adapter LUID] [--json] [--debug]
         --script short plays the 15 s smoke version of the 90 s script.
         --vram-target is the share of the adapter's dedicated memory the texture-stream segment fills (default 40).
         --fps-cap 0 removes the 120 fps pacing outside the gpu-load segment.
+        --fillrate measures pixels written per second (full-screen quads, no blend, no depth) for --seconds (default 6) after a 1 s warm-up.
         --adapter takes a luid from strata-tune-worker --devices; without it the DXGI high-performance adapter is used.
         """;
 
@@ -82,11 +84,15 @@ internal static class Program
 
     private static int Run(Options options)
     {
-        Script script = Script.For(options.Script);
-
         using Pacing.TimerResolution resolution = new();
-        using Window window = new("Strata Tune bench", options.Width, options.Height);
+        using Window window = new(options.FillRate ? "Strata Tune bench: fill rate" : "Strata Tune bench", options.Width, options.Height);
         using Gpu gpu = new(window.Handle, options.Width, options.Height, options.Adapter, options.Debug);
+        if (options.FillRate)
+        {
+            return RunFillRate(options, window, gpu);
+        }
+
+        Script script = Script.For(options.Script);
         using Scene scene = new(gpu.Device, options.Width, options.Height, script.PipelineStateTotal);
         using Streaming streaming = new(gpu.Device, gpu.DedicatedVideoMemory, options.VramTargetPercent, Script.Bursts);
 
@@ -103,6 +109,41 @@ internal static class Program
         {
             summary = Bench.Run(options, script, window, gpu, scene, streaming, () => cancelled);
             gpu.WaitIdle();
+        }
+        catch (Exception e) when (gpu.IsDeviceRemoved(e))
+        {
+            Console.Error.WriteLine($"device removed: {gpu.DeviceRemovedReason}");
+            return ExitDeviceLost;
+        }
+
+        if (options.Json)
+        {
+            Console.WriteLine(summary.ToJson());
+        }
+        else
+        {
+            foreach (string line in summary.Lines())
+            {
+                Console.WriteLine(line);
+            }
+        }
+
+        return summary.Completed ? ExitOk : ExitInterrupted;
+    }
+
+    private static int RunFillRate(Options options, Window window, Gpu gpu)
+    {
+        using FillRate fill = new(gpu.Device);
+        if (!options.Json)
+        {
+            Console.WriteLine($"device {gpu.Name} luid {gpu.Luid} hardware");
+        }
+
+        window.Show();
+        FillRateSummary summary;
+        try
+        {
+            summary = FillRate.Run(options.Seconds, window, gpu, fill, () => cancelled);
         }
         catch (Exception e) when (gpu.IsDeviceRemoved(e))
         {

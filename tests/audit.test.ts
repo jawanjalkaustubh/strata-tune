@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseSlot, rankFindings, rankTop, runAudit, type AuditFinding, type AuditInputs } from '../src/analysis/audit';
-import type { HogsResult, PhysicalDisk, StaticSnapshot, Volume } from '../src/collector-types';
+import { needsFillRateCrossCheck, parseSlot, rankFindings, rankTop, runAudit, type AuditFinding, type AuditInputs } from '../src/analysis/audit';
+import type { GpuFacts, HogsResult, LoadRun, PhysicalDisk, StaticSnapshot, Volume } from '../src/collector-types';
 import { NOW, cpuRun, devbox, loadRun } from './fixtures';
 
 const inputs = (snapshot: StaticSnapshot, extra: Partial<AuditInputs> = {}): AuditInputs =>
@@ -15,13 +15,22 @@ const busyHogs: HogsResult = {
   processes: [{ pid: 4321, name: 'OneDrive.exe', cpuPercent: 40, workingSetMiB: 900 }, ...quietHogs.processes]
 };
 const flatRuns = { pcieUnderLoad: loadRun('light', 2), thermalRamp: loadRun('heavy', 20), cpuLoad: cpuRun(20) };
+/** What NVAPI reads on the dev box's RTX 5090 (docs/dependencies.md, HWiNFO agrees): the full configuration. */
+const FULL_5090 = { shaders: 21760, sms: 170, rops: 176, tmus: 680, source: 'nvapi' as const };
+const withUnits = (units: NonNullable<GpuFacts['units']> | null = FULL_5090, s = devbox()) => {
+  s.gpus[0].units = units;
+  return s;
+};
+/** A finished 6 s fill-rate run with the card at 2.9 GHz and the bench's result line. */
+const fillRun = (pixelsPerSecond: number): LoadRun =>
+  ({ ...loadRun('fillrate', 6, () => ({ smMhz: 2900 })), fillRate: { pixelsPerSecond, seconds: 6.01, frames: 2300, width: 4096, height: 4096 } });
 /** 15 % sag with HwThermalSlowdown from t = 15 s, the card at 84 °C: the true positive. */
 const throttlingRamp = loadRun('heavy', 20, t => ({ smMhz: t < 10 ? 2800 : 2380, temperatureC: t < 10 ? 70 : 84, clocksEventReasons: t >= 15 ? 0x40 : 0 }));
 const x8Link = loadRun('light', 2, () => ({ pcieWidth: 8 }));
 
 const ALL_IDS = [
   'expo', 'ram-channels', 'pcie-link', 'rebar', 'power-plan', 'boot-drive-space', 'game-on-hdd',
-  'thermal-headroom', 'gpu-driver-age', 'background-hogs', 'gpu-power-limit', 'gpu-oc-offsets',
+  'thermal-headroom', 'gpu-driver-age', 'background-hogs', 'gpu-power-limit', 'gpu-oc-offsets', 'gpu-units',
   'cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-smt', 'cpu-idle-clock', 'ai-model-resident'
 ];
 
@@ -54,12 +63,15 @@ describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
     expect(f['background-hogs'].state).toBe('unknown');
     expect(f['game-on-hdd'].state).toBe('unknown');
     expect(f['game-on-hdd'].detail).toBe('Checked when a game is captured.');
+    // The fixture predates the NVAPI read, so the direct count is unavailable and the cross-check is offered.
+    expect(f['gpu-units'].state).toBe('unknown');
+    expect(f['gpu-units'].fix).toContain('fill-rate cross-check');
     expect(f['hdd-present']).toBeUndefined();
     expect(Object.keys(f).sort()).toEqual([...ALL_IDS].sort());
   });
 
   it('with flat load runs and a quiet idle sample every check is ok or info', () => {
-    const findings = runAudit(inputs(devbox(), { ...flatRuns, hogs: quietHogs }));
+    const findings = runAudit(inputs(withUnits(), { ...flatRuns, hogs: quietHogs }));
     const f = byId(findings);
     expect(f['pcie-link'].state).toBe('ok');
     expect(f['pcie-link'].detail).toContain('PCIe 5.0 x16');
@@ -70,6 +82,7 @@ describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
     expect(f['cpu-allcore-clock'].detail).toBe('All-core 5.2 GHz effective under load (spec base 4.3 GHz, single-core boost 5.7 GHz).');
     expect(f['cpu-package-power'].detail).toBe('PBO / raised PPT active — measured 245 W over the stock 230 W; set your PPT limit here.');
     expect(f['cpu-idle-clock'].detail).toContain('Idle: 194 MHz effective');
+    expect(f['gpu-units'].state).toBe('ok');
     expect(findings.filter(x => x.state === 'bad' || x.state === 'warn')).toEqual([]);
     expect(findings.map(x => x.state).filter(s => s === 'unknown')).toEqual(['unknown']);
   });
@@ -529,12 +542,105 @@ describe('power limit and AI model', () => {
     expect(audit(s)['gpu-power-limit'].state).toBe('unknown');
   });
 
-  it('Ollama absent or empty is ok', () => {
+  it('Ollama not running means no row at all (plan §10: most people have no local model); running and empty is ok', () => {
     const s = devbox();
     s.ollama = null;
-    expect(audit(s)['ai-model-resident'].state).toBe('ok');
+    const absent = runAudit(inputs(s));
+    expect(absent.find(f => f.id === 'ai-model-resident')).toBeUndefined();
+    expect(absent).toHaveLength(ALL_IDS.length - 1);
     s.ollama = [];
     expect(audit(s)['ai-model-resident'].state).toBe('ok');
+  });
+});
+
+describe('GPU unit counts (missing ROPs, plan §8)', () => {
+  it('the full count is ok, with the shaders beside it', () => {
+    const f = audit(withUnits())['gpu-units'];
+    expect(f.state).toBe('ok');
+    expect(f.severity).toBe(0);
+    expect(f.detail).toBe('176 of 176 ROPs, 21,760 shaders: the full GeForce RTX 5090 configuration.');
+  });
+
+  it('168 of 176 is bad at 4 % with the RMA text naming the board partner from the subsystem id', () => {
+    const f = audit(withUnits({ ...FULL_5090, rops: 168 }))['gpu-units'];
+    expect(f.state).toBe('bad');
+    expect(f.severity).toBe(3);
+    expect(f.costEstimate).toBe(0.04);
+    expect(f.detail).toBe('Your card reports 168 ROPs; a GeForce RTX 5090 has 176. Early RTX 50-series batches shipped with a raster unit disabled (NVIDIA confirmed, Feb 2025), about 4 % slower.');
+    expect(f.fix).toBe('The vendor replaces affected cards — contact ASUS support with a GPU-Z screenshot or this report.');
+    expect(f.fixWhere).toBe('hardware');
+  });
+
+  it('a card without a subsystem id is sent to "the card\'s vendor"; a count above the reference blames the table', () => {
+    const s = withUnits({ ...FULL_5090, rops: 168 });
+    s.gpus[0].pciSubsystem = null;
+    expect(audit(s)['gpu-units'].fix).toContain("contact the card's vendor support");
+    const more = audit(withUnits({ ...FULL_5090, rops: 192 }))['gpu-units'];
+    expect(more.state).toBe('info');
+    expect(more.detail).toContain('the table row is wrong for this card, not the card');
+  });
+
+  it('no direct read is unknown, never a verdict, and points at the 6 s fill-rate cross-check; a card outside the table is unknown too', () => {
+    for (const units of [null, { ...FULL_5090, rops: null }]) {
+      const f = audit(withUnits(units))['gpu-units'];
+      expect(f.state).toBe('unknown');
+      expect(f.severity).toBe(0);
+      expect(f.detail).toBe('The driver did not answer the unit-count query (NVAPI), so the ROP count could not be read directly.');
+      expect(f.fix).toBe('Run the audit again with nothing else using the GPU: it then runs the 6-second fill-rate cross-check, which draws full-screen quads as fast as the GPU writes pixels and compares the rate with the 176 ROPs a GeForce RTX 5090 has.');
+    }
+    const s = withUnits();
+    s.gpus[0].name = 'NVIDIA GeForce RTX 2080 Ti';
+    expect(audit(s)['gpu-units'].state).toBe('unknown');
+    expect(audit(s)['gpu-units'].detail).toContain('not in the reference table');
+  });
+
+  it('the audit spends the 6 s run only when the card is in the table and the driver gave no ROP count', () => {
+    expect(needsFillRateCrossCheck(withUnits())).toBe(false);
+    expect(needsFillRateCrossCheck(withUnits({ ...FULL_5090, rops: 168 }))).toBe(false);
+    expect(needsFillRateCrossCheck(withUnits(null))).toBe(true);
+    expect(needsFillRateCrossCheck(withUnits({ ...FULL_5090, rops: null }))).toBe(true);
+    // The devbox fixture predates the NVAPI read (no units key at all): the cross-check runs.
+    expect(needsFillRateCrossCheck(devbox())).toBe(true);
+    const unlisted = withUnits(null);
+    unlisted.gpus[0].name = 'NVIDIA GeForce RTX 2080 Ti';
+    expect(needsFillRateCrossCheck(unlisted)).toBe(false);
+    const none = withUnits(null);
+    none.gpus = [];
+    expect(needsFillRateCrossCheck(none)).toBe(false);
+  });
+
+  it('the cross-check stands in for the direct read: 450 GPixel/s at 2.9 GHz is consistent with 176 (ok, with its band and the overlap said)', () => {
+    const f = audit(withUnits(null), { fillRate: fillRun(450e9) })['gpu-units'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toContain('Fill-rate cross-check: consistent with 176 ROPs (450 GPixel/s at 2.9 GHz; inside the 168-ROP band (414–487 GPixel/s) as well, so the two counts overlap at this reading).');
+    expect(f.detail).toContain('A consistency check, not a count');
+  });
+
+  it('425 GPixel/s at 2.9 GHz is below the 176 band and inside the 168 band: a warning that sends the user to GPU-Z, then the vendor', () => {
+    const f = audit(withUnits(null), { fillRate: fillRun(425e9) })['gpu-units'];
+    expect(f.state).toBe('warn');
+    expect(f.severity).toBe(2);
+    expect(f.costEstimate).toBe(0.04);
+    expect(f.detail).toContain('below the 176-ROP band (425 GPixel/s at 2.9 GHz is 83 % of the 510 GPixel/s ceiling; the band starts at 85 %) and inside the 168-ROP band (414–487 GPixel/s)');
+    expect(f.fix).toBe('Confirm the count with GPU-Z (it reads the ROPs directly). The vendor replaces affected cards — contact ASUS support with a GPU-Z screenshot or this report.');
+  });
+
+  it('400 GPixel/s at 2.9 GHz is below both bands: no conclusion, and a failed or resultless run offers the check again', () => {
+    const f = audit(withUnits(null), { fillRate: fillRun(400e9) })['gpu-units'];
+    expect(f.state).toBe('unknown');
+    expect(f.detail).toContain('no conclusion: 400 GPixel/s at 2.9 GHz is below the 168-ROP band (414–487 GPixel/s) as well as the 176-ROP band (434–510 GPixel/s); the run did not reach the raster limit');
+    expect(f.fix).toBe('Close anything else using the GPU and run the audit again.');
+    const failed = audit(withUnits(null), { fillRate: { ...fillRun(450e9), state: 'failed', exitCode: 11 } })['gpu-units'];
+    expect(failed.fix).toContain('it then runs the 6-second fill-rate cross-check');
+    const noLine = audit(withUnits(null), { fillRate: { ...fillRun(450e9), fillRate: null } })['gpu-units'];
+    expect(noLine.fix).toContain('it then runs the 6-second fill-rate cross-check');
+  });
+
+  it('with a direct read the cross-check is appended, never decisive', () => {
+    const f = audit(withUnits(), { fillRate: fillRun(425e9) })['gpu-units'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toContain('176 of 176 ROPs');
+    expect(f.detail).toContain('Fill-rate cross-check: below the 176-ROP band');
   });
 });
 
@@ -551,7 +657,7 @@ describe('ranking', () => {
 
   it('orders by severity × cost, BIOS fixes first on a tie, check order after that', () => {
     const findings = brokenBox();
-    expect(findings).toHaveLength(18);
+    expect(findings).toHaveLength(ALL_IDS.length);
     expect(findings.slice(0, 9).map(f => f.id)).toEqual([
       'boot-drive-space',   // 3 × 0.30
       'ram-channels',       // 3 × 0.20
@@ -787,7 +893,8 @@ describe('missing inputs never flag', () => {
       ollama: null
     };
     const findings = runAudit(inputs(empty));
-    expect(findings).toHaveLength(18);
+    // Every rule but the Ollama row, which does not exist when Ollama is not running.
+    expect(findings).toHaveLength(ALL_IDS.length - 1);
     for (const f of findings) {
       expect(['ok', 'unknown']).toContain(f.state);
       expect(f.severity).toBe(0);

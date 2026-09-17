@@ -3,9 +3,11 @@ import React from 'react';
 /**
  * Every number on the page says where it came from (plan sections 10 and 13).
  * `derived` is a dense figure halved from the vendor's sparse headline, not one
- * the vendor printed.
+ * the vendor printed; `this card` is the driver's word on the card in the slot
+ * (its power limit, clock ceilings, held clocks), against which `spec` is the
+ * reference design; `you` is a figure the user typed (the PSU).
  */
-export type Provenance = 'spec' | 'measured' | 'estimated' | 'default' | 'derived';
+export type Provenance = 'spec' | 'measured' | 'estimated' | 'default' | 'derived' | 'this card' | 'you';
 
 /** Slate for everything but a measurement (plan 17a: one accent), which is the outlined emerald chip. */
 const TONE: Record<Provenance, string> = {
@@ -13,7 +15,9 @@ const TONE: Record<Provenance, string> = {
   measured: 'text-emerald-400 border-emerald-500/60',
   estimated: 'text-slate-400 border-slate-500/40',
   default: 'text-slate-400 border-slate-500/40 border-dashed',
-  derived: 'text-slate-400 border-slate-500/40 border-dashed'
+  derived: 'text-slate-400 border-slate-500/40 border-dashed',
+  'this card': 'text-slate-200 border-slate-400/60',
+  you: 'text-slate-200 border-slate-400/60'
 };
 
 const CHIP = 'inline-flex items-center h-4 px-1 rounded border text-[9px] uppercase tracking-[0.08em] leading-none whitespace-nowrap';
@@ -54,10 +58,10 @@ interface StatProps {
   muted?: boolean;
 }
 
-/** One labelled figure: label, tabular number, provenance tag. */
+/** One labelled figure: label, tabular number, provenance tag. The label wraps in a narrow column; it is never clipped (plan section 17a). */
 export const Stat: React.FC<StatProps> = ({ label, value, unit, kind, note, muted }) => (
   <div className="min-w-0">
-    <div className="label truncate">{label}</div>
+    <div className="label leading-tight">{label}</div>
     <div className="flex items-baseline gap-1.5 min-w-0 flex-wrap">
       <span className={`figure text-[15px] leading-6 ${muted ? 'text-studio-muted' : 'text-studio-text'}`}>{value}</span>
       {unit && <span className="text-[10px] text-studio-subtle">{unit}</span>}

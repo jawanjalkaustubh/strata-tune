@@ -9,8 +9,8 @@ import { devbox } from './fixtures';
 const GB = 1e9;
 const box = factsFromPicker({ gpuName: 'GeForce RTX 5090', ramGiB: 32, freeDiskGiB: 100 }, 32);
 const spec = gpuSpecOf(box.gpuName)!;
-/** Standalone: nobody measured this card, so the estimates run on the spec figure scaled to what a copy reaches. */
-const bandwidthGBs = streamedBandwidth(null, false, spec)!.gbs;
+/** Standalone: nobody measured this card and no live clock is known, so the estimates run on the reference figure scaled to what a copy reaches. */
+const bandwidthGBs = streamedBandwidth(null, false, spec.bandwidthGBs)!.gbs;
 
 const bench = (device: string, bandwidthGBs: number): GpuBench => ({
   device, luid: '1', bandwidthGBs, bandwidthMedianGBs: null, bufferBytes: null, matmulN: null, matmulTflopsFp32: 50, matmulTflopsFp16: null, elapsedMs: null, driver: null, measuredAt: '2026-09-16T00:00:00Z'
@@ -38,9 +38,11 @@ describe('lookupGpu: NVML and DXGI names carry a vendor prefix the table does no
     expect(sameGpu('Intel(R) Arc(TM) B580 Graphics', 'Arc B580 Graphics')).toBe(true);
   });
 
-  it('a bench from another device falls back to the spec figure, a matching one replaces it', () => {
-    expect(streamedBandwidth(bench('NVIDIA GeForce RTX 4090', 900), sameGpu('NVIDIA GeForce RTX 4090', box.gpuName), spec)).toEqual({ gbs: 1792 * STREAM_EFFICIENCY, measured: false });
-    expect(streamedBandwidth(bench('NVIDIA GeForce RTX 5090', 1611), sameGpu('NVIDIA GeForce RTX 5090', box.gpuName), spec)).toEqual({ gbs: 1611, measured: true });
+  it('a bench from another device falls back to the ceiling, a matching one replaces it', () => {
+    expect(streamedBandwidth(bench('NVIDIA GeForce RTX 4090', 900), sameGpu('NVIDIA GeForce RTX 4090', box.gpuName), spec.bandwidthGBs)).toEqual({ gbs: 1792 * STREAM_EFFICIENCY, measured: false });
+    expect(streamedBandwidth(bench('NVIDIA GeForce RTX 5090', 1611), sameGpu('NVIDIA GeForce RTX 5090', box.gpuName), spec.bandwidthGBs)).toEqual({ gbs: 1611, measured: true });
+    // The dev box's own ceiling (thisCard.ts) replaces the reference in the estimate: the copy factor was measured against it.
+    expect(streamedBandwidth(null, false, 2052)).toEqual({ gbs: 2052 * STREAM_EFFICIENCY, measured: false });
     expect(streamedBandwidth(null, false, null)).toBeNull();
   });
 
@@ -56,9 +58,11 @@ describe('lookupGpu: NVML and DXGI names carry a vendor prefix the table does no
 });
 
 describe('facts', () => {
-  it('the snapshot gives a module-derived RAM bus, the picker the tagged default', () => {
-    expect(factsFromSnapshot(devbox(), null, null)).toMatchObject({ ramBandwidthGBs: 99.2, ramBandwidthDefault: false });
-    expect(box).toMatchObject({ ramBandwidthGBs: 80, ramBandwidthDefault: true });
+  it('the snapshot gives a module-derived RAM bus and the card facts, the picker the tagged default and no card', () => {
+    const snap = factsFromSnapshot(devbox(), null, null);
+    expect(snap).toMatchObject({ ramBandwidthGBs: 99.2, ramBandwidthDefault: false });
+    expect(snap.gpu?.powerMaxLimitMw).toBe(600000);
+    expect(box).toMatchObject({ ramBandwidthGBs: 80, ramBandwidthDefault: true, gpu: null });
   });
 });
 

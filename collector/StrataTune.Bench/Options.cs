@@ -5,8 +5,13 @@ namespace StrataTune.Bench;
 internal sealed class Options
 {
     public const int MaxVramTargetPercent = 90;
+    public const int MaxFillRateSeconds = 60;
 
     public string Script { get; private set; } = "full";
+    /// <summary>--fillrate: the pixel-rate measurement instead of the script (FillRate.cs).</summary>
+    public bool FillRate { get; private set; }
+    /// <summary>Seconds of measured fill after the warm-up; only --fillrate reads it.</summary>
+    public int Seconds { get; private set; } = 6;
     public bool VSync { get; private set; }
     public int VramTargetPercent { get; private set; } = 40;
     public bool Json { get; private set; }
@@ -20,6 +25,7 @@ internal sealed class Options
     public static Options Parse(string[] args)
     {
         Options options = new();
+        bool secondsGiven = false;
         int i = 0;
 
         string Value(string flag) => ++i < args.Length ? args[i] : throw new ArgumentException($"{flag} needs a value");
@@ -29,6 +35,8 @@ internal sealed class Options
             switch (args[i])
             {
                 case "--script": options.Script = ScriptKind(Value("--script")); break;
+                case "--fillrate": options.FillRate = true; break;
+                case "--seconds": options.Seconds = Number("--seconds", Value("--seconds"), 1, MaxFillRateSeconds); secondsGiven = true; break;
                 case "--vsync": options.VSync = true; break;
                 case "--vram-target": options.VramTargetPercent = Number("--vram-target", Value("--vram-target"), 1, MaxVramTargetPercent); break;
                 case "--json": options.Json = true; break;
@@ -39,6 +47,12 @@ internal sealed class Options
                 case "--debug": options.Debug = true; break;
                 default: throw new ArgumentException($"unknown argument {args[i]}");
             }
+        }
+
+        if (secondsGiven && !options.FillRate)
+        {
+            // The script's length is fixed by design (plan section 11a); a silently ignored flag would suggest otherwise.
+            throw new ArgumentException("--seconds only applies to --fillrate; the script's segments have fixed lengths");
         }
 
         return options;

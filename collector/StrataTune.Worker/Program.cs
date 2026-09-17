@@ -9,7 +9,7 @@ namespace StrataTune.Worker;
 // Exit codes, shared with the collector's tune supervisor:
 //   0  ok                                   3  the selected adapter is WARP, not hardware
 //   1  bad arguments or unexpected failure  10 device lost (TDR)
-//   2  hash differs from --expect
+//   2  hash differs from --expect, or --reference could not repeat itself
 internal static class Program
 {
     private const int ExitOk = 0;
@@ -25,6 +25,8 @@ internal static class Program
           strata-tune-worker --load light|heavy --seconds N [--adapter LUID] [--heartbeat PATH]
           strata-tune-worker --bench [--json] [--seconds N] [--adapter LUID] [--heartbeat PATH]
           strata-tune-worker --cpu-load --seconds N [--threads T] [--heartbeat PATH]
+          strata-tune-worker --reference [--json] [--adapter LUID] [--heartbeat PATH]
+          strata-tune-worker --ladder --pattern heavy|light|transient --seconds N --expect HEX [--adapter LUID] [--heartbeat PATH]
         --adapter takes a luid from --devices; without it the DXGI high-performance adapter is used.
         --elements is at most 536870912 (2 GiB of uint).
         """;
@@ -45,6 +47,8 @@ internal static class Program
                 "--load" => RunLoad(options),
                 "--cpu-load" => RunCpuLoad(options),
                 "--bench" => RunBench(options),
+                "--reference" => RunReference(options),
+                "--ladder" => RunLadder(options),
                 _ => Hash(options),
             };
         }
@@ -227,6 +231,72 @@ internal static class Program
 
         ReportHeartbeat(heartbeat);
         return ExitOk;
+    }
+
+    // The stage-1 baseline (plan section 16): the fixed reference pass at the current clocks,
+    // captured before any offset is applied. Exit 2 when the two passes disagree, so a card
+    // that is already unstable never hands the supervisor a number to hold every candidate to.
+    private static int RunReference(Options options)
+    {
+        using Heartbeat? heartbeat = options.HeartbeatPath is null ? null : new Heartbeat(options.HeartbeatPath);
+
+        GraphicsDevice? device = HardwareDevice(options.Adapter, announce: !options.Json);
+        if (device is null)
+        {
+            return ExitNoHardwareGpu;
+        }
+
+        ReferenceResult result = Reference.Capture(device);
+
+        if (options.Json)
+        {
+            Console.WriteLine(result.ToJson());
+        }
+        else
+        {
+            Console.WriteLine($"elements {result.Elements} rounds {result.Rounds} seed {result.Seed}");
+            Console.WriteLine($"hash {result.Hash}");
+            Console.WriteLine($"elapsed {result.ElapsedMs:F1} ms for 2 passes");
+        }
+
+        ReportHeartbeat(heartbeat);
+
+        if (!result.Stable)
+        {
+            Console.Error.WriteLine("reference passes disagree: the card is not stable at its current clocks");
+            return ExitMismatch;
+        }
+
+        return ExitOk;
+    }
+
+    // One rung of the ladder; the last stdout line is the JSON summary whatever the outcome.
+    private static int RunLadder(Options options)
+    {
+        using Heartbeat? heartbeat = options.HeartbeatPath is null ? null : new Heartbeat(options.HeartbeatPath);
+
+        GraphicsDevice? device = HardwareDevice(options.Adapter);
+        if (device is null)
+        {
+            return ExitNoHardwareGpu;
+        }
+
+        Pattern pattern = options.Pattern!.Value;
+        ulong expect = options.Expect!.Value;
+
+        Console.WriteLine($"ladder {Patterns.Name(pattern)} seconds {options.Seconds} expect {expect:x16}");
+        LadderResult result = Ladder.Run(device, pattern, options.Seconds, expect);
+        Console.WriteLine(result.ToJson());
+
+        ReportHeartbeat(heartbeat);
+
+        return result.Outcome switch
+        {
+            LadderOutcome.Stable => ExitOk,
+            LadderOutcome.Mismatch => ExitMismatch,
+            LadderOutcome.DeviceLost => ExitDeviceLost,
+            _ => ExitFailure,
+        };
     }
 
     // A heartbeat that stopped being written does not fail the run, but the supervisor
