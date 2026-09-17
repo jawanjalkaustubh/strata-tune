@@ -898,6 +898,33 @@ gpu.lock.
 
 Rules of thumb: subscribe to sensors, never read everything; batch IPC at 2 Hz; unmount pages fully; no timers on hidden pages; the ring buffer's memory is bounded by time (§6).
 
+## 17d. Device classes (user direction 2026-09-16: "this app is not just for this system — all
+kinds of systems: laptops with no GPU, gaming laptops, AI laptops and PCs, mid-range and
+high-end PCs like ours")
+
+The dev box is the top of the range and the only machine the build is verified on, so every
+page is designed and tested against a **class matrix** of mock snapshots and ticks, not just
+the live box. A page is done when it reads right on every row: nothing empty, nothing "—",
+every absence explained in one sentence, nothing offered that the machine cannot do.
+
+| Class | Example | What changes |
+|---|---|---|
+| **Laptop, no dGPU** | Ryzen 7 / Core i5 with an iGPU, 16 GB, one NVMe, battery | GPU panel = the iGPU's LHM sensors (clock, load, shared memory), no NVML, no 12V-2x6, no fans of its own; Monitor leads with CPU, battery and the board; Capture works (PresentMon sees the iGPU); the built-in bench runs but is capped by the iGPU and says so; AI Models estimates CPU-only inference from RAM bandwidth (dual-channel DDR5 ≈ 80 GB/s → a 4B model at a few tok/s) and says a discrete GPU is what changes it; Headroom is unavailable with the reason "no supported GPU"; audit rules about GPU units/OC/ROPs are omitted; the power page is battery-aware (§17c) |
+| **Gaming laptop** | RTX 4070 Laptop 115 W + Dynamic Boost, i7/R9 HX, MUX or Optimus | NVML present; the power limit is the TGP and moves with Dynamic Boost — the cap is shown as a range, not a tick; hotter and louder is normal, so the thermal audit's INFO/WARN split uses laptop thresholds; the CPU has no PPT/CO story but has PL1/PL2 — the popover's "set in BIOS" fields become "set in the vendor app" (Armoury Crate, Legion, Omen); Headroom works within the driver's mobile offset range with the plan's same guards, and the warning adds one line about the vendor app's own OC mode; Optimus: PresentMon attributes frames correctly, the GPU panel names the render GPU |
+| **AI laptop / PC** | Core Ultra / Ryzen AI / Snapdragon X with an NPU, maybe a small dGPU | AI Models shows the NPU's advertised TOPS as its own row with the honest line that Ollama and llama.cpp run on the GPU or CPU, not the NPU, so the NPU number does not predict tok/s today; ARM64 (Snapdragon X) needs an arm64 Electron and .NET build, LHM's ARM support is partial and PawnIO absent → the collector reports what WMI and the counters give and the rest is omitted; the audit covers Windows, storage, memory and power plan and says the sensor set is limited on this platform |
+| **Mid-range PC** | RTX 4060 / RX 7700 XT, Ryzen 5 / i5, 32 GB, 650 W PSU | the common case: everything works; AMD cards get LHM sensors and no NVML/NVAPI — Headroom says "NVIDIA cards only in this version; AMD via ADLX is planned", the advisor works from the table; the PSU verdict matters here (a 650 W supply and a 4060 is fine; a 5070 Ti on it is not); the missing-ROPs check runs only on the affected 50-series rows |
+| **High-end PC** | this box: 5090, 9950X, 1300 W, custom OC | everything, including the 12V-2x6 block, Headroom on top of a vendor tune, pin sensors, the full spec sheet |
+
+Rules that follow: (1) every page ships with a fixture per class under `tests/fixtures/classes/`
+(snapshot + a tick + an audit input), the render tests iterate the matrix, and the design
+reviewer screenshots each class at 1366×768 and 1920×1080; (2) vendor-specific code paths are
+behind one capability object (`caps: { nvml, nvapi, pins, npu, battery, dynamicBoost, arm64 }`)
+computed once from the snapshot, never from string-matching in components; (3) the score scale
+(§16) stays absolute — a laptop iGPU scoring 600 against a reference 5090's 10,000 is the
+truth — but every score names the device class beside it so a comparison sheet from a laptop is
+never read as a broken desktop; (4) nothing in the app assumes a second GPU, a PSU rating, pin
+sensors, a fan header, NVML, or an x64 CPU.
+
 ## 18. Brand
 
 - **Strata Tune**, `St` monogram, geometric construction like Sc/Sp/Ss (no typeface), from
