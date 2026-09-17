@@ -607,6 +607,21 @@ junction, CPU package, fan %, **perf-limit reasons as a label**, VRAM, test stat
 ladder position, pattern, elapsed, error count, bandwidth). A **test validity indicator**
 turns red if a throttle bit is set during a ceiling hunt.
 
+**Another tool's tune on the card (found 2026-09-16).** GPU Tweak's offsets do not show in the
+NVAPI P0 deltas we read and write (baseline read 0 / 0 while the card held 15837 MHz memory
+against a 14001 ceiling), so the two tools write through different driver routes and cannot see
+each other. Before any hunt, if the card is holding clocks above the driver ceiling with no P0
+delta of ours, the hunt refuses: "another tool is tuning this card — zero its offsets or close
+it first"; the same check runs before *restore baseline*, which must never be the thing that
+looks like it wiped a vendor tune. And a vendor tool's Apply can be dropped silently by the
+driver (the user's +4072 sat on the slider while the card kept +3672 until a re-apply): the
+Monitor shows what the card holds, never what a slider says.
+
+**A shutdown is not a hang (found 2026-09-16).** The logon revert found a Pending marker after
+the overnight shutdown and logged it as "a hard hang, stage 4". The marker must record whether
+the collector saw an orderly stop (SIGTERM / `/shutdown` / session end event) so a clean
+shutdown mid-candidate reverts quietly and only a genuinely dirty exit is called a hang.
+
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
 third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set
