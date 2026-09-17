@@ -896,6 +896,13 @@ partial result marked *interrupted* rather than a blank. Escape does the same wh
 is focused. A stopped run never leaves a PENDING tune state, a lingering process, or a held
 gpu.lock.
 
+**No sleeping mid-run (2026-09-16).** While a hunt, bench, capture, audit load or measure is
+active the collector holds `SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_CONTINUOUS)` and
+releases it the moment the run ends or is stopped; the display is never held (ES_DISPLAY_REQUIRED
+is not set) — a 16-minute hunt on a laptop must not be cut by the idle timer, and the flight
+recorder must never have to explain a sleep as a hang. Tested by asserting the flag is cleared
+after Stop and after a crash-exit path.
+
 Rules of thumb: subscribe to sensors, never read everything; batch IPC at 2 Hz; unmount pages fully; no timers on hidden pages; the ring buffer's memory is bounded by time (§6).
 
 ## 17d. Device classes (user direction 2026-09-16: "this app is not just for this system — all
