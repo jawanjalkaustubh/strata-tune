@@ -675,6 +675,21 @@ step and soaks again, once. The light and transient patterns of the first build 
 variable half. Total for a typical card: memory ladder ~6 rungs + core ladder ~6 rungs + soak ≈
 17 minutes, shown as a time estimate before the user starts.
 
+**Every rung is scored, and the final run is the benchmark (user, 2026-09-16: "or we can do a
+2-minute test with our own scores, so people can treat it as an auto-OC tool that gives you max
+bench scores without making the PC completely hang — which usually happens with manual OC, then
+the user force-restarts").** That is the product in one sentence and the page says it that way:
+*Headroom — finds your card's highest stable score without the hang.* Each 60 s rung yields a
+**score** (points from the sustained half's compute throughput and the memory bandwidth, on one
+fixed scale where the reference 5090 at reference clocks is 10,000, so numbers compare across
+cards and across people), and the ladder is shown as a score climb: "+0 → 10,420 · +15 → 10,480 ·
++30 → 10,530 · +45 → silent error, stopped". The certified pair then gets the **2-minute scored
+run** that replaces the 5-minute soak as the official number — the same shape, hash-checked
+throughout — and the as-found card is scored the same way first, so the result reads "10,530
+points at +30 / +60: +1.1 % over your current tune, +19 % over a reference 5090". That score and
+the certified values go on the §14 share card. A failure in the 2-minute run steps the failing
+ladder down one fine step and re-runs it once. Typical total ≈ 6 + 6 rungs + 2 × 2 min ≈ 16 min.
+
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
 third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set
