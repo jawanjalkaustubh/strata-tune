@@ -735,9 +735,15 @@ its first rung with "the driver is not adding our offset": the card held 3337 MH
 the curve with the user's +319 and 3337 again with +15 on top — the VF table's highest bin, above
 which no offset does anything. Two rules: (1) a **user core cap** in the Headroom form, "never
 test above __ MHz core" (memory has its own), default empty; a rung whose predicted top-of-curve
-clock would exceed the cap is not written and the ladder ends with "stopped at your cap"; (2) when a core rung's top-of-curve clock does not move while the memory rung's did,
-the verdict is "the card already runs at the top of its clock table (3337 MHz); no core headroom
-above it through offsets" — certified +0 core, a result, not a failure. The score climb never
+clock would exceed the cap is not written and the ladder ends with "stopped at your cap"; (2) the top-of-curve clock is only the first additivity signal: on a card whose curve
+ends where the tune already sits (3337 MHz here) it cannot move, but the offset still counts
+where the card actually runs — on the power cap, where a shifted curve means a higher clock at
+the same watts (the +15 core rung scored 12,661 against 12,536, about +1 %, while the light-load
+check was declaring the offset dead). So when the top does not move, additivity is judged on the
+**sustained half's mean clock and throughput** against the as-found run's own spread as the noise
+floor (clocks on the cap wander ±20 MHz, so the whole 30 s is averaged), and only when neither
+the top, the sustained mean nor the score moves is the verdict "no core headroom through
+offsets" — certified +0 core, a result, not a failure. The score climb never
 writes a stock rung: "−2036" (the vendor tune removed to measure stock) must not appear — the
 as-found run and the vendor rung are the only baselines.
 
