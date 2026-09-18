@@ -298,7 +298,7 @@ describe('Tune page pieces render the dev box on top of its vendor tune', () => 
     expect(html).toContain('<details');
     expect(html).toContain('may void your hardware warranty');
     // DISCLAIMER.md section 3 describes the product as built: offsets tested and put back, values applied by the user, no voltage, power limit or fan change.
-    expect(html).toContain('always puts the card');
+    expect(html).toContain('puts the card back as it found it');
     expect(html).toContain('never changes a voltage, a power limit or a fan curve');
     expect(html).not.toContain('applies only the changes you allow');
     // Plan 17d row 2: the gaming laptop's line about the vendor app's own OC mode, only there.
