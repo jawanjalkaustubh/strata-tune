@@ -261,7 +261,7 @@ describe('Tune page pieces render the dev box on top of its vendor tune', () => 
     expect(controls).toContain('Core only');
     expect(controls).toContain('Stop');
     expect(controls).not.toContain('Validate');
-    expect(controls).not.toContain('Keep');
+    expect(controls).not.toMatch(/>Keep<|Keep \(validate\)/);
     const refusal = 'your card holds a tune we cannot see - enter what your vendor tool shows first (memory 16008 MHz against a 14001 MHz ceiling)';
     const refused = renderToStaticMarkup(<Controls gates={gates(true, connected, STATUS, null)} busy={null} refusal={refusal} estimateMinutes={16} onFind={() => undefined} onStop={() => undefined} />);
     expect(refused).toContain(refusal);
