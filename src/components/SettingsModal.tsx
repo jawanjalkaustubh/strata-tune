@@ -80,6 +80,27 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                 {note && <p className="text-micro text-studio-muted">{note}</p>}
               </div>
             </div>
+            {settings.enableTune && (
+              <div className="flex items-start gap-3">
+                <input
+                  id="hold-tune"
+                  type="checkbox"
+                  className="mt-0.5 accent-emerald-500 cursor-pointer"
+                  checked={settings.holdTuneAtStartup}
+                  onChange={(e) => updateSettings({ holdTuneAtStartup: e.target.checked })}
+                />
+                <div className="space-y-1">
+                  <label htmlFor="hold-tune" className="block text-mini font-medium text-studio-text cursor-pointer">
+                    Keep my tune applied at startup (Strata Tune holds it, not the vendor tool)
+                  </label>
+                  <p className="text-micro text-studio-subtle leading-relaxed">
+                    The core and memory offsets you entered on the Tune page are written through the driver's standard route each time the collector starts and finds
+                    nothing applied. One program then holds the tune: turn off the vendor tool's apply-at-startup, or the two overwrite each other. "Release to vendor tool"
+                    on the Tune page hands it back. Off means the card is always left as found.
+                  </p>
+                </div>
+              </div>
+            )}
             <p className="text-micro text-studio-subtle border-t border-studio-border pt-3">
               The facts no sensor can read (your CPU power limit, your power supply) are asked for on the pages that use them; panel names are edited on the panels themselves.
             </p>

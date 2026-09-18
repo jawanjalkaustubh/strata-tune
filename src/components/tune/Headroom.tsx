@@ -98,6 +98,18 @@ export const Headroom: React.FC = () => {
     api.tune.enable(true, settings.tuneAcceptedWarningAt ?? undefined).then(tune.refresh, () => undefined);
   }, [connected, enabled, settings.tuneAcceptedWarningAt, fileFlag, tune.refresh]);
 
+  // "Keep my tune applied at startup": once per connection, when the driver reads 0 / 0 and the values are entered.
+  const heldOnce = useRef(false);
+  const driverDeltas = tune.status?.nvapi.deltas ?? null;
+  useEffect(() => {
+    if (!connected) heldOnce.current = false;
+    if (!api || !connected || !enabled || !settings.holdTuneAtStartup || heldOnce.current || !driverDeltas) return;
+    const vendor = vendorForStart(settings);
+    if (!vendor || (driverDeltas.coreMhz === 0 && driverDeltas.memMhz === 0) === false) return;
+    heldOnce.current = true;
+    api.tune.hold(vendor).then(tune.refresh, () => undefined);
+  }, [connected, enabled, settings, driverDeltas, tune.refresh]);
+
   // The collector went away with a rung on the card (a run was going, or the file said PENDING): every
   // restore path lives in that process, so the section says so until it is back and asks main to relaunch it once.
   const applied = tune.run?.state === 'running' || tune.status?.state === 'PENDING';

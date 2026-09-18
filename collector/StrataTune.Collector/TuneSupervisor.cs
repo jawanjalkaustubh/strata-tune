@@ -259,6 +259,28 @@ internal sealed class TuneSupervisor
     /// against a 16037 tune, 2026-09-17). Writing 0 / 0 with nothing running clears our route;
     /// the user then applies in the vendor tool, whose write is clean again.
     /// </summary>
+    /// <summary>
+    /// "Keep my tune applied at startup" (plan section 16, 2026-09-17): the renderer sends the
+    /// vendor values (slider units) once per collector start when the driver reads 0 / 0, so
+    /// one program holds the tune. Refused while a run is going or a rung is applied, and
+    /// when our route already holds something (never overwrite a value we did not just read as 0).
+    /// </summary>
+    public (bool Ok, string Message) Hold(PstateDeltas vendor)
+    {
+        if (Active) return (false, "a run is going");
+        return Mutate(() =>
+        {
+            if (_store.Current.State == TuneRollback.Pending) return (false, "a rung is still applied");
+            if (NvapiPstates.ReadDeltas(out _) is { Deltas: var now } && (now.CoreKhz != 0 || now.MemKhz != 0))
+                return (false, $"our route already holds core {now.CoreKhz / 1000} / memory {now.MemKhz / 1000} MHz; nothing written");
+            var deltas = VendorUnits.Deltas(vendor);
+            if (!NvapiPstates.ApplyDeltas(deltas, out var status))
+                return (false, $"the driver refused the tune: {status}");
+            _log.Write($"tune: held at startup through our route: core +{vendor.CoreMhz} / memory +{vendor.MemMhz} slider ({status})");
+            return (true, $"your tune is applied through our route: {status}");
+        });
+    }
+
     public (bool Ok, string Message) Release()
     {
         if (Active) return (false, "a run is going; stop it first");

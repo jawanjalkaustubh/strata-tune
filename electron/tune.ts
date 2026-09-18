@@ -19,6 +19,7 @@ const ROUTES = {
   stop: '/tune/stop',
   revert: '/tune/revert',
   release: '/tune/release',
+  hold: '/tune/hold',
   export: '/tune/export',
   flight: '/tune/flight'
 };
@@ -88,6 +89,11 @@ export class TuneClient {
     return this.c.post<TuneStatus>(ROUTES.release, {}, WRITE_TIMEOUT_MS);
   }
 
+  /** Writes the vendor values (slider units) when the driver reads 0 / 0: the "keep my tune applied at startup" switch. */
+  hold(vendor: PstateDeltas): Promise<TuneStatus> {
+    return this.c.post<TuneStatus>(ROUTES.hold, vendor, WRITE_TIMEOUT_MS);
+  }
+
   /** 404 until a hunt has a result: answered as null rather than an error. */
   async export(): Promise<TuneExport | null> {
     try {
@@ -136,6 +142,7 @@ export function registerTuneIpc(ipc: IpcMain, collector: CollectorClient, send: 
   ipc.handle('tune:stop', () => client.stop());
   ipc.handle('tune:revert', () => client.revert());
   ipc.handle('tune:release', () => client.release());
+  ipc.handle('tune:hold', (_e, vendor: PstateDeltas) => client.hold(vendor));
   ipc.handle('tune:export', () => client.export());
   ipc.handle('tune:flight', () => client.flight());
   ipc.on('tune:subscribe', () => (wanted = true));

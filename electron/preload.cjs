@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld('strata', {
     stop: () => ipcRenderer.invoke('tune:stop'),
     revert: () => ipcRenderer.invoke('tune:revert'),
     release: () => ipcRenderer.invoke('tune:release'),
+    hold: (vendor) => ipcRenderer.invoke('tune:hold', vendor),
     export: () => ipcRenderer.invoke('tune:export'),
     flight: () => ipcRenderer.invoke('tune:flight'),
     subscribe: () => ipcRenderer.send('tune:subscribe'),

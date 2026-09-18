@@ -211,7 +211,7 @@ export const LiveMonitor: React.FC<Props> = ({ index, tick, ring, snapshot, stat
               max={totalMax}
               mark={totalHigh}
               markLabel={`Highest this session ${totalHigh.toFixed(0)} W`}
-              note={`${now.measuredW.toFixed(0)} W measured, ${now.estimatedW.toFixed(0)} W estimated`}
+              note={`${now.measuredW.toFixed(0)} W measured · ${now.estimatedW.toFixed(0)} W estimated (${now.parts.filter((p) => p.tag === 'estimated').map((p) => `${p.label.toLowerCase()} ${p.watts.toFixed(0)}`).join(', ')}; no sensor reports these)`}
               tone="ok"
               history={ring.series((t) => total(t).totalW)}
             />

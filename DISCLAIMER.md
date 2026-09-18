@@ -26,8 +26,9 @@ Strata Tune is free; nothing was paid and nothing can be refunded.
 - The monitoring, audit, capture and advisor features **change nothing** on your machine.
   They read sensors and run measured workloads.
 - **Headroom** (the Tune page's hunt) is off by default and sits behind a warning. It tests
-  small clock offsets on your graphics card for minutes at a time and always puts the card
-  back as it found it; it never changes a voltage, a power limit or a fan curve, and it writes
+  small clock offsets on your graphics card for minutes at a time and puts the card back as it
+  found it (unless you turn on *Keep my tune applied at startup*, which re-applies the offsets
+  you entered yourself each time the app's collector starts); it never changes a voltage, a power limit or a fan curve, and it writes
   nothing to the CPU. The values it finds are yours to apply in your card vendor's tool. A
   test can still crash the driver or the machine and lose unsaved work in other programs, and
   any overclock you then apply yourself can crash the machine, shorten the life of or

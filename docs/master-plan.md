@@ -758,6 +758,16 @@ nothing to enter") and prefills from the deltas; (2) a **Release to vendor tool*
 clean — the user presses it, then Apply in GPU Tweak, and the card reads the tune in full.
 The earlier assumption that P0 deltas vanish at reboot is withdrawn.
 
+**One program holds the tune (user, 2026-09-17: "why does it keep offsetting it — fix it").**
+The mixing of two routes is the whole problem, so the user chose to let Strata Tune hold the
+tune: an opt-in switch in Settings, *Keep my tune applied at startup*, writes the vendor values
+entered on the Tune page through our route once per collector start when the driver reads
+0 / 0 (`POST /tune/hold`, refused while a run is going, a rung is applied, or our route already
+holds something). The user turns off the vendor tool's apply-at-startup and stops pressing
+Apply there; *Release to vendor tool* hands the card back. With the switch off the rule above
+stands: the card is always left as found. The disclaimer's "left as found" sentence gains
+"unless you turn on Keep my tune applied".
+
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
 third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set

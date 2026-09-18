@@ -59,6 +59,13 @@ export interface Settings {
    */
   coreCapMhz: number | null;
   memCapMhz: number | null;
+  /**
+   * "Keep my tune applied at startup" (plan section 16, 2026-09-17): the vendor values above are
+   * written through our route once per collector start when the driver reads 0 / 0, so one
+   * program holds the tune and the vendor tool's short-landing Apply never enters the picture.
+   * Off by default; the user turns it on knowing the app then holds an overclock on the card.
+   */
+  holdTuneAtStartup: boolean;
   /** Monitor panel titles the user typed over the detected names, keyed by the hardware id (e.g. "/amdcpu/0", "/nvml/0", "/motherboard"). */
   panelNames: Record<string, string>;
   /** Monitor panel order and sizes, owned entirely by the Monitor page; null is the default layout. */
@@ -67,7 +74,7 @@ export interface Settings {
   disclaimerAccepted?: { version: number; acceptedAt: string } | null;
 }
 
-export const DEFAULT_SETTINGS: Settings = { enableTune: false, tuneAcceptedWarningAt: null, calibrationFactor: null, cpuPptW: null, cpuTdcA: null, cpuEdcA: null, coAllCore: null, psuWatts: null, psuRating: null, vendorCoreOffsetMhz: null, vendorMemoryOffset: null, coreCapMhz: null, memCapMhz: null, panelNames: {}, monitorLayout: null };
+export const DEFAULT_SETTINGS: Settings = { enableTune: false, tuneAcceptedWarningAt: null, calibrationFactor: null, cpuPptW: null, cpuTdcA: null, cpuEdcA: null, coAllCore: null, psuWatts: null, psuRating: null, vendorCoreOffsetMhz: null, vendorMemoryOffset: null, coreCapMhz: null, memCapMhz: null, holdTuneAtStartup: false, panelNames: {}, monitorLayout: null };
 
 const KEY = 'strata-tune.settings';
 

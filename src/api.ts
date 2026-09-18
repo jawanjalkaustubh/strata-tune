@@ -110,6 +110,8 @@ export interface TuneApi {
   revert(): Promise<TuneStatus>;
   /** Writes our 0 / 0 so the vendor tool's next Apply owns the card again. */
   release(): Promise<TuneStatus>;
+  /** Writes the vendor values when the driver reads 0 / 0 (the keep-at-startup switch). */
+  hold(vendor: PstateDeltas): Promise<TuneStatus>;
   /** Null until a hunt has a result. */
   export(): Promise<TuneExport | null>;
   /** The last 30 s before a hard hang; null when no crash has been found at a start. */
