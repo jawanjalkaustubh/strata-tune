@@ -144,7 +144,15 @@ internal sealed class TuneSupervisor
         : !_reconciled ? "the revert-at-start pass has not run yet"
         : _store.Problem;
 
+    /// <summary>A refusal is logged as well as answered: the user reads "it did not work" where the page shows an amber line, and the log must say why.</summary>
     public async Task<(int Status, string Refusal)> TryStartAsync(TuneStartRequest request)
+    {
+        var r = await TryStartInnerAsync(request);
+        if (r.Status != StatusCodes.Status200OK) _log.Write($"tune: start ({request.Kind?.ToString() ?? "hunt"}) refused, HTTP {r.Status}: {r.Refusal}");
+        return r;
+    }
+
+    private async Task<(int Status, string Refusal)> TryStartInnerAsync(TuneStartRequest request)
     {
         if (request.Enabled == false || !_store.Current.Enabled)
             return (Forbidden, "Tune is not enabled: turn it on in Settings and accept the warning first");
