@@ -306,7 +306,7 @@ describe('Tune page pieces render the dev box on top of its vendor tune', () => 
     expect(renderToStaticMarkup(<TuneWarning isOpen laptop onAccept={() => undefined} onClose={() => undefined} />)).toContain(esc(WARNING_LAPTOP_LINE));
     expect(html).toContain('records this acknowledgement');
     // The old four-section modal and its Keep / logon-task copy are gone.
-    for (const gone of ['What it does', 'What can happen', 'Before you start', 'Keep', 'logon task', 'until the next reboot']) expect(html).not.toContain(gone);
+    for (const gone of ['What it does', 'What can happen', 'Before you start', 'Keep (validate)', 'logon task', 'until the next reboot']) expect(html).not.toContain(gone);
     expect(hardwareRiskSection().length).toBeGreaterThan(2);
   });
 
