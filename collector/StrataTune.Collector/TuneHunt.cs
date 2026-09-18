@@ -198,14 +198,18 @@ internal sealed class TuneHunt(TuneSupervisor owner, Sources sources, RingBuffer
             run.Luid = await FindAdapterAsync(run, ct);
             run.ReferenceHash = await ReferenceAsync(run, ct);
             await AsFoundAsync(run, ct);
-            await DecideBaselineAsync(run, ct);
-            // Memory first and on its own: a cheap win, orthogonal to the power cap; the
-            // core ladder then starts from the baseline again, one variable at a time.
-            if (run.Kind is TuneRunKind.Hunt or TuneRunKind.Memory)
-                await LadderAsync(run, TuneLadderKind.Memory, ct);
-            if (run.Kind is TuneRunKind.Hunt or TuneRunKind.Core)
-                await LadderAsync(run, TuneLadderKind.Core, ct);
-            await OfficialAsync(run, ct);
+            // A tune we cannot read ends the run here as a result, not a failure: the as-found
+            // score is what we can test (user, 2026-09-17: "test what is visible to us and explain").
+            if (await DecideBaselineAsync(run, ct))
+            {
+                // Memory first and on its own: a cheap win, orthogonal to the power cap; the
+                // core ladder then starts from the baseline again, one variable at a time.
+                if (run.Kind is TuneRunKind.Hunt or TuneRunKind.Memory)
+                    await LadderAsync(run, TuneLadderKind.Memory, ct);
+                if (run.Kind is TuneRunKind.Hunt or TuneRunKind.Core)
+                    await LadderAsync(run, TuneLadderKind.Core, ct);
+                await OfficialAsync(run, ct);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -320,15 +324,24 @@ internal sealed class TuneHunt(TuneSupervisor owner, Sources sources, RingBuffer
     /// TuneLadder.PlanVendor): a vendor tool's tune on the card is refused without its value,
     /// checked against the card with it, and then written through our route as the vendor
     /// rung, which becomes the baseline every rung sits on and every restore puts back.</summary>
-    private async Task DecideBaselineAsync(TuneRunContext run, CancellationToken ct)
+    /// <returns>False when the run ends at the as-found score: a tune another tool holds, which our offsets would replace.</returns>
+    private async Task<bool> DecideBaselineAsync(TuneRunContext run, CancellationToken ct)
     {
         var facts = sources.NvmlSampler?.Latest.FirstOrDefault()?.ClockOffsets;
         var plan = TuneLadder.PlanVendor(run.BaselineHeld!, run.BaselineTop, facts?.MaxClockSmMhz, facts?.MaxClockMemMhz, run.Found!, run.VendorSlider);
         if (plan.Refusal is { } refusal)
         {
             lock (run)
-                run.Stops.Add(new(TuneLadderKind.Memory, refusal, 0, null, plan.Sentence!));
+            {
+                if (run.Kind is TuneRunKind.Hunt or TuneRunKind.Memory) run.Stops.Add(new(TuneLadderKind.Memory, refusal, 0, null, plan.Sentence!));
+                if (run.Kind is TuneRunKind.Hunt or TuneRunKind.Core) run.Stops.Add(new(TuneLadderKind.Core, refusal, 0, null, plan.Sentence!));
+            }
             Finish(run);
+            if (refusal == TuneStopReason.ForeignTune)
+            {
+                Event(run, plan.Sentence!);
+                return false;
+            }
             throw new TuneAbort(plan.Sentence!);
         }
         run.Vendor = plan.Vendor;
@@ -338,7 +351,7 @@ internal sealed class TuneHunt(TuneSupervisor owner, Sources sources, RingBuffer
             Event(run, $"the driver already holds your tune through our route (P0 core +{run.Found!.CoreMhz} / memory +{run.Found.MemMhz} MHz, the tool shows core +{v.CoreMhz} / memory +{v.MemMhz}): it is the baseline");
         }
         if (!plan.VendorRung)
-            return;
+            return true;
         run.Phase = TunePhase.Vendor;
         var deltas = plan.Baseline;
         var slider = plan.Vendor!;
@@ -352,6 +365,7 @@ internal sealed class TuneHunt(TuneSupervisor owner, Sources sources, RingBuffer
             throw new TuneAbort($"your tune written through the driver's P0 offsets holds {vendor.Held.SmMhz} / {vendor.Held.MemMhz} MHz where the card as found held {run.BaselineHeld!.SmMhz} / {run.BaselineHeld.MemMhz}: the value entered does not reproduce it; the card is left at those offsets, re-apply your tune in the vendor tool and check what it shows");
         run.ClimbFrom = new(vendor.Held, vendor.TopSmMhz ?? run.BaselineTop, "your tune through our route") { MeanSm = vendor.MeanSmMhz ?? run.ClimbFrom?.MeanSm, Throughput = vendor.ThroughputGsps ?? run.ClimbFrom?.Throughput };
         Event(run, $"your tune reproduced: the card holds {vendor.Held.SmMhz} / {vendor.Held.MemMhz} MHz through our route ({run.ClimbFrom.Top} MHz at the top of the curve) against {run.BaselineHeld!.SmMhz} / {run.BaselineHeld.MemMhz} as found; the ladders climb from these");
+        return true;
     }
 
     /// <summary>One ladder: the climb goes up one rung (a minute) at a time on top of the

@@ -158,7 +158,7 @@ internal static class TuneLadder
         {
             if (foreignCore || foreignMem)
                 return new(TuneStopReason.ForeignTune,
-                    $"your card holds a tune we cannot see — enter what your vendor tool shows first ({where}): on this driver our offsets replace that tune instead of adding to it, so nothing was written; with the tool's values the hunt writes your tune plus each step and puts your tune back, or zero the tool's offsets and hunt from stock",
+                    $"another tool holds a tune on this card ({where}). Strata Tune can only test offsets it can read, so it measured and scored the card as it is and went no further; nothing was written. To go further, enter that tool's slider values above and the hunt writes your tune plus each step, or keep tuning by hand in Afterburner or your vendor tool.",
                     found, null, false);
             return new(null, null, found, null, false);
         }

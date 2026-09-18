@@ -42,7 +42,7 @@ export const STOP_TEXT: Record<TuneStopReason, string> = {
   'device-lost': 'driver reset',
   thermal: 'the cooler, not the clock, is the limit',
   inconsistent: 'the repeats disagreed',
-  'foreign-tune': 'a tune we cannot see is on the card',
+  'foreign-tune': 'another tool holds a tune on the card: tested as found only',
   'vendor-mismatch': 'the vendor value entered is not what the card holds',
   additivity: 'the driver is not adding our offset',
   'driver-max': "the driver's offset range",
