@@ -337,6 +337,25 @@ async function ollamaList(): Promise<OllamaList | BenchError> {
   }
 }
 
+/**
+ * "Free VRAM" beside a hunt refusal: ask Ollama to evict every resident model now (keep_alive 0,
+ * the family's Free GPU rule) so the card is clear for the run; the app that loaded a model
+ * reloads it on its next request. Never touches Ollama itself.
+ */
+async function ollamaUnload(): Promise<{ unloaded: string[] } | BenchError> {
+  interface Ps {
+    models?: { name: string }[];
+  }
+  try {
+    const ps = await ollamaJson<Ps>('/api/ps');
+    const names = (ps.models ?? []).map((m) => m.name);
+    await Promise.all(names.map((model) => ollamaJson('/api/generate', { model, keep_alive: 0 }, 5_000)));
+    return { unloaded: names };
+  } catch (e) {
+    return ollamaError(e);
+  }
+}
+
 // --------------------------------------------------------------------- IPC
 
 /** `collector` is read per run: the client is created after this registration and may not be connected. */
@@ -346,4 +365,5 @@ export function registerAdvisorIpc(ipcMain: IpcMain, collector: () => CollectorC
   ipcMain.handle('bench:cancelGpu', () => cancelBench());
   ipcMain.handle('bench:cancelOllama', () => cancelOllama());
   ipcMain.handle('ollama:list', () => ollamaList());
+  ipcMain.handle('ollama:unload', () => ollamaUnload());
 }

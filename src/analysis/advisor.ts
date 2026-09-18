@@ -87,7 +87,7 @@ export interface AdvisorRow {
  * 15-25 % under, and no MoE row has been timed at all (the plan's three-model calibration is
  * still owed). The page's "Set factor from measurements" overrides it per box.
  */
-export const CALIBRATION_FACTOR = 0.5;
+export const CALIBRATION_FACTOR = 0.45;
 
 /**
  * What the worker's stream copy reaches of the theoretical bus figure: 1611 GB/s against the

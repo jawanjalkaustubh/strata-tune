@@ -14,7 +14,11 @@ export interface VendorCheck {
  * driver's ceiling. The core cannot be checked under a power cap; the additivity check guards
  * it. Without a held memory clock (nothing has loaded the card yet) the line says so.
  */
-export function vendorCheck(memory: { value: number; unit: 'effective' | 'nvml' } | null, held: HeldClocks | null, ceilingMemMhz: number | null): VendorCheck {
+export function vendorCheck(memory: { value: number; unit: 'effective' | 'nvml' } | null, held: HeldClocks | null, ceilingMemMhz: number | null, deltas: PstateDeltas | null = null): VendorCheck {
+  // Our own route holds the tune (a hunt restored it, and the driver keeps P0 deltas across a reboot): nothing is foreign and nothing needs typing.
+  if (deltas && (deltas.coreMhz !== 0 || deltas.memMhz !== 0) && (!held || ceilingMemMhz === null || vendorMatches(held.memMhz, ceilingMemMhz, deltas.memMhz))) {
+    return { tone: 'ok', text: `The driver reads your tune through our route: core +${deltas.coreMhz} · memory +${deltas.memMhz} (about +${deltas.memMhz * VENDOR_MEMORY_FACTOR} on the slider). The hunt starts from it; your vendor tool's Apply can land short while our route holds it — zero and re-apply there if the monitor reads low.` };
+  }
   if (!memory || memory.value === 0) {
     // The tick already shows a memory clock above the driver's ceiling: another tool is tuning the card, and the hunt would refuse; say so before Find.
     if (held && ceilingMemMhz !== null && held.memMhz > ceilingMemMhz + VENDOR_MATCH_MHZ) {
@@ -34,11 +38,15 @@ export function vendorCheck(memory: { value: number; unit: 'effective' | 'nvml' 
 interface Props {
   /** The vendor values the last result climbed on top of, the prefill when the settings hold none. */
   lastRun: PstateDeltas | null;
+  /** The driver's own P0 deltas: when our route holds the tune they are the prefill and the check says so. */
+  deltas?: PstateDeltas | null;
   held: HeldClocks | null;
   ceilingMemMhz: number | null;
   disabled: boolean;
   /** Plan 17d: on a laptop the tune lives in the vendor app (Armoury Crate, Legion Vantage, Omen Gaming Hub) or Afterburner, and the question names them. */
   laptop?: boolean;
+  /** Writes our 0 / 0 so the vendor tool's Apply owns the card again; offered while our route holds the tune. */
+  onRelease?: () => void;
 }
 
 const parse = (raw: string): number | null => {
@@ -52,11 +60,12 @@ const parse = (raw: string): number | null => {
  * tool's own units (core MHz; memory as GPU Tweak III's and Afterburner's sliders count it,
  * the effective rate, twice ours), remembered in the settings and sent with every start.
  */
-export const VendorForm: React.FC<Props> = ({ lastRun, held, ceilingMemMhz, disabled, laptop = false }) => {
+export const VendorForm: React.FC<Props> = ({ lastRun, deltas = null, held, ceilingMemMhz, disabled, laptop = false, onRelease }) => {
   const s = useSettings();
-  const core = s.vendorCoreOffsetMhz ?? lastRun?.coreMhz ?? null;
-  const memory = s.vendorMemoryOffset ?? (lastRun ? { value: lastRun.memMhz, unit: 'effective' as const } : null);
-  const check = vendorCheck(memory, held, ceilingMemMhz);
+  const ours = deltas && (deltas.coreMhz !== 0 || deltas.memMhz !== 0) ? deltas : null;
+  const core = s.vendorCoreOffsetMhz ?? lastRun?.coreMhz ?? ours?.coreMhz ?? null;
+  const memory = s.vendorMemoryOffset ?? (lastRun ? { value: lastRun.memMhz, unit: 'effective' as const } : ours ? { value: ours.memMhz * VENDOR_MEMORY_FACTOR, unit: 'effective' as const } : null);
+  const check = vendorCheck(memory, held, ceilingMemMhz, ours);
   const tone = check.tone === 'ok' ? 'text-emerald-400' : check.tone === 'warn' ? 'text-amber-300' : 'text-studio-subtle';
   return (
     <div className="rounded-md border border-studio-border bg-studio-panel px-3 py-2 space-y-1.5 min-w-0">
@@ -98,7 +107,14 @@ export const VendorForm: React.FC<Props> = ({ lastRun, held, ceilingMemMhz, disa
           my tool shows the NVML clock
         </label>
       </div>
-      <p className={`text-micro whitespace-normal break-words ${tone}`}>{check.text}</p>
+      <p className={`text-micro whitespace-normal break-words ${tone}`}>
+        {check.text}
+        {ours && onRelease && (
+          <button className="btn ml-2 align-middle" disabled={disabled} onClick={onRelease} title="Writes our offsets back to 0 / 0 (nothing else changes); then press Apply in your vendor tool and its write lands in full">
+            Release to vendor tool
+          </button>
+        )}
+      </p>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <span className="text-mini text-studio-muted" title="Plan section 16: your own caution for a night run. A rung whose predicted clock would pass the cap is not written and the ladder ends with 'stopped at your cap'. Empty is no cap.">
           Never test above

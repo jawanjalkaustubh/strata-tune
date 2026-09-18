@@ -252,6 +252,28 @@ internal sealed class TuneSupervisor
     }
 
     /// <summary>Whatever of ours is on the card comes off; a crash revert is acknowledged.</summary>
+    /// <summary>
+    /// Hands the card back to the vendor tool (plan section 16, 'a P0 delta write replaces the
+    /// vendor tool's offset'): the driver keeps our P0 deltas across a reboot, and while our
+    /// route holds a delta the vendor tool's Apply lands short (the dev box read 15841 MHz
+    /// against a 16037 tune, 2026-09-17). Writing 0 / 0 with nothing running clears our route;
+    /// the user then applies in the vendor tool, whose write is clean again.
+    /// </summary>
+    public (bool Ok, string Message) Release()
+    {
+        if (Active) return (false, "a run is going; stop it first");
+        return Mutate(() =>
+        {
+            var f = _store.Current;
+            if (f.State == TuneRollback.Pending) return (false, "a rung is still applied; use Revert");
+            if (!NvapiPstates.ApplyDeltas(new TuneDeltas(0, 0), out var status))
+                return (false, $"the driver refused 0 / 0: {status}");
+            _store.Idle($"released to the vendor tool: {status}");
+            _log.Write($"tune: released to the vendor tool: our P0 deltas are 0 / 0 ({status}); the user re-applies in the vendor tool");
+            return (true, "our offsets are 0 / 0; apply your tune in the vendor tool now");
+        });
+    }
+
     public (bool Ok, string Message) Revert()
     {
         if (Active)

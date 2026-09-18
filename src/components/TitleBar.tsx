@@ -16,7 +16,7 @@ export interface TitleBarProps {
  * Strata Video shows a "soon" placeholder instead; Tune is a public repo, so
  * an entry that goes nowhere would only draw issues.
  */
-const HelpMenu: React.FC<TitleBarProps> = ({ support, onOpenAbout, onOpenSettings }) => {
+const HelpMenu: React.FC<TitleBarProps> = ({ support, onOpenAbout }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -57,9 +57,6 @@ const HelpMenu: React.FC<TitleBarProps> = ({ support, onOpenAbout, onOpenSetting
               <span className="text-micro text-studio-accent font-semibold">Free</span>
             </button>
           )}
-          <button className="w-full flex items-center gap-2 px-3 py-1.5 text-mini text-studio-text hover:bg-studio-panel-hi" onClick={() => run(onOpenSettings)}>
-            <Settings2 size={13} /> Settings
-          </button>
           <button className="w-full flex items-center gap-2 px-3 py-1.5 text-mini text-studio-text hover:bg-studio-panel-hi" onClick={() => run(onOpenAbout)}>
             <Info size={13} /> About Strata Tune
           </button>
@@ -85,6 +82,10 @@ const TitleBarInner: React.FC<TitleBarProps> = (p) => (
 
     <div className="no-drag flex items-center gap-0.5">
       <HelpMenu {...p} />
+      {/* Its own button: the Tune switch, the BIOS values and the PSU live here, and nobody looks for them under Help. */}
+      <button className="btn" onClick={p.onOpenSettings} title="Settings">
+        <Settings2 size={14} /> Settings
+      </button>
     </div>
 
     <div className="flex-1" />

@@ -747,6 +747,17 @@ offsets" — certified +0 core, a result, not a failure. The score climb never
 writes a stock rung: "−2036" (the vendor tune removed to measure stock) must not appear — the
 as-found run and the vendor rung are the only baselines.
 
+**The driver keeps our deltas across a reboot, and the vendor tool's Apply lands short while
+we hold them (found 2026-09-17 morning).** After the overnight run the machine rebooted; the
+collector then read P0 core +319 / memory +2036 straight from the driver — the deltas the
+restore had written survived — and GPU Tweak's Apply of +4072 left the card at 15841 MHz
+(the overlay agreed), 196 short of 16037, exactly as on the evening before. Two consequences:
+(1) the vendor form recognises the case ("the driver reads your tune through our route …
+nothing to enter") and prefills from the deltas; (2) a **Release to vendor tool** action
+(`POST /tune/release`, nothing running) writes our 0 / 0 so the vendor tool's next Apply is
+clean — the user presses it, then Apply in GPU Tweak, and the card reads the tune in full.
+The earlier assumption that P0 deltas vanish at reboot is withdrawn.
+
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
 third-party OC tool uses). Risk R2 covers this. Output is also a **copy-pasteable value set

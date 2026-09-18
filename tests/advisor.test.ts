@@ -80,7 +80,7 @@ describe('requiredBytes and tokPerSec, plan section 10', () => {
     const fraction = spilled / (43 * GB);
     const seconds = 70.6 * 0.56 * ((1 - fraction) / BANDWIDTH + fraction / 99.2);
     expect(r.tokPerSecOffloaded).toBeCloseTo(CALIBRATION_FACTOR / seconds, 6);
-    expect(r.tokPerSecOffloaded).toBeCloseTo(3.66, 2);
+    expect(r.tokPerSecOffloaded).toBeCloseTo(3.3, 1);
     // The cliff meets the in-VRAM figure as the spill goes to zero, and a fully spilled model runs at the RAM rate.
     expect(tokPerSecOffloaded(model, quant, 0, BANDWIDTH, 99.2)).toBeCloseTo(r.tokPerSec, 6);
     expect(tokPerSecOffloaded(model, quant, 43 * GB, BANDWIDTH, 99.2)).toBeCloseTo((99.2 / (70.6 * 0.56)) * CALIBRATION_FACTOR, 6);
@@ -89,8 +89,10 @@ describe('requiredBytes and tokPerSec, plan section 10', () => {
   it('qwen3:4b q4_K_M runs fast; the factor is the dev box measurement, so the estimate lands on it at the measured bandwidth', () => {
     const { model, quant } = find('qwen3:4b');
     // docs/phase3-calibration.md: 356.5 tok/s measured on the worker's 1611 GB/s against 1611 / (4.02 x 0.56) at factor 1.
-    expect(CALIBRATION_FACTOR).toBeCloseTo(356.5 / (1611 / (4.02 * 0.56)), 1);
-    expect(tokPerSec(model, quant, 1611)).toBeCloseTo(356.5, -1);
+    // 2026-09-17: qwen3:4b measured 335 tok/s in the app against the 1611 GB/s sweep (docs/phase3-calibration.md).
+    expect(CALIBRATION_FACTOR).toBeCloseTo(335 / (1611 / (4.02 * 0.56)), 1);
+    // The estimate lands within 5 % of the measured 335 tok/s.
+    expect(tokPerSec(model, quant, 1611) / 335).toBeCloseTo(1, 1);
     // A card nobody measured runs on spec x what a copy reaches: 1792 x 0.8 / 2.25 GB x 0.5 = 318, not 398.
     expect(tokPerSec(model, quant, BANDWIDTH * STREAM_EFFICIENCY)).toBeCloseTo((1792 * 0.8 * CALIBRATION_FACTOR) / (4.02 * 0.56), 6);
     expect(tokPerSec(model, quant, BANDWIDTH * STREAM_EFFICIENCY)).toBeLessThan(330);

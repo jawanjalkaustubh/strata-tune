@@ -22,6 +22,7 @@ export interface AdvisorApi {
   /** Stop: aborts the timed generation; the pending benchOllama answers { error, code: 'cancelled' }. */
   cancelBenchOllama(): Promise<void>;
   ollamaList(): Promise<OllamaList | BenchError>;
+  ollamaUnload(): Promise<{ unloaded: string[] } | BenchError>;
 }
 
 /** The main process's view of the elevated collector (electron/collector.ts). */
@@ -107,6 +108,8 @@ export interface TuneApi {
   stop(): Promise<TuneStatus>;
   /** Takes anything of Tune's off the card now, or acknowledges a crash revert. */
   revert(): Promise<TuneStatus>;
+  /** Writes our 0 / 0 so the vendor tool's next Apply owns the card again. */
+  release(): Promise<TuneStatus>;
   /** Null until a hunt has a result. */
   export(): Promise<TuneExport | null>;
   /** The last 30 s before a hard hang; null when no crash has been found at a start. */

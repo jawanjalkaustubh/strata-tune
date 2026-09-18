@@ -80,6 +80,7 @@ internal static class Endpoints
         });
         app.MapPost("/tune/stop", () => Outcome(tune.Stop()));
         app.MapPost("/tune/revert", () => Outcome(tune.Revert()));
+        app.MapPost("/tune/release", () => Outcome(tune.Release()));
         app.MapGet("/tune/export", () => tune.Export() is { } export
             ? Json(export, WireJson.Default.TuneExport)
             : Error(StatusCodes.Status404NotFound, "no result yet: run a hunt first"));

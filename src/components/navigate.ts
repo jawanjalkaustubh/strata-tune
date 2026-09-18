@@ -30,6 +30,18 @@ export function onNavigate(cb: (t: Target) => void): () => void {
   return () => window.removeEventListener(EVENT, h);
 }
 
+const SETTINGS_EVENT = 'strata-tune:settings';
+
+/** Opens the Settings modal from anywhere (the Headroom-off line's "Turn it on"): App owns the modal and listens. */
+export function openSettings() {
+  window.dispatchEvent(new CustomEvent(SETTINGS_EVENT));
+}
+
+export function onOpenSettings(cb: () => void): () => void {
+  window.addEventListener(SETTINGS_EVENT, cb);
+  return () => window.removeEventListener(SETTINGS_EVENT, cb);
+}
+
 /** The intent left for the page that just mounted, taken once. */
 export function takeIntent(): Intent | null {
   const i = pending;

@@ -29,4 +29,4 @@ export const HEADROOM_TAGLINE = "Headroom — finds your card's highest stable s
 export const HEADROOM_NEEDS_NVIDIA = 'Headroom needs an NVIDIA card.';
 
 /** The section's one line while the settings switch is off. */
-export const HEADROOM_OFF = "Headroom hunt — off. Turn it on in Settings to find how far your card's clocks go.";
+export const HEADROOM_OFF = "Headroom hunt — off. It finds how far your card's clocks go and hands you the values for your vendor tool.";

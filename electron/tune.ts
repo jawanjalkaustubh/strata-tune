@@ -18,6 +18,7 @@ const ROUTES = {
   start: '/tune/start',
   stop: '/tune/stop',
   revert: '/tune/revert',
+  release: '/tune/release',
   export: '/tune/export',
   flight: '/tune/flight'
 };
@@ -82,6 +83,11 @@ export class TuneClient {
     return this.c.post<TuneStatus>(ROUTES.revert, {}, WRITE_TIMEOUT_MS);
   }
 
+  /** Writes our 0 / 0 so the vendor tool's next Apply owns the card (nothing running). */
+  release(): Promise<TuneStatus> {
+    return this.c.post<TuneStatus>(ROUTES.release, {}, WRITE_TIMEOUT_MS);
+  }
+
   /** 404 until a hunt has a result: answered as null rather than an error. */
   async export(): Promise<TuneExport | null> {
     try {
@@ -129,6 +135,7 @@ export function registerTuneIpc(ipc: IpcMain, collector: CollectorClient, send: 
     client.start(kind === 'memory' || kind === 'core' ? kind : 'hunt', !!enabled, vendorValue(vendor), caps && typeof caps === 'object' ? caps : undefined));
   ipc.handle('tune:stop', () => client.stop());
   ipc.handle('tune:revert', () => client.revert());
+  ipc.handle('tune:release', () => client.release());
   ipc.handle('tune:export', () => client.export());
   ipc.handle('tune:flight', () => client.flight());
   ipc.on('tune:subscribe', () => (wanted = true));

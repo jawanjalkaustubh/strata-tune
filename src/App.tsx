@@ -8,7 +8,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { DisclaimerModal } from './components/DisclaimerModal';
 import { useCollectorStatus, statusLabel } from './components/useCollectorStatus';
 import { captureStatusLabel, useCaptureState } from './components/capture/useCapture';
-import { onNavigate, resolveTarget } from './components/navigate';
+import { onNavigate, onOpenSettings, resolveTarget } from './components/navigate';
 import { Monitor } from './pages/Monitor';
 import { Capture } from './pages/Capture';
 import { Advisor } from './pages/Advisor';
@@ -38,6 +38,7 @@ export const App: React.FC = () => {
 
   // Cross-page links (the audit's PBO hint into the Monitor page's setting); the page picks up the rest.
   useEffect(() => onNavigate((t) => setPage(resolveTarget(t).page)), []);
+  useEffect(() => onOpenSettings(() => setShowSettings(true)), []);
 
   // Each startup probe advances the splash; the last one dismisses it. The
   // collector handshake is deliberately not on this list: it waits on a UAC

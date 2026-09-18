@@ -21,6 +21,7 @@ import { Results } from './Results';
 import { FlightRecorder } from './FlightRecorder';
 import { VendorForm } from './VendorForm';
 import { takeEnableRetry } from './enableRetry';
+import { openSettings } from '../navigate';
 import { HEADROOM_NEEDS_NVIDIA, HEADROOM_OFF, HEADROOM_TAGLINE, WRITES_SENTENCE } from './text';
 
 const Notice: React.FC<{ tone?: 'muted' | 'bad' | 'ok'; children: React.ReactNode }> = ({ tone = 'muted', children }) => (
@@ -116,8 +117,11 @@ export const Headroom: React.FC = () => {
 
   if (!enabled) {
     return (
-      <section id="headroom" className="rounded-md border border-studio-border bg-studio-panel/50 px-3 py-2">
+      <section id="headroom" className="rounded-md border border-studio-border bg-studio-panel/50 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <p className="text-mini text-studio-muted">{HEADROOM_OFF}</p>
+        <button className="btn btn-accent" onClick={openSettings} title="Opens Settings; the switch sits behind a short note of what the hunt does">
+          Turn it on
+        </button>
       </section>
     );
   }
@@ -128,6 +132,17 @@ export const Headroom: React.FC = () => {
   // While a hunt runs, the climb shows that hunt alone: the last result's rungs and official run belong to the card before it.
   const asFound = running ? (tune.run?.asFound ?? null) : (tune.run?.asFound ?? result?.asFound ?? null);
   const official = running ? null : (result?.official ?? null);
+  // "Free VRAM" beside the Ollama refusal: evict the resident models (keep_alive 0, the family's Free GPU rule) and ask the collector again.
+  const [freeing, setFreeing] = useState(false);
+  const freeVram = () => {
+    if (!api || freeing) return;
+    setFreeing(true);
+    api.advisor
+      .ollamaUnload()
+      .then(() => new Promise((r) => setTimeout(r, 1500)))
+      .then(tune.refresh, () => undefined)
+      .finally(() => setFreeing(false));
+  };
   const vendor = vendorForStart(settings);
   const caps = capsForStart(settings);
   const estimate = status ? estimateMinutes('hunt', null, !!vendor) : null;
@@ -164,8 +179,8 @@ export const Headroom: React.FC = () => {
       {cap && <Notice>{cap}</Notice>}
       {status?.reverted && <FlightRecorder reverted={status.reverted} flight={tune.flight} memJunctionId={memJunctionId} />}
       <StateStrip status={status} reason={g.find} refusal={tune.refusal} />
-      <VendorForm lastRun={result?.vendor ?? null} held={held} ceilingMemMhz={ceilingMem} disabled={running} laptop={!!live.snapshot?.chassis.isLaptop} />
-      <Controls gates={g} busy={tune.busy} refusal={tune.refusal} estimateMinutes={estimate} onFind={(kind) => void tune.start(kind, enabled, vendor, caps)} onStop={() => void tune.stop()} />
+      <VendorForm lastRun={result?.vendor ?? null} deltas={status?.nvapi.deltas ?? null} held={held} ceilingMemMhz={ceilingMem} disabled={running} laptop={!!live.snapshot?.chassis.isLaptop} onRelease={() => void tune.release()} />
+      <Controls gates={g} busy={tune.busy} refusal={tune.refusal} estimateMinutes={estimate} onFind={(kind) => void tune.start(kind, enabled, vendor, caps)} onStop={() => void tune.stop()} onFreeVram={freeVram} />
 
       {lostWhileApplied && (
         <Notice tone="bad">

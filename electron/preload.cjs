@@ -45,7 +45,9 @@ contextBridge.exposeInMainWorld('strata', {
     // Stop (plan 17c): the pending benchGpu / benchOllama then answers { error, code: 'cancelled' }.
     cancelBenchGpu: () => ipcRenderer.invoke('bench:cancelGpu'),
     cancelBenchOllama: () => ipcRenderer.invoke('bench:cancelOllama'),
-    ollamaList: () => ipcRenderer.invoke('ollama:list')
+    ollamaList: () => ipcRenderer.invoke('ollama:list'),
+    // Free VRAM (plan 16, the hunt's Ollama refusal): evicts every resident model, keep_alive 0.
+    ollamaUnload: () => ipcRenderer.invoke('ollama:unload')
   },
 
   // Frame capture (electron/capture.ts): PresentMon in main, one folder per session on disk.
@@ -101,6 +103,7 @@ contextBridge.exposeInMainWorld('strata', {
     start: (kind, enabled, vendor, caps) => ipcRenderer.invoke('tune:start', kind, enabled, vendor, caps),
     stop: () => ipcRenderer.invoke('tune:stop'),
     revert: () => ipcRenderer.invoke('tune:revert'),
+    release: () => ipcRenderer.invoke('tune:release'),
     export: () => ipcRenderer.invoke('tune:export'),
     flight: () => ipcRenderer.invoke('tune:flight'),
     subscribe: () => ipcRenderer.send('tune:subscribe'),

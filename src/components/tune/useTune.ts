@@ -4,7 +4,7 @@ import type { FlightLine, PstateDeltas, TuneExport, TuneRun, TuneRunKind, TuneSt
 import type { TuneCaps } from '../../api';
 import { refusalOf } from './wire';
 
-export type TuneAction = TuneRunKind | 'stop' | 'revert';
+export type TuneAction = TuneRunKind | 'stop' | 'revert' | 'release';
 
 export interface TuneHook {
   /** null until the collector has answered GET /tune/state. */
@@ -24,6 +24,7 @@ export interface TuneHook {
   start(kind: TuneRunKind, enabled: boolean, vendor?: PstateDeltas, caps?: TuneCaps): Promise<void>;
   stop(): Promise<void>;
   revert(): Promise<void>;
+  release(): Promise<void>;
 }
 
 /** The collector says no with a 409 whose body names why; anything else is a transport failure. */
@@ -141,6 +142,7 @@ export function useTune(connected: boolean): TuneHook {
     refresh,
     start: (kind, enabled, vendor, caps) => act(kind, () => api!.tune.start(kind, enabled, vendor, caps)),
     stop: () => act('stop', () => api!.tune.stop()),
-    revert: () => act('revert', () => api!.tune.revert())
+    revert: () => act('revert', () => api!.tune.revert()),
+    release: () => act('release', () => api!.tune.release())
   };
 }

@@ -47,6 +47,8 @@ interface Props {
   busy: TuneAction | null;
   /** The collector's last refusal, shown once beside the buttons. */
   refusal: string | null;
+  /** Offered when the refusal is a resident Ollama model: evicts it and asks again. */
+  onFreeVram?: () => void;
   /** "about 16 minutes": the collector's estimate for a full hunt. */
   estimateMinutes: number | null;
   onFind(kind: TuneRunKind): void;
@@ -70,8 +72,9 @@ const Button: React.FC<{ icon: React.ReactNode; label: string; reason: string | 
  * ladder alone, and Stop. The refusal or the disabled reason is written out once beneath
  * them as plain text, never clipped (plan 17a).
  */
-export const Controls: React.FC<Props> = ({ gates: g, busy, refusal, estimateMinutes, onFind, onStop }) => {
+export const Controls: React.FC<Props> = ({ gates: g, busy, refusal, estimateMinutes, onFind, onStop, onFreeVram }) => {
   const reason = refusal ?? g.find ?? null;
+  const ollamaHolds = !!refusal && /loaded on the GPU/i.test(refusal);
   const estimate = estimateMinutes ? ` (about ${estimateMinutes} min)` : '';
   return (
     <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -79,7 +82,16 @@ export const Controls: React.FC<Props> = ({ gates: g, busy, refusal, estimateMin
       <Button icon={<MemoryStick size={13} />} label="Memory only" reason={g.find} busy={busy === 'memory'} onClick={() => onFind('memory')} />
       <Button icon={<Cpu size={13} />} label="Core only" reason={g.find} busy={busy === 'core'} onClick={() => onFind('core')} />
       <Button icon={<Square size={13} />} label="Stop" reason={g.stop} busy={busy === 'stop'} danger title="Kills the worker and puts the baseline back" onClick={onStop} />
-      {reason && g.stop !== null && <span className={`text-mini basis-full min-w-0 whitespace-normal break-words ${refusal ? 'text-amber-300' : 'text-studio-muted'}`}>{reason}</span>}
+      {reason && g.stop !== null && (
+        <span className={`text-mini basis-full min-w-0 whitespace-normal break-words ${refusal ? 'text-amber-300' : 'text-studio-muted'}`}>
+          {reason}
+          {ollamaHolds && onFreeVram && (
+            <button className="btn ml-2 align-middle" onClick={onFreeVram} title="Asks Ollama to unload every resident model now (keep_alive 0); the app that loaded it reloads it on its next request">
+              Free VRAM
+            </button>
+          )}
+        </span>
+      )}
     </div>
   );
 };

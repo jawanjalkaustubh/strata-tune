@@ -69,7 +69,7 @@ bytesPerWeight)`; the ratio is measured ÷ that, which is what `factorFrom()` an
 
 | Model | Quant | Weights read per token | Estimate at factor 1 | Estimate at 0.65 (old) | Measured, warm | Ratio |
 |---|---|---|---|---|---|---|
-| qwen3:4b (Qwen3 4B Thinking 2507) | q4_K_M, 4.02 B x 0.56 | 2.25 GB | 716 tok/s | 465 | 328.6, 350.5, 354.6, 356.5, 356.5 (cold first run 323.5, load 1.5 s) | **0.50** (best warm) |
+| qwen3:4b (Qwen3 4B Thinking 2507) | q4_K_M, 4.02 B x 0.56 | 2.25 GB | 716 tok/s | 465 | 328.6, 350.5, 354.6, 356.5, 356.5 (cold first run 323.5, load 1.5 s); **2026-09-17 in the app: 335** | **0.45** since 2026-09-17 (the user: "dial down the estimates"; the in-app run reads 0.45, the 27b 0.48) |
 | qwen3.8:27b (27.32 B dense, qwen35 hybrid, 65 blocks) | q4_K_M, 27.32 B x 0.56 | 15.3 GB | 105 tok/s | 68 | 114.8 (cold, load 11.3 s), 137.3, 154.2, 101.4, 127.3, 134.1, 108.6 | 0.96–1.46, **not a decode-efficiency ratio** (below) |
 
 Prompt processing: qwen3:4b 10.7–11.9k tok/s warm, qwen3.8:27b 1.1–1.2k tok/s.
