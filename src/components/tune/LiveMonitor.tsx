@@ -191,7 +191,7 @@ export const LiveMonitor: React.FC<Props> = ({ index, tick, ring, snapshot, stat
     if (run.pattern) facts.push({ label: 'Pattern', value: `${run.pattern} · ${mmss(run.patternElapsedS)} of ${mmss(run.patternSeconds)}` });
     facts.push({ label: 'Elapsed', value: mmss(run.elapsedS) });
     facts.push({ label: 'Errors', value: run.deviceLostCount > 0 ? `${run.errorCount} · ${run.deviceLostCount} device lost` : run.errorCount, tone: run.errorCount > 0 || run.deviceLostCount > 0 ? 'bad' : undefined });
-    if (run.bandwidthGBs !== null) facts.push({ label: 'Bandwidth', value: `${run.bandwidthGBs.toFixed(0)} GB/s${run.bestBandwidthGBs !== null ? ` (best ${run.bestBandwidthGBs.toFixed(0)})` : ''}` });
+    if (run.bandwidthGBs !== null) facts.push({ label: 'Stream copy', value: `${run.bandwidthGBs.toFixed(0)} GB/s copied (~80 % of the bus is a full-speed copy)${run.bestBandwidthGBs !== null ? ` (best ${run.bestBandwidthGBs.toFixed(0)})` : ''}` });
     if (run.lastEvent) facts.push({ label: 'Last', value: run.lastEvent, wrap: true });
   } else if (status?.candidate) {
     facts.push({ label: 'On the card', value: pair(status.candidate) });
