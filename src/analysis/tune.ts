@@ -7,7 +7,7 @@
  * change to a constant or a rule lands in both files together. Offsets are in NVAPI's kHz,
  * clocks in NVML's MHz.
  */
-import type { HeldClocks, PstateDeltas, ScoredRun, TuneCandidate, TuneConfidence, TuneDeltas, TuneLadderKind, TunePattern, TuneResult, TuneRollback, TuneRunKind, TuneScore, TuneStopReason, TuneVerdict } from '../collector-types';
+import type { DisplayAdapter, HeldClocks, PstateDeltas, ScoredRun, TuneCandidate, TuneConfidence, TuneDeltas, TuneLadderKind, TunePattern, TuneResult, TuneRollback, TuneRunKind, TuneScore, TuneStopReason, TuneVerdict } from '../collector-types';
 import type { Settings } from '../settings';
 
 /** The user's rule (2026-09-16): steps of 5–15 MHz on top of whatever the card holds. */
@@ -467,14 +467,17 @@ const NPU_CPU = /Ryzen\s*AI|Core\s*Ultra|Snapdragon(\(R\)|\s)*X/i;
 /** The top tier: a 90-class or a 4080/5080-class desktop card, or 24 GB and more of VRAM. */
 const HIGH_END_GPU = /RTX\s*(30|40|50)(80|90)|RX\s*7900|RX\s*9070\s*XT/i;
 
-export function deviceClass(s: { chassis: { isLaptop: boolean }; cpu: { name: string }; gpus: { name: string; vram: { totalMiB: number } }[] }): DeviceClass {
-  const gpu = s.gpus[0];
+/** The class is decided by the discrete card whatever its vendor (src/analysis/adapters.ts): an AMD laptop with an RX 6700S is a gaming laptop, not one with no discrete GPU (the first laptop, 2026-09-19). */
+export function deviceClass(s: { chassis: { isLaptop: boolean }; cpu: { name: string }; gpus: { name: string; vram: { totalMiB: number } }[]; adapters?: DisplayAdapter[] }): DeviceClass {
+  const nvml = s.gpus[0];
+  const card = nvml ? null : s.adapters?.find((a) => !a.integrated && a.vendor !== 'other');
+  const gpu = nvml ? { name: nvml.name, vramMiB: nvml.vram.totalMiB } : card ? { name: card.name, vramMiB: card.dedicatedMiB } : null;
   if (s.chassis.isLaptop) {
     if (!gpu) return NPU_CPU.test(s.cpu.name) ? 'ai-laptop-or-pc' : 'laptop-no-dgpu';
     return 'gaming-laptop';
   }
   if (!gpu) return NPU_CPU.test(s.cpu.name) ? 'ai-laptop-or-pc' : 'mid-range-pc';
-  return HIGH_END_GPU.test(gpu.name) || gpu.vram.totalMiB >= 24 * 1024 ? 'high-end-pc' : 'mid-range-pc';
+  return HIGH_END_GPU.test(gpu.name) || gpu.vramMiB >= 24 * 1024 ? 'high-end-pc' : 'mid-range-pc';
 }
 
 /** The value set as TuneSupervisor.ExportText writes it (the date is the local day of `foundAt`). */

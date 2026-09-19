@@ -24,6 +24,8 @@ interface Props {
   card: ThisCard | null;
   /** No discrete GPU (plan 17d row 1): the card explains CPU-only inference from the RAM bus instead of a GPU spec. */
   integrated?: boolean;
+  /** Plan 17d: a laptop has no PSU to set, so the PSU tile is not drawn (the Monitor's battery line stands where the PSU question would be). */
+  laptop?: boolean;
   /** The RAM bus figure the CPU-only estimate runs on (the header shows the same). */
   ramBandwidthGBs?: number;
   /** The most recent clocks seen under load, against the record `card` carries (useHeldClocks). */
@@ -329,14 +331,16 @@ export const StatsCard: React.FC<Props> = (p) => {
             ) : (
               <Tile label={t.tgpRangeW ? 'TGP' : 'TDP'} value={t.tgpRangeW ? `${t.tgpRangeW[0]}–${t.tgpRangeW[1]} W` : `${t.tdpW} W`} title={t.tgpRangeW ? 'The TGP range laptop makers choose from; the driver reports the one this laptop runs at' : undefined} />
             )}
-            <Tile
-              label="PSU"
-              tag={psuSet ? 'you' : undefined}
-              className="col-span-2"
-              value={<PsuForm />}
-              sub={t.suggestedPsuW !== null ? `reference suggests ≥ ${t.suggestedPsuW} W` : 'no vendor suggestion'}
-              title={t.suggestedPsuW === null ? 'The vendor page prints no PSU recommendation' : 'Your supply, as you set it; the vendor’s system recommendation for the reference card beneath'}
-            />
+            {!p.laptop && (
+              <Tile
+                label="PSU"
+                tag={psuSet ? 'you' : undefined}
+                className="col-span-2"
+                value={<PsuForm />}
+                sub={t.suggestedPsuW !== null ? `reference suggests ≥ ${t.suggestedPsuW} W` : 'no vendor suggestion'}
+                title={t.suggestedPsuW === null ? 'The vendor page prints no PSU recommendation' : 'Your supply, as you set it; the vendor’s system recommendation for the reference card beneath'}
+              />
+            )}
           </div>
           <div className="text-[10px] text-studio-subtle flex flex-wrap gap-x-3">
             {c && (
