@@ -36,6 +36,7 @@ the spec, Appendix A says why.
 | A9 | Model tables, PSU curves and expected-value cohorts ship as editable JSON in the repo. No server, ever. |
 | A10 | GPU co-tenancy with Strata Code / Photo / Video follows the existing `gpu.lock` convention (§20). Stress tests take the lock; passive monitoring never does. |
 | A11 | Anti-cheat: PresentMon is ETW-only (no injection, no overlay). Test against one live anti-cheat title in Phase 5 before building on top. |
+| A12 | **Lightweight on every machine** (user, 2026-09-16): the app must run well on laptops and modest PCs, not just the dev box. §17c sets the budget; every phase is measured against it before its PR. |
 
 ## 2. Goals, ranked
 
@@ -237,10 +238,13 @@ estimated cost**. The rest are one click away under "show all".
 | Power plan | laptop: not High Performance; **desktop Zen 4/5: Balanced is AMD's recommended plan, do not flag** | "large on laptops" |
 | Boot drive space | > 90 % full | "severe" |
 | Game on HDD | `MediaType == HDD` for a launched game's path | "traversal stutter" |
-| Thermal headroom | 20 s load ramp (worker, light kernel): clock at t=20 vs t=2, throttle bits set | "throttling" |
+| Thermal headroom | 20 s **heavy** worker load (a light load lets the boost governor idle the clocks — measured 2812→1717 MHz at 28 °C on the dev box, pure noise). Verdict from the NVML reason bits over the steady window (t ≥ 3 s): thermal/brake bits → bad; power cap with steady clocks → ok ("power-limited at N W, normal"); clock sag ≥ 8 % with peak ≥ 75 °C → warn; sag with no bits and cool → info, never hardware advice. 'unknown' unless the load engaged (power ≥ 50 % of limit) | "throttling" |
 | GPU driver age | > 180 days | "occasional title bugs" |
 | Background hogs | 5 s idle sample, any process > 5 % CPU or > 2 GB RAM | names the process |
 | Power limit headroom | `power.limit == power.max_limit` | "no headroom to raise — undervolt instead" (informational; this box) |
+| NVMe link width | PCIe current vs max link width/speed per NVMe controller (`DEVPKEY_PciDevice_*`, no admin) | "a drive on x2 halves its sequential speed — its M.2 slot shares lanes" (this box: the 980 PRO runs x2) |
+| GPU unit counts (missing ROPs) | NVAPI `GetROPCount` / `GetGpuCoreCount` vs the reference in `gpus.json`; bench fill-rate cross-check (pixels/s divided by clock, with bands) when the direct read is unavailable | "168 of 176 ROPs: an early RTX 50-series unit with a raster engine disabled, about 4 % slower; the vendor replaces it" (user, 2026-09-16) |
+| Timer resolution | `NtQueryTimerResolution` current vs min/max and which process requested it | "a background app holds the timer at 0.5 ms — costs battery on laptops" / "15.6 ms with no game raising it — uneven frame pacing" (info) |
 
 Ranking: `severity × costEstimate`. Ties broken by "fixable in BIOS in ten minutes" first.
 
@@ -251,6 +255,50 @@ component, plus the NVML group. Per sensor: current, min, max, mean over the ses
 Search box, "only changed" toggle, pin-to-main-bar, CSV export. Sensors at a limit
 (throttle bit set, at power cap, at temp target) are highlighted in the tree. 2 Hz, no
 animation, plain DOM.
+
+## 9a. Hardware sheet (Phase 2, user request 2026-09-16)
+
+Click a device name in the Monitor header strip and a sheet slides in with the full spec of
+that part, grouped the way hardware databases group them — for the GPU: **Graphics processor**
+(die, variant, architecture, foundry, process, transistors, die size), **Graphics card**
+(release, generation, launch price, bus interface, **your board** — the retail name from §10's
+shortlist, subsystem ids, length/slots/weight), **Clock speeds** (base / boost / memory, with
+the live clocks beside them), **Memory** (size, type, bus, bandwidth — spec and measured),
+**Render config** (shading units, TMUs, ROPs, SMs, tensor and RT cores, caches), **Theoretical
+performance** (pixel/texture rate, FP16/FP32/FP64 vector), **Matrix performance** (dense
+table + "sparse 2×", advertised AI TOPS), **Numeric formats** (vector and matrix lists per
+architecture), **Board design** (slot width, dimensions, TDP, suggested PSU, outputs, power
+connector). CPU: family/model/stepping, cores/threads, base/boost, cache, TDP/PPT, memory
+support, NPU; live: current clocks, the user's PPT. Board: chipset, BIOS + date, slots
+(DIMM map from §17a), super-IO chip, PCIe layout. RAM: per DIMM part, rated/configured speed,
+timings from SPD when LHM exposes them.
+
+Every value is tagged **spec** (from `gpus.json` / `cpus.json` / `boards.json`, each row citing
+its source page) or **read** (from the snapshot or live). Unknown rows are omitted, never
+shown as "—". **No third-party review data**: a "relative performance" ranking is review-derived
+and someone else's work; instead the sheet offers a *spec comparison* — bandwidth, dense FP16,
+VRAM, TDP — as bars against the other rows in our table, labelled "spec, not a benchmark".
+Same components later render the share card's hardware line (§14).
+
+## 9b. HWiNFO bridge — optional enrichment (user request 2026-09-16)
+
+HWiNFO reads things LibreHardwareMonitor cannot on this box: the Zen 5 SMU PM table (PPT /
+TDC / EDC limits *and* usage — the honest answer to the CPU power bar's reference), GPU hotspot
+and VRM temps on cards whose EC exposes them, and it names retail boards from its own
+subsystem-id database. It runs elevated with its own driver and is not ours to bundle.
+
+**Bridge rule:** when HWiNFO64 is running with *Shared Memory Support* enabled, the collector
+opens the documented read-only mapping (`Global\HWiNFO_SENS_SM2`, signature `HWiS`, sensor +
+reading arrays with label, unit, value, min/max/avg) and adds those readings to the stream
+as ids `/hwinfo/<sensor>/<reading>` tagged **source: HWiNFO**; rules that need them (§8 CPU
+package power vs the real PPT, §17a hotspot) use them when present and fall back to the
+setting / omission when not. Never a dependency: the app is complete without HWiNFO. The
+free edition disables shared memory 12 hours after launch — the bridge shows "HWiNFO bridge:
+off (restart HWiNFO to re-enable)" rather than stale values (readings carry a poll-time
+stamp; stale > 5 s = off). Command-line report generation is Pro-only, so hardware
+identification from HWiNFO is a **one-time manual report** the user can import (Report →
+Create → Text) to fill the §9a sheet's unknowns and to check our tables; the importer keeps
+the file local and redacts serials before anything is displayed or exported.
 
 ## 10. Local AI model advisor (Phase 3)
 
@@ -283,6 +331,98 @@ Measured bandwidth replaces the spec number in the tok/s formula once it exists;
 shows both so the gap (a throttled or shared card) is visible. Same measured/estimated
 tagging rule as §13.
 
+**Reference spec vs this card (user, 2026-09-16).** Every table number (TPU, vendor pages) is
+the *reference design*. A board-partner card runs above it by default (Astral LC OC: 2580 MHz
+boost vs 2407) and a tuned one further still (this box: memory 1979 MHz vs 1750 → ~31.7 Gbps →
+~2,026 GB/s vs the 1,792 spec; core held ~3.2 GHz under load). So: (1) ceilings for sanity
+checks come from **live clocks**, not tables — bandwidth ceiling = memory clock × data-rate
+factor × bus width, boost ceiling = the card's own `nvmlDeviceGetMaxClockInfo`; measured above
+reference spec is expected on an overclocked card, never treated as a measurement bug;
+(2) the stats card shows **spec (reference) · this card (rated) · measured**, three columns,
+so the gap reads as "your tune is worth +13 %" rather than "our number is wrong"; (3) OC
+detection (§8) and the score's expected values (§14) baseline on the card's own rated
+figures, and the offsets on top of them. (4) **No third-party database is named in the UI**
+(user, 2026-09-16, "delete this" on the card's TechPowerUp link): the reference figures are
+labelled *spec* and link to the vendor page only; the `tpuUrl` fields in `gpus.json` stay as the
+author's provenance and never render.
+
+**Lead with the advertised number, tag it, then the truth beneath (user, 2026-09-16).** People
+arrive knowing one figure from a search — "RTX 5090: 3,352 AI TOPS" — and a card that shows only
+dense numbers looks wrong to them. So the card's first line is the vendor's headline **AI TOPS
+exactly as advertised**, with its precision and sparsity as a tag ("3,352 AI TOPS · FP4 sparse";
+Ada quotes FP8 sparse, Ampere INT8 sparse, AMD RDNA 4 INT4/FP4 sparse, Intel Arc INT8), then the
+architecture line (die · VRAM · bandwidth), then compute rows as **dense / sparse pairs** (FP16
+419 / 838 TFLOPS, FP8 838 / 1,676, FP4 1,676 / 3,352, FP32 104.8) so the marketing figure and
+the number that predicts speed sit side by side. `gpus.json` therefore carries an explicit
+`advertisedAiTops: { value, precision, sparse, source }` per row — verified from the vendor's
+own spec page, never derived. The tok/s estimate still uses bandwidth, never TOPS.
+
+**The headline is this card's, the advertised figure beneath (user, 2026-09-16, screenshot:
+"this is spec; I should see [the number] for this card").** Tensor and shader peaks scale with
+the SM clock at a fixed unit count, so the card's own figure is the reference peak × (this
+card's clock ÷ the reference boost): on this box 3,352 × 3090 / 2407 ≈ 4,303 AI TOPS FP4 sparse,
+and FP32 shader 21,760 × 2 × 3.09 GHz ≈ 134 TFLOPS. The clock is the same one the BOOST tile
+shows — the highest SM clock seen held under load, else the driver's ceiling — and the tag
+says which ("at 3090 MHz held under load"). The advertised number stays as the muted second
+line ("NVIDIA advertises 3,352 at the 2407 MHz reference boost"), and the dense / sparse
+table follows the same rule: this card's pairs, reference in the sub-line. When no clock is
+known (no collector) the card falls back to the advertised figure, tagged *spec*. The scaling
+assumes the reference unit count; when NVAPI reports fewer shaders than `gpus.json` (§8
+missing-units rule) the headline scales by that ratio too and says so. Still an estimate,
+still not a benchmark, and the tok/s estimate still uses bandwidth.
+
+Two corollaries from the same afternoon: `nvmlDeviceGetMaxClockInfo` (3090 MHz on every 5090) is
+the VF-curve top, not the board's boost — the BOOST tile leads with the SM clock *held under load*,
+then board boost (boards.json) · reference · driver ceiling, and the headline never scales by the
+ceiling. And the card keeps the highest clocks it has ever seen: when a run holds less than that
+record (the user's GPU Tweak was closed and its memory offset went with it — 14001 MHz held instead
+of 16032, so 1463 GB/s against a 1792 ceiling was *correct* and looked like a bug), the bandwidth
+block says so in one muted line instead of leaving the user to guess.
+
+And a **MEMORY CLOCK** tile in MHz beside the Gbps one (user, 2026-09-16: "I don't see a memory
+frequency ref vs this"): people know their memory as GPU Tweak and GPU-Z print it — 1750 MHz
+reference, 1979 MHz tuned, "+229 MHz" — so the tile shows this card's clock in that convention
+(NVML memMhz ÷ 8 for GDDR7/GDDR6X, ÷ 4 for GDDR6; `gpus.json` carries `memoryClockMhz` from the
+cited page so nothing is derived from a marketing Gbps figure), the held clock first, the
+reference and the offset beneath.
+
+**GPU identity and spec tiles (user, 2026-09-16, TechPowerUp as the reference).** The GPU
+panel header and the advisor's stats card open with a **spec-tile row** in the style hardware
+databases use — die · shading units · TMUs · ROPs · VRAM size + type · bus width · base/boost ·
+memory clock (effective Gbps) · bandwidth · TDP — every value from `gpus.json`, each row citing
+its TechPowerUp GPU-database page (`https://www.techpowerup.com/gpu-specs/<slug>.c<id>`) or the
+vendor page. Our own rendering; no third-party photos — the card schematic (§17a) stays ours.
+`gpus.json` also carries `suggestedPsuW` (TPU lists it; 950 W for the 5090) for the §13 PSU
+verdict, and the matrix table as dense figures with the "sparse = 2×" rule, so the 5090 row
+reads FP4 1,676 / FP6 838 / FP8 838 / INT8 838 / FP16 419 / BF16 209.5 / TF32 104.8 TFLOPS,
+FP32 104.8, advertised 3,352 AI TOPS (= FP4 × 2, sparse).
+
+**Exact retail board.** TPU's per-GPU "retail boards" table (73 boards for the 5090, with each
+board's boost clock — e.g. ASUS ROG Astral LC RTX 5090 at 2437 MHz, its OC Edition at 2580)
+seeds `boards.json`. Identification: PCI subsystem vendor (0x1043 = ASUS) + the card's own rated
+boost from `nvmlDeviceGetMaxClockInfo` → a shortlist of that vendor's boards at that boost; one
+match names the card, several offer a pick, and the choice is remembered with the panel rename.
+Never guessed: an ambiguous card shows "ASUS · GeForce RTX 5090" until the user picks. The
+board's own boost is also the reference for OC-offset detection (§8), not the 2407 MHz
+reference-design figure; the board's power limit (600 W on the Astral) is the reference for
+efficiency, the reference TDP (575 W) only for cohort comparison.
+
+**No local model is the normal case (user, 2026-09-16).** Most people who open this page have
+never installed Ollama or any model. The page is designed for them first:
+
+- Everything renders from the snapshot + spec tables with **no Ollama, no model, no download**:
+  the stats card, every model row, the buckets, the estimated tok/s, best-model-for picks.
+  The calibrated factor shipped in `advisor.ts` comes from *our* measurements (Phase 3
+  integrate on the dev box), so estimates are already calibrated for everyone.
+- The Ollama-dependent parts (measured tok/s, "loaded now") are an optional extra that
+  appears only when Ollama answers on :11434 — never an empty table, a spinner, or an error
+  when it does not. One quiet line: "Install Ollama to measure real tokens/s on your models."
+- Each row carries a copyable `ollama pull <tag>` and the download size against free disk,
+  because for this audience the next step is a first download, not a model swap.
+- The audit's "AI model in video memory" check is omitted entirely when Ollama is not
+  running — it is an observation for AI users, not a finding for everyone.
+- Worker measurements (bandwidth, matmul) need no model and stay available to all.
+
 `models.json` seeds with what this family already uses: qwen3-vl:30b, qwen2.5-coder:32b,
 qwen3:4b, llama3.3:70b, gemma, deepseek-r1 sizes, plus the LTX-2.5 / Gemma 4 12B pair from
 Strata Video as a "diffusion" row type. **Calibration:** Ollama is installed here, so Phase
@@ -291,6 +431,19 @@ set from that, not guessed.
 
 Later: Strata Code's setup wizard (which currently picks a model by VRAM alone) could read
 this advisor's output. Not in scope now.
+
+**Compared with Odysseus' Cookbook (2026-09-19).** PewDiePie's Odysseus (AGPL, ideas only,
+never code) recommends models from guesses: fit = VRAM ≥ 1.5× / 1.2× the file, CPU-offload
+at a flat 55 GB/s with a 0.55 efficiency fudge, catalogue from Hugging Face collections. This
+page measures instead (stream copy, DDR-config RAM bandwidth, calibration runs, the harmonic
+spill formula above), and keeps that edge. Two of its ideas are worth taking later, both as
+re-implementations: (1) **serving profiles** per model — Quality / Balanced / Speed presets
+that pick context length and KV-cache quantisation (`OLLAMA_KV_CACHE_TYPE q8_0` / `q4_0`,
+`num_ctx`) from the measured headroom, never above the model's trained context, shown as
+the values to set rather than applied; (2) **live discovery** of new models from the Ollama
+library alongside the bundled `models.json`, cached a day, so a shipped build does not go
+stale. Its blind A/B model comparison is not worth the page space: speed is measured here,
+quality is the user's call.
 
 ## 11. Frame capture and stutter classifier (Phases 4–5, the real lift)
 
@@ -308,17 +461,24 @@ within ±100 ms of the frame's QPC stamp.
 
 | # | Signature | Verdict | Fixable |
 |---|---|---|---|
-| 1 | `GPUBusy` spike, `CPUBusy` normal, first visit to area, rate decays over the session | Shader compilation | plays out |
+| 1 | two shapes, both **decaying** over the session: (a) `GPUBusy` spike, `CPUBusy` normal; (b) DX12/Vulkan — `CPUBusy` spike with the GPU waiting (the driver compiles on the game's thread; same per-frame shape as case 8) whose rate in the last third is ≤ half the first third's, ≥ 6 stalls early; magnitude trend sets the confidence | Shader compilation | plays out |
 | 2 | SM clock drop + `HwThermalSlowdown`/`SwThermalSlowdown` bit or temp ≥ target | Thermal throttle | fan curve, airflow |
 | 3 | SM clock drop + `SwPowerCap` bit, temps normal | Power limit | raise limit / undervolt |
 | 4 | VRAM used ≥ 95 % + spike on new assets | VRAM exhaustion | lower textures |
 | 5 | disk queue depth spike concurrent | Storage | SSD, free space |
 | 6 | another PID's CPU spike concurrent | Background process | names it |
-| 7 | inter-stutter interval CV < 0.15 | GC / streaming tick | **no — engine** |
+| 7 | a **cluster** of stutters sharing one per-frame shape on one beat: ≥ 8 events at CV < 0.08 (high), 5–7 at CV < 0.02 (low); clusters split where a gap exceeds 3× the beat — session-wide CV claimed a tick in 94 % of randomly spaced sessions (Monte Carlo, 2026-09-16), per-cluster 1 % | GC / streaming tick | **no — engine** |
 | 8 | `CPUBusy` spike, `GPUWait` high, nothing else | Engine stall | **no — engine** |
 | 9 | alternating long/short, no resource correlation | Pacing / sync | cap FPS, check vsync/frame gen |
 
-Confidence: high if two signals agree, low if one weak correlation. Shown in the report.
+Confidence: high if two signals agree, low if one weak correlation. Shown in the report; a
+low-confidence single-signal verdict starts with "Probably". Order (2026-09-16): 1(a), 2–6,
+1(b), 7, 8, 9 — the CPU-side compile shape is decided only after the resource cases, since a
+resource can explain such a frame and a compile cannot be confirmed; stalls in the last third
+are left to case 8, because that third is the settled rate the decay was measured against.
+Bench sessions (§11a) carry `benchSummary` and the report renders a designed-vs-classified
+table per segment with a score ("3 of 4 designed segments classified as designed") — the
+classifier's own honesty check, shown to the user.
 The throttle-bit inputs (cases 2, 3) are why NVML matters: the GPU says *why* it slowed,
 we do not infer it from a temperature chart.
 
@@ -368,7 +528,9 @@ Every number carries `measured` or `estimated`, visibly.
 | Fans, RGB, chipset, USB | device counts × flat model, board chipset table | estimated |
 
 `wall = (measured + estimated) / efficiency(load_fraction, psu_rating)` with an 80 PLUS
-curve table in `psu.json`. PSU model and 80 PLUS rating asked once. Unlocks: "do I need a
+curve table in `psu.json`. **The headline number ships early**: the Monitor page's SYSTEM POWER
+row (Phase 1, user request 2026-09-15) computes it in the renderer from the existing CPU/GPU
+sensors with the rest estimated; Phase 6 adds the PSU prompt UI, cost and performance-per-watt. PSU model and 80 PLUS rating asked once. Unlocks: "do I need a
 bigger PSU" (peak sustained vs rated, from their own sessions), electricity cost, and
 performance-per-watt — the number that sells undervolting in §16.
 
@@ -406,6 +568,25 @@ history.
 
 ## 16. OC auto-tune (Phase 8 — last, opt-in, behind a warning)
 
+**Find the numbers, hand them over, leave the card as found (user, 2026-09-16: "the user will
+just find the values; they would still have to use their vendor's software to put those OC
+values in manually, so it is even safer for us").** The hunt applies offsets only *while it
+tests* and always ends at 0 / 0 — the app never leaves a change on the card. Its product is a
+value set: "certified +45 core / +60 memory on top of your tune → 3270 / 16068; first silent
+error at +60 core", shown with a *Copy* button and the vendor tools' own units beside ours
+(GPU Tweak and Afterburner take the core in MHz as we do, the memory as the effective rate ×2,
+so +60 NVML MHz reads "+120 MHz" in their slider), and the user types them into GPU Tweak,
+Afterburner or the vendor app of their card. Consequences: no *Keep*, no `VALIDATING`, no
+promotion and no logon scheduled task — P0 deltas do not survive a reboot, so a hard hang
+mid-test self-heals at the next boot, and the only residual case (collector died, machine did
+not reboot) is covered by `--revert-if-pending` at every collector start. The state machine
+shrinks to `IDLE → PENDING (testing) → IDLE`, with `REVERTED` only as the attribution shown
+after a crash. The Phase 8 build that shipped Keep / validate / the logon task is trimmed to
+this in the follow-up; the tests that prove PENDING-before-apply and revert-at-start stay.
+
+The warning modal's wording and the acknowledgement it records are specified in §27a (the
+hardware-risk paragraph is shown every time Tune is enabled, not once).
+
 **Undervolt first, not overclock.** On this box the power limit is already at its maximum,
 so an undervolt is the only lever with any gain anyway.
 
@@ -432,18 +613,17 @@ crashes on the desktop is the common failure.
 **Bisect, one variable at a time.**
 
 **Rollback state machine** (in the collector, persisted to `tune-state.json` *before* each
-apply):
+apply; superseded 2026-09-16 by the paragraph at the top of this section — kept for the
+record of why PENDING exists):
 
 ```
-KNOWN_GOOD → PENDING → VALIDATING → KNOWN_GOOD
-                 ↓ (crash / flag found at next launch)
-              REVERTED  (tell the user exactly which value did it)
+IDLE → PENDING (a rung is on the card, testing) → IDLE (0 / 0 restored)
+            ↓ (crash / flag found at next collector start)
+         REVERTED  (tell the user exactly which value did it)
 ```
 
-`VALIDATING` requires one clean shutdown; only a clean boot after a clean shutdown
-promotes. Also register a Windows Task Scheduler entry at logon that runs
-`strata-tune-collector.exe --revert-if-pending`, so the revert happens even if the user
-never opens the app again.
+Every collector start runs the revert-if-pending pass first; a reboot clears P0 deltas by
+itself. No logon task, no Keep, no promotion.
 
 **Flight recorder.** During any test, the last 30 s of the timeline is flushed to disk every
 second. After a hard hang the app opens on "here is what temps, clocks, power and limit
@@ -454,6 +634,154 @@ bits were doing in the seconds before it died".
 junction, CPU package, fan %, **perf-limit reasons as a label**, VRAM, test state (candidate,
 ladder position, pattern, elapsed, error count, bandwidth). A **test validity indicator**
 turns red if a throttle bit is set during a ceiling hunt.
+
+**Another tool's tune on the card (found 2026-09-16).** GPU Tweak's offsets do not show in the
+NVAPI P0 deltas we read and write (baseline read 0 / 0 while the card held 15837 MHz memory
+against a 14001 ceiling), so the two tools write through different driver routes and cannot see
+each other. Before any hunt, if the card is holding clocks above the driver ceiling with no P0
+delta of ours, the hunt refuses: "another tool is tuning this card — zero its offsets or close
+it first"; the same check runs before *restore baseline*, which must never be the thing that
+looks like it wiped a vendor tune. And a vendor tool's Apply can be dropped silently by the
+driver (the user's +4072 sat on the slider while the card kept +3672 until a re-apply): the
+Monitor shows what the card holds, never what a slider says.
+
+**A shutdown is not a hang (found 2026-09-16).** The logon revert found a Pending marker after
+the overnight shutdown and logged it as "a hard hang, stage 4". The marker must record whether
+the collector saw an orderly stop (SIGTERM / `/shutdown` / session end event) so a clean
+shutdown mid-candidate reverts quietly and only a genuinely dirty exit is called a hang.
+
+**The power cap is the normal state, not an invalid rung (user, 2026-09-16: "600 W is the power
+budget, that's fine — we still have the core and memory knobs; look at my current OC vs spec").**
+Tonight's three test hunts declared every rung "Invalid: a power or thermal limit was set on
+77–80 % of the heavy pattern's samples" — on a 600 W 5090 every heavy pattern sits on the cap,
+and the user's own tune runs there: +319 core holds 3225 MHz *at* 600 W against a 2407 reference
+(3000 MHz on a light load, driver ceiling 3090), +4072 memory holds 16008 MHz (32.0 Gbps, +14 %
+bandwidth). A core offset under a cap shifts the V/F curve — same watts, higher clock — and a
+memory offset barely touches power. So a rung is judged by what matters: (1) the hash — no
+silent errors; (2) the **light and transient patterns**, which run at the top of the curve where
+the offset is actually exercised; (3) heavy-pattern **throughput at the cap** — did the offset
+buy work per watt; a rung whose light/transient patterns pass and whose heavy throughput did not
+fall is certified whether or not the cap bit was set. The memory ladder runs first and on its
+own (cheap win, orthogonal to the cap). The result page shows the user's current OC · the board's
+rated figures · the reference · the ladder's certified numbers in one table. **The hunt starts from whatever the card holds now (user, 2026-09-16: "just increment on
+whatever the current OC applied is, in steps of 5–15 MHz on both core and memory").** The
+baseline is the card as found — its held SM and memory clocks under the reference pass, vendor
+tune included — and our P0 deltas step on top of it: core +15 MHz per rung (fine step 5),
+memory +15 MHz NVML (30 effective) per rung (fine step 5). The first rung doubles as the
+additivity check: the light pattern must hold a clock higher than the baseline by about the rung
+size, or the hunt stops with "the driver is not adding our offset on top of your tune" instead
+of climbing blind. The result names both: "your tune holds 3225 / 16008; certified +45 core /
++60 memory on top → 3270 / 16068; first silent error at +60 core (stage 1)". The vendor-tool
+guard above therefore refuses only a vendor tool that is *changing* clocks during a run (a
+profile timer, a fan-curve app re-applying), not a tune that is simply applied and steady.
+
+**A rung is a minute of realistic load, not forty seconds of patterns (user, 2026-09-16: "the
+load should be variable in the first 30 s with spikes every 2–4 s, and another 30 s full load, so
+at least a minute of load tests the validity of the OC value — realistically a user runs long
+gaming or AI sessions").** Every rung runs the same 60 s shape: **30 s variable** — bursts of
+heavy work 2–4 s apart with light or idle gaps between them, the clock and voltage transitions
+where a marginal offset actually fails — then **30 s sustained full load**; the hash is checked on
+every pass of both halves and throughput is judged on the sustained half. The pair the ladder
+certifies (core and memory together) then gets a **5-minute soak** of the same shape repeated
+before the values are handed over; a failure in the soak steps the failing ladder down one fine
+step and soaks again, once. The light and transient patterns of the first build fold into the
+variable half. Total for a typical card: memory ladder ~6 rungs + core ladder ~6 rungs + soak ≈
+17 minutes, shown as a time estimate before the user starts.
+
+**Every rung is scored, and the final run is the benchmark (user, 2026-09-16: "or we can do a
+2-minute test with our own scores, so people can treat it as an auto-OC tool that gives you max
+bench scores without making the PC completely hang — which usually happens with manual OC, then
+the user force-restarts").** That is the product in one sentence and the page says it that way:
+*Headroom — finds your card's highest stable score without the hang.* Each 60 s rung yields a
+**score** (points from the sustained half's compute throughput and the memory bandwidth, on one
+fixed scale where the reference 5090 at reference clocks is 10,000 (an estimate: the kernel's
+cost measured on the dev box scaled to the reference clocks, never a measured reference card, and
+every surface says "estimated reference 5090" — user, 2026-09-19), so numbers compare across
+cards and across people), and the ladder is shown as a score climb: "+0 → 10,420 · +15 → 10,480 ·
++30 → 10,530 · +45 → silent error, stopped". The certified pair then gets the **2-minute scored
+run** that replaces the 5-minute soak as the official number — the same shape, hash-checked
+throughout — and the as-found card is scored the same way first, so the result reads "10,530
+points at +30 / +60: +1.1 % over your current tune, +19 % over a reference 5090". That score and
+the certified values go on the §14 share card. A failure in the 2-minute run steps the failing
+ladder down one fine step and re-runs it once. Typical total ≈ 6 + 6 rungs + 2 × 2 min ≈ 16 min.
+
+**Save as .html — the comparison sheet (user, 2026-09-16: "an option to save as .html the details
+of the avg and boost clocks for everything — CPU, GPU, VRAM, RAM — avg temps, so they can compare
+among themselves; that's the fun part of people OCing and comparing scores").** Every scored run
+(the as-found run, the official 2-minute run, and the built-in bench) can be saved as one
+self-contained HTML file through the §19 report pipeline (same renderer, a *score* layout): the
+score and the certified values at the top with the share card image; then one table per
+component from the run's own telemetry — **GPU** core clock avg / max held, memory clock avg /
+max, core temp avg / max, hotspot and memory junction, board power avg / max and the cap, perf-
+limit reasons share, fan %; **CPU** effective clock avg / max (and per-CCD peak), package power,
+Tctl avg / max; **RAM** configured MT/s and DIMM voltage, tRAS-free (what the snapshot knows); the
+hardware line (board, BIOS, driver, Windows build), PSU as set, the run's validity block
+(fixed workload, hash checks passed, no thermal bit, background load under 5 %), date and
+app version. Serials, hostnames and user names never appear (§17 redaction is reused). The file
+opens anywhere with no app, so people paste it in forums and compare; two files side by side is
+the comparison — the app does not host anything (plan §27a privacy).
+
+**A P0 delta write REPLACES the vendor tool's offset (found 2026-09-16 22:08, collector log run
+74c3442b1294).** The card as found held 16008 MHz memory (GPU Tweak +4072 effective); GetPstates20
+read 0 / 0; writing our first memory rung, +15 MHz, made the card hold **14016** — stock 14001
+plus our 15 — and the movement guard fired ("another tool is changing the memory clock"). It was
+not another tool: the driver keeps one effective offset, GPU Tweak's route does not show in
+GetPstates20, and SetPstates20 overwrote it. "Restore 0 / 0" then left the card at stock, not as
+found, and the user's tune was gone. So, binding rules: (1) with a vendor tune detected (held
+clock above the driver ceiling with our delta 0) the ladder writes **vendor + step**, never the
+bare step, and restores **vendor**, never 0; (2) the vendor value comes from the user — the
+Headroom section asks "what does your vendor tool show?" (core MHz, memory in the slider's
+units) once, remembers it, and cross-checks it against the held clock (memory: 16008 − 14001 =
+2007 NVML ≈ +4014 effective ✓ against +4072; core cannot be cross-checked under a power cap, so
+the entered value is trusted and the additivity check guards it); (3) nothing is ever written
+during the as-found measurement (run 74c3442b1294 wrote 0 / 0 before measuring — that line goes);
+(4) after any run the page says what the card holds now versus as found, and if they differ
+tells the user to re-apply in the vendor tool. The 2026-09-16 first-rung additivity check stays
+as the proof that the arithmetic held.
+
+**A core cap, and the top of the clock table (user, 2026-09-17 00:25, watching the first live
+hunt: "don't go completely crazy — stay under 3300 on core clock" — meant as tonight's caution
+so a hang would not leave the overnight work incomplete, not as a product request; the optional
+cap field stays because the same caution is every user's on a night run, but nothing is set on
+this box by default).** The first vendor+step
+hunt worked for memory (as found 16041 → +15 held 16052, the +45 rung scored 12,536 against
+12,077 at the vendor tune) and the restore wrote +319 / +2036 back. The core ladder stopped at
+its first rung with "the driver is not adding our offset": the card held 3337 MHz at the top of
+the curve with the user's +319 and 3337 again with +15 on top — the VF table's highest bin, above
+which no offset does anything. Two rules: (1) a **user core cap** in the Headroom form, "never
+test above __ MHz core" (memory has its own), default empty; a rung whose predicted top-of-curve
+clock would exceed the cap is not written and the ladder ends with "stopped at your cap"; (2) the top-of-curve clock is only the first additivity signal: on a card whose curve
+ends where the tune already sits (3337 MHz here) it cannot move, but the offset still counts
+where the card actually runs — on the power cap, where a shifted curve means a higher clock at
+the same watts (the +15 core rung scored 12,661 against 12,536, about +1 %, while the light-load
+check was declaring the offset dead). So when the top does not move, additivity is judged on the
+**sustained half's mean clock and throughput** against the as-found run's own spread as the noise
+floor (clocks on the cap wander ±20 MHz, so the whole 30 s is averaged), and only when neither
+the top, the sustained mean nor the score moves is the verdict "no core headroom through
+offsets" — certified +0 core, a result, not a failure. The score climb never
+writes a stock rung: "−2036" (the vendor tune removed to measure stock) must not appear — the
+as-found run and the vendor rung are the only baselines.
+
+**The driver keeps our deltas across a reboot, and the vendor tool's Apply lands short while
+we hold them (found 2026-09-17 morning).** After the overnight run the machine rebooted; the
+collector then read P0 core +319 / memory +2036 straight from the driver — the deltas the
+restore had written survived — and GPU Tweak's Apply of +4072 left the card at 15841 MHz
+(the overlay agreed), 196 short of 16037, exactly as on the evening before. Two consequences:
+(1) the vendor form recognises the case ("the driver reads your tune through our route …
+nothing to enter") and prefills from the deltas; (2) a **Release to vendor tool** action
+(`POST /tune/release`, nothing running) writes our 0 / 0 so the vendor tool's next Apply is
+clean — the user presses it, then Apply in GPU Tweak, and the card reads the tune in full.
+The earlier assumption that P0 deltas vanish at reboot is withdrawn.
+
+**One program holds the tune (user, 2026-09-17: "why does it keep offsetting it — fix it").**
+The mixing of two routes is the whole problem, so the user chose to let Strata Tune hold the
+tune: an opt-in switch in Settings, *Keep my tune applied at startup*, writes the vendor values
+entered on the Tune page through our route once per collector start when the driver reads
+0 / 0 (`POST /tune/hold`, refused while a run is going, a rung is applied, or our route already
+holds something). The user turns off the vendor tool's apply-at-startup and stops pressing
+Apply there; *Release to vendor tool* hands the card back. With the switch off the rule above
+stands: the card is always left as found. The disclaimer's "left as found" sentence gains
+"unless you turn on Keep my tune applied".
 
 **Write path.** NVML can set power limit and locked clocks (admin); VF-curve offsets need
 NVAPI (`NvAPI_GPU_GetPstates20` is public, the set side is the semi-private call every
@@ -469,7 +797,15 @@ still use its results, and so AMD users get something from day one.
 
 Five pages on the family's bottom-bar page switcher, in the order people need them:
 
-`Audit · Monitor · Capture · AI Models · Tune`
+`Tune · Monitor · Capture · AI Models`
+
+(2026-09-16, user: "what's the point of Audit as a separate window? it should be in the Tune
+section".) **Tune is the home page and holds both kinds of advice**, because both are things
+the user applies elsewhere: the top is the audit — score, ranked findings, what to change in
+BIOS or Windows — and below it, behind the settings switch and the §27a warning, the
+**Headroom** hunt that hands over OC values for the vendor tool. The app never changes a
+setting or leaves a clock on the card; everything on this page is "here is what we found,
+here is what to type where". The plan's older "Audit" page references mean this top half.
 
 - **Audit** is the home page: score at the top once it exists, five ranked findings, "All
   sensors" button, pinned-sensor strip.
@@ -485,6 +821,15 @@ Five pages on the family's bottom-bar page switcher, in the order people need th
 - **Capture** lists sessions; opening one shows the report (same renderer as the HTML).
 - **AI Models** is the advisor with the context slider.
 - **Tune** is hidden behind a settings toggle plus a warning modal until Phase 8 ships.
+- **About** is a utility hub in the CPU-Z tradition (user, 2026-09-16), not a credits card:
+  version · author · licence · Windows edition, version and build · DirectX level · GPU driver ·
+  collector / PawnIO / HWiNFO-bridge status; and a **Tools** block: *Save system report*
+  (.txt / .html — our own: snapshot, spec sheet, current sensors, serials redacted — the file
+  people attach to a forum post), *Clocks* (a live per-core / GPU clock table window), *Timers*
+  (Windows timer resolution current/min/max via `NtQueryTimerResolution`, QPC frequency, HPET/TSC
+  source — also an §8 audit check), *Validation* (the §14 share card), *Copy hardware summary*,
+  *Open logs folder*, *Support development*. A **Legal** block renders `LICENSE`, `DISCLAIMER.md`,
+  `THIRD-PARTY-NOTICES.md` and the privacy statement from the bundled files (§27a).
 
 Right-hand chat panel like the other apps — but here it is *optional* and *later*: the
 family's Ollama agent could explain a report in plain words, but the report already is
@@ -513,11 +858,32 @@ while a test runs (A6).
      Package power vs PPT (or vs the 9950X's 230 W stock PPT when the SMU value is not
      readable); average effective clock vs max boost; per-CCD temps.
 3. **GPU panel** (right half)
-   - *Board diagram*: an SVG outline of the card with the GPU die (core temp), memory
-     (VRAM used/total as a fill), the 12VHPWR connector drawn as six pins each showing its
-     amps as a bar (LHM exposes per-pin voltage and current on the 5090 — imbalance is the
-     thing that melts connectors, so colour any pin > 1.3× the mean amber), and the fan
-     positions with RPM.
+   - *Card schematic* (user direction 2026-09-15: the bar is ASUS GPU Tweak III's thermal
+     map / power detector, and ours must be clearly better — same glance, more analysis, with
+     history). A schematic SVG of a card, not vendor art, outlined in the vendor colour:
+     - **Top edge — 12V-2x6 connector block.** Six pins as vertical bars on a 0–9.5 A scale
+       (the per-pin continuous rating), each labelled with A and W and its 12 V reading in a
+       small row beneath (LHM on the ROG Astral LC 5090 exposes per-pin voltage, current and
+       power, plus connector totals). Under the pins: total A / W against the connector's
+       600 W rating with a limit tick, and the two numbers GPU Tweak never computes —
+       **spread** (max − min) and **max/mean** — coloured emerald ≤ 10 % spread, amber
+       10–20 %, red > 20 % or any pin above 8 A. Hover a pin → its 60 s sparkline. **Only cards with
+       per-pin shunts expose this** — ASUS ROG Astral / Matrix and a handful of others; a Founders
+       Edition or most partner cards report board power only. **No per-pin sensors → the whole
+       12V-2x6 block is hidden** (user, 2026-09-16), the GPU panel reflows around it, and the
+       spread / max-mean analysis and any connector-balance audit row do not exist for that card.
+       Board power is already on the GPU bars, so nothing is lost and nothing is faked.
+     - **Centre — die block**: core temp large, core voltage and SM clock small; hotspot
+       only when the driver exposes it (NVML thermal sensors), otherwise omitted, never "—".
+     - **Around the die — memory blocks**: VRAM used/total as a fill, memory-junction temp,
+       memory clock.
+     - **Flanks — engine loads** as micro-bars (3D, copy, video decode/encode, optical flow,
+       JPEG): rows at 0 collapse, so an idle card shows two rows and a rendering card six.
+     - **Bottom edge — PCIe edge connector** with gen × width and an Rx/Tx throughput
+       sparkline (the link check made visible).
+     - **Fans** as circles with RPM and duty (on a liquid-cooled card these are the radiator
+       fans; label them Fan 1/2, not "GPU Fan").
+     - Perf-limit pills directly beneath the card. Everything has a 60 s sparkline on hover.
    - *Bars*: core temp vs target, hotspot and memory junction when present, board power vs
      limit (with the max limit marked), SM clock requested vs effective (the gap *is*
      throttling — draw both on one bar), memory clock, GPU/memory-controller/bus load.
@@ -536,8 +902,19 @@ while a test runs (A6).
    happened is still visible.
 
 **Visual rules:** one accent (emerald) for "good/active", amber for "near a limit", red for
-"at a limit / throttling", slate for idle or absent. Bars are thin (6–8 px), rounded, with
-the limit drawn as a tick, not a second bar. Numbers in a tabular monospace figure font;
+"at a limit / throttling", slate for idle or absent.
+
+**Vendor identity (user direction 2026-09-15).** Each device panel carries its vendor's colour
+as an *identity* accent — the panel header text, the 1 px left border, the chip/board outline
+and the load tint in the chip cells: NVIDIA `#76B900`, AMD `#ED1C24`, Intel `#0071C5`,
+Qualcomm/Snapdragon `#3253DC`; board panels by board vendor when known (MSI `#C8102E` (a deeper crimson than AMD's red so an AMD CPU panel and an MSI board panel stay distinct side by side — user confirmed MSI = red shade, 2026-09-15),
+ASUS `#00539B`, Gigabyte `#F58220`, ASRock `#00A651`), else slate. **State colours are never
+vendor colours**: bars, ticks and pills keep emerald / amber / red / slate for good / near /
+at-limit / idle, so an AMD panel's red header never reads as "throttling". Vendor is
+detected from the snapshot (`cpu.name`, `gpus[].name`, `motherboard.manufacturer`), one map
+in `src/data/vendors.json`, unknown → slate. Bars are thin (6–8 px), rounded, with
+the limit drawn as a tick, not a second bar. **No text is ever clipped**: tiles and rows wrap or shorten by
+content; a CSS `truncate` on a label is a defect (user, 2026-09-16). Numbers in a tabular monospace figure font;
 labels in the UI font at 11 px, uppercase, tracked. Panels have a 1 px border and a
 slightly lighter surface; no shadows, no gradients except the load fill on the chip cells.
 Nothing blinks. Absent sensors collapse their row rather than showing "—" walls.
@@ -546,9 +923,73 @@ Nothing blinks. Absent sensors collapse their row rather than showing "—" wall
 and scale with `max-width: 100%`.
 
 **Phase 1 ships** the CPU panel (chip diagram + bars), the GPU panel (bars, perf-limit pills,
-12VHPWR pins, without the board outline art if time is short), rails and fans, and
-sparklines. The GPU board diagram, storage panel and DIMM map follow in Phase 2 with the
-full sensor view. Same components later render inside the Tune live monitor (§16).
+the full 12V-2x6 connector block with spread/max-mean analysis), rails and fans, and
+sparklines. The card schematic around that block came in with Phase 1's polish pass
+(user feedback 2026-09-16, `.claude/workflows/phase1-polish.md`, with named and movable
+panels); the storage panel and the DIMM map are Phase 2's first items, with the full sensor
+view. Same components later render inside the Tune live monitor (§16).
+
+## 17c. Footprint budget (user direction 2026-09-16)
+
+Measured on each PR, on the dev box and on a laptop when one is available:
+
+| Budget | Target | How measured |
+|---|---|---|
+| Collector idle CPU | ≤ 1 % of one core at 2 Hz LHM / 10 Hz NVML; ≤ 0.3 % on battery | Process V2 counter over 60 s |
+| Renderer idle CPU | ≤ 1 % with Monitor open, ≈ 0 on other pages | same |
+| RAM | collector ≤ 120 MB, renderer ≤ 200 MB, worker/bench only while running | working set |
+| Package | ≤ 150 MB installed: one shared .NET runtime folder for collector, worker and bench (framework-dependent publish into one `runtime/`), not three self-contained bundles; renderer assets minified, no unused fonts/icons | installer size |
+| Startup | UI ≤ 1.5 s to first paint, collector first tick ≤ 1.5 s after UAC | log timing lines |
+| GPU | none, ever (A6); no canvas, no WebGL, no continuous animation | `app.getGPUFeatureStatus` |
+| Small screens | usable at 1366×768 and 125–150 % DPI: panels stack, bars stay legible, no horizontal scroll | screenshot at that size |
+| Battery | on DC power: LHM 1 Hz, NVML 2 Hz, sparklines 1 Hz; Monitor tab hidden → no ticks | `powercfg` / Electron `powerMonitor` |
+| No NVIDIA | AMD/Intel: NVML absent → the GPU panel shows LHM's AMD/Intel sensors; audit rules that need NVML report 'unknown', never fail; the advisor works from the table | run with NVML export disabled in tests |
+| Idle Ollama/apps | never poll a service the user does not run; discover once, back off | log |
+
+**Every long action can be stopped** (user, 2026-09-16: the audit had no way to interrupt it).
+Audit, capture, bench, measure, calibrate, tune hunt, validation: a Stop button next to the
+progress line from the first second; Stop cancels the underlying process (collector `POST
+/load/{id}/cancel` kills the worker or bench and releases the lock; PresentMon is terminated;
+Ollama generation is aborted), the collector returns to idle within 2 s, and the page shows the
+partial result marked *interrupted* rather than a blank. Escape does the same while the run
+is focused. A stopped run never leaves a PENDING tune state, a lingering process, or a held
+gpu.lock.
+
+**No sleeping mid-run (2026-09-16).** While a hunt, bench, capture, audit load or measure is
+active the collector holds `SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_CONTINUOUS)` and
+releases it the moment the run ends or is stopped; the display is never held (ES_DISPLAY_REQUIRED
+is not set) — a 16-minute hunt on a laptop must not be cut by the idle timer, and the flight
+recorder must never have to explain a sleep as a hang. Tested by asserting the flag is cleared
+after Stop and after a crash-exit path.
+
+Rules of thumb: subscribe to sensors, never read everything; batch IPC at 2 Hz; unmount pages fully; no timers on hidden pages; the ring buffer's memory is bounded by time (§6).
+
+## 17d. Device classes (user direction 2026-09-16: "this app is not just for this system — all
+kinds of systems: laptops with no GPU, gaming laptops, AI laptops and PCs, mid-range and
+high-end PCs like ours")
+
+The dev box is the top of the range and the only machine the build is verified on, so every
+page is designed and tested against a **class matrix** of mock snapshots and ticks, not just
+the live box. A page is done when it reads right on every row: nothing empty, nothing "—",
+every absence explained in one sentence, nothing offered that the machine cannot do.
+
+| Class | Example | What changes |
+|---|---|---|
+| **Laptop, no dGPU** | Ryzen 7 / Core i5 with an iGPU, 16 GB, one NVMe, battery | GPU panel = the iGPU's LHM sensors (clock, load, shared memory), no NVML, no 12V-2x6, no fans of its own; Monitor leads with CPU, battery and the board; Capture works (PresentMon sees the iGPU); the built-in bench runs but is capped by the iGPU and says so; AI Models estimates CPU-only inference from RAM bandwidth (dual-channel DDR5 ≈ 80 GB/s → a 4B model at a few tok/s) and says a discrete GPU is what changes it; Headroom is unavailable with the reason "no supported GPU"; audit rules about GPU units/OC/ROPs are omitted; the power page is battery-aware (§17c) |
+| **Gaming laptop** | RTX 4070 Laptop 115 W + Dynamic Boost, i7/R9 HX, MUX or Optimus | NVML present; the power limit is the TGP and moves with Dynamic Boost — the cap is shown as a range, not a tick; hotter and louder is normal, so the thermal audit's INFO/WARN split uses laptop thresholds; the CPU has no PPT/CO story but has PL1/PL2 — the popover's "set in BIOS" fields become "set in the vendor app" (Armoury Crate, Legion, Omen); Headroom works within the driver's mobile offset range with the plan's same guards, and the warning adds one line about the vendor app's own OC mode; Optimus: PresentMon attributes frames correctly, the GPU panel names the render GPU |
+| **AI laptop / PC** | Core Ultra / Ryzen AI / Snapdragon X with an NPU, maybe a small dGPU | AI Models shows the NPU's advertised TOPS as its own row with the honest line that Ollama and llama.cpp run on the GPU or CPU, not the NPU, so the NPU number does not predict tok/s today; ARM64 (Snapdragon X) needs an arm64 Electron and .NET build, LHM's ARM support is partial and PawnIO absent → the collector reports what WMI and the counters give and the rest is omitted; the audit covers Windows, storage, memory and power plan and says the sensor set is limited on this platform |
+| **Mid-range PC** | RTX 4060 / RX 7700 XT, Ryzen 5 / i5, 32 GB, 650 W PSU | the common case: everything works; AMD cards get LHM sensors and no NVML/NVAPI — Headroom says "NVIDIA cards only in this version; AMD via ADLX is planned", the advisor works from the table; the PSU verdict matters here (a 650 W supply and a 4060 is fine; a 5070 Ti on it is not); the missing-ROPs check runs only on the affected 50-series rows |
+| **High-end PC** | this box: 5090, 9950X, 1300 W, custom OC | everything, including the 12V-2x6 block, Headroom on top of a vendor tune, pin sensors, the full spec sheet |
+
+Rules that follow: (1) every page ships with a fixture per class under `tests/fixtures/classes/`
+(snapshot + a tick + an audit input), the render tests iterate the matrix, and the design
+reviewer screenshots each class at 1366×768 and 1920×1080; (2) vendor-specific code paths are
+behind one capability object (`caps: { nvml, nvapi, pins, npu, battery, dynamicBoost, arm64 }`)
+computed once from the snapshot, never from string-matching in components; (3) the score scale
+(§16) stays absolute — a laptop iGPU scoring 600 against a reference 5090's 10,000 is the
+truth — but every score names the device class beside it so a comparison sheet from a laptop is
+never read as a broken desktop; (4) nothing in the app assumes a second GPU, a PSU rating, pin
+sensors, a fan header, NVML, or an x64 CPU.
 
 ## 18. Brand
 
@@ -562,7 +1003,8 @@ full sensor view. Same components later render inside the Tune live monitor (§1
 - `support.json` with the same shape as Strata Code; donate button hidden while the URL is
   empty.
 - Title bar: `St` monogram · STRATA TUNE · Help · window controls.
-- Bottom bar: `St` monogram · STRATA TUNE · session/capture state · page switcher.
+- Bottom bar: collector/capture state · page switcher. No monogram or wordmark — the title bar
+  already carries them (user, 2026-09-15).
 
 ## 19. The HTML report
 
@@ -665,8 +1107,8 @@ Collector: handshake, token, ring buffer, LHM + NVML at 10 Hz, snapshot, SSE. UI
 page with the §8 rules, top five, "show all". Every check exercised on this box (EXPO on,
 ReBAR on, Gen5 x16, Balanced-on-Zen5 not flagged, D: at 73 % not flagged, C: fine).
 
-### Phase 2 — Full sensor view (day 4)
-§9. Presentation over Phase 1. Pins, min/max/mean, CSV export.
+### Phase 2 — Full sensor view + hardware sheet (days 4–5)
+§9 and §9a. Presentation over Phase 1. Pins, min/max/mean, CSV export; the spec sheet per device.
 
 ### Phase 3 — AI model advisor (days 4–5) — **v0.2, the shareable one**
 §10 with `models.json`, `gpus.json` TOPS/bandwidth rows, the AI stats card (spec + measured), best-model-for picks, context slider, and the Ollama calibration run.
@@ -717,7 +1159,7 @@ trade in one sentence.
 | R4 | The 2 Hz dashboard still perturbs a bandwidth sweep | GPU accel off app-wide; validity indicator; compare sweep results with the UI minimised |
 | R5 | EXPO detection from part numbers misses kits | `kits.json` grows; unknown kit → "could not determine rated speed", never a false flag |
 | R6 | Classifier over-confident on single-signal cases | Confidence shown; low-confidence cases render as "probably" |
-| R7 | A hard hang leaves the machine on a bad value | PENDING flag + logon revert task; state persisted *before* apply |
+| R7 | A hard hang leaves the machine on a bad value | PENDING flag persisted *before* apply, revert at every collector start; deltas are volatile across a reboot; nothing is kept after a run |
 | R8 | Elevated collector exposes an HTTP endpoint | Loopback only, random port, per-launch token, no writes without the token, exits with the UI |
 | R9 | Only one test machine | Phase 4 onward wants a laptop and an AMD box; ask the family/friends |
 
@@ -737,8 +1179,95 @@ trade in one sentence.
   ComputeSharp MIT, PawnIO is a separately installed driver (check its licence for
   redistribution of the installer vs linking to it).
 - **Elevation UX**: one UAC prompt per launch (v1) vs installing the collector as a Windows
-  service once (later). v1 is the prompt.
+  service once (later). v1 is the prompt. The user finds the per-launch collector start slow (2026-09-15):
+  Phase 1's fix pass adds a startup budget (handshake before LHM `Open()`, staged sensor
+  groups, one NVML session, timing lines; target first tick < 1.5 s after the UAC click), and
+  the service install moves up to the first post-v0.1 item so the collector is already warm
+  when the app opens.
 - **.NET 10 vs 8**: 10 unless a library lags.
+- **Release model (user, 2026-09-16): every Strata app ships as freeware** — free downloads for
+  anyone, no paid tier, no subscription, donations via `support.json`. For Strata Tune that adds a
+  release phase after Phase 8: an installer (electron-builder NSIS, per-user install into
+  `%LOCALAPPDATA%` for the UI, the collector/worker/bench under an admin-only folder per §5's
+  install-location rule), Authenticode signing (Smart App Control, §27 above), GitHub Releases
+  with the installer and a portable zip, a one-page download site, the plain-language
+  disclaimer shown on first launch and on the installer's licence page (§27a) and the third-party
+  notices, and the repo flipped public at that point. The same checklist applies
+  to Strata Code, Photo, Video and Snap when they follow.
+- **Code signing (found 2026-09-16)**: Smart App Control on the dev box (Windows 11 Home) blocks the
+  loose, unsigned collector DLLs from `bin/` (CodeIntegrity 3077/3118, HRESULT 0x800711C7) but
+  allows the self-contained single-file publish. Dev launches prefer the published bundle. Before
+  v0.1 ships publicly, the collector, worker and bench exes need an Authenticode signature
+  (an OV cert, or Azure Trusted Signing) or Smart App Control users get a silently blocked
+  collector; the client must also detect that exit and say so in the status pill.
+
+## 27a. Legal (user direction 2026-09-16)
+
+The user's words: "all the required legal stuff, and I will not be responsible for anything".
+Strata Tune reads sensors, runs stress loads and — in Phase 8 — changes clocks and voltages.
+That is exactly the kind of tool whose author gets blamed for a dead card, so the legal
+surface is part of the product, not a footnote. Not legal advice; the author reads every text
+before v0.1 ships. Everything below is plain language first, legalese only where a term of art
+is needed.
+
+**One source, many surfaces.** The texts live in the repo root beside `LICENSE`:
+`DISCLAIMER.md` (no warranty · no liability · hardware risk · readings and advice are
+informational · not affiliated with any vendor) and `THIRD-PARTY-NOTICES.md` (exists). The app
+bundles both files verbatim (electron-builder `extraResources`) and renders them; nothing is
+retyped into a component, so the wording can only drift in one place.
+
+| Surface | What it shows | When |
+|---|---|---|
+| **First launch** | `DISCLAIMER.md` in a modal with one button, *I understand*; the app does not start the collector until it is pressed. Acceptance is stored as `{ version, acceptedAt }` in settings and re-shown when the disclaimer's version changes. | once per disclaimer version |
+| **Headroom warning** (§16) | Short and plain, what actually happens (user, 2026-09-16): "Strata Tune adds small clock steps on top of your current tune and tests each one for about a minute with a workload whose result it can check. It stops at the first small mistake — a wrong result or a driver reset — long before the card would hang. You may see the screen freeze for a second or two when the driver resets; that is the signal we stop on. Nothing changes voltage, power limits or fans, and the card is left exactly as it was found; you type the values it finds into your vendor's tool." Then one risk line: a crash can still lose unsaved work in other apps — save first — and any overclock you then apply yourself is at your own risk and may affect your warranty. Acknowledged with the settings switch each time the hunt is enabled; the acknowledgement (date, app version, GPU name) is written to the tune log. | every enable |
+| **About → Legal** (§17) | tabs: *Licence* (MIT), *Disclaimer*, *Third-party notices*, *Privacy*; a *Copy* button per tab. | on demand |
+| **Installer** | the NSIS licence page shows `LICENSE` followed by `DISCLAIMER.md`; declining exits setup. The portable zip carries both files at its root. | install |
+| **README / download page** | a *Legal* section: two-sentence summary, links to the three files, the trademark line. | always |
+| **Reports and share cards** (§14, §19) | one footer line: "Readings come from your drivers and sensors and can be wrong; nothing here is professional advice." Serials stay redacted (§17 system report). | every export |
+
+**What `DISCLAIMER.md` says** (the plain-language points, in this order):
+
+1. *Free software, as is.* No warranty of any kind — not that it works, not that readings are
+   right, not that it is fit for any purpose. (The MIT licence already says this for the code;
+   the disclaimer says it for the app people download.)
+2. *No liability.* The author is not responsible for any damage or loss from using the app:
+   hardware damage, data loss, downtime, lost warranty, anything else, whatever the legal theory.
+   Where a jurisdiction does not allow a full exclusion, liability is limited to the greatest
+   extent it does allow — and the app is free, so nothing was paid to refund.
+3. *Hardware risk is real and it is the user's.* Phases 1–7 change nothing (A7). Tune is off by
+   default, behind a warning, and applies only what the user enables; overclocking, undervolting,
+   power-limit and fan changes can crash, corrupt unsaved work, damage components and void
+   warranties. Run it on a machine you can afford to lose work on, back up first, and stop if
+   anything looks wrong.
+4. *Readings and advice are informational.* Sensor values come from drivers, firmware and
+   third-party libraries and can be wrong or missing; the audit's findings, the advisor's model
+   and token-rate estimates, PSU sizing and the stutter verdicts are estimates from published
+   references and the app's own tests, not professional, engineering or purchasing advice.
+   Verify before acting on anything that costs money or touches hardware.
+5. *Not affiliated.* NVIDIA, GeForce, AMD, Ryzen, Radeon, Intel, ASUS, ROG, MSI, Gigabyte,
+   Windows, DirectX, HWiNFO, Ollama and every other name in the app are trademarks of their
+   owners; Strata Tune is an independent project, not endorsed by or connected with any of them.
+   Model names in the advisor are their publishers' and each model has its own licence.
+6. *Your data stays yours.* No telemetry, no accounts, no network calls except the ones the
+   user starts (a local Ollama on `127.0.0.1`, external links the user clicks, and the optional
+   update check when it exists — off until asked). Sessions, logs and settings live under
+   `%LOCALAPPDATA%\Strata Tune`; exported reports and share cards may carry hardware names and
+   clocks — the user decides where those go, and serials are never in them.
+7. *Third-party components* are listed with their licences in `THIRD-PARTY-NOTICES.md`; PawnIO
+   is a separately installed driver under its own terms; HWiNFO, when the user runs it, is theirs
+   under HWiNFO's terms (§9b); Ollama and the models it serves are the user's own installs.
+8. *Donations* are voluntary gifts, buy nothing, and are not tax-deductible unless the user's
+   own rules say so.
+9. *Governing text.* The English text is the one that counts; translations, when they exist,
+   are for convenience.
+
+**Repo hygiene that backs the words.** The `LICENSE` copyright line, the About author line and
+the disclaimer's "the author" all name the same person; `THIRD-PARTY-NOTICES.md` is regenerated
+on every dependency bump (its own header says how); the MPL-2.0 components stay unmodified
+(modifying an LHM file would require publishing that file — the plan never does; §9b's bridge
+reads HWiNFO's shared memory, which is a documented interface, not HWiNFO code). Every Strata
+app ships the same `DISCLAIMER.md` skeleton with its own hardware-risk paragraph (Photo and
+Video have none; Snap's is the camera), per the family freeware rule in §27.
 
 ---
 
@@ -751,8 +1280,9 @@ trade in one sentence.
 | Windows power plan flagged when not High Performance | Not flagged on desktop Zen 4/5 | AMD recommends Balanced there; flagging it would be the first false positive a Ryzen owner sees |
 | Ryzen Master SDK for CPU detect | Not used | LHM already exposes PPT/TDC/EDC and clocks; no need for a flaky SDK even for detection |
 | "Admin is required" (whole app implied) | Only the collector is elevated; ETW can be unelevated via Performance Log Users | Chromium should not run as admin; this user is already in the group |
+| PresentMon hosted by the collector (§4 diagram) | PresentMon hosted by Electron main (`electron/presentmon.ts`), unelevated | Phase 4 was built while another workflow owned `collector/`; PresentMon needs no elevation for a Performance Log Users member and stamps its own QPC, so correlation with the collector's sensor window is unchanged. Elevated games show as `<unknown>` — revisit if that bites. |
 | Monitor window: "disable GPU acceleration for the monitor window" | Whole app has GPU acceleration off | Electron only supports the switch app-wide before `ready`; nothing here needs a GPU |
 | Stress worker unspecified | ComputeSharp (DX12) second .NET exe | Vendor-neutral, deterministic, no CUDA toolkit |
-| Rollback on next app launch | Plus a logon scheduled task | The user might never reopen the app after a bad hang |
+| Rollback on next app launch | Revert at every collector start; no logon task (2026-09-16) | Offsets only exist while a rung is under test and P0 deltas do not survive a reboot; nothing is ever kept on the card |
 | Four capabilities (lists five) | Five | Counting |
 | Open source | Public repo, MIT | Stated explicitly because the other Strata repos are private |

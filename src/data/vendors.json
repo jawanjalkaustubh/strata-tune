@@ -1,0 +1,19 @@
+[
+  { "vendor": "NVIDIA", "colour": "#76B900", "pattern": "NVIDIA|GeForce|Quadro", "pciVendorIds": ["0x10DE"] },
+  { "vendor": "AMD", "colour": "#ED1C24", "pattern": "\\bAMD\\b|Ryzen|Radeon|Advanced Micro Devices", "pciVendorIds": ["0x1002"] },
+  { "vendor": "Intel", "colour": "#0071C5", "pattern": "Intel|\\bArc\\b", "pciVendorIds": ["0x8086"] },
+  { "vendor": "Qualcomm", "colour": "#3253DC", "pattern": "Qualcomm|Snapdragon|Adreno", "pciVendorIds": [] },
+  { "vendor": "MSI", "colour": "#C8102E", "pattern": "Micro-Star|\\bMSI\\b", "pciVendorIds": ["0x1462"] },
+  { "vendor": "ASUS", "colour": "#00539B", "pattern": "ASUSTeK|\\bASUS\\b|\\bROG\\b", "pciVendorIds": ["0x1043"] },
+  { "vendor": "Gigabyte", "colour": "#F58220", "pattern": "Gigabyte|AORUS", "pciVendorIds": ["0x1458"] },
+  { "vendor": "ASRock", "colour": "#00A651", "pattern": "ASRock", "pciVendorIds": ["0x1849"] },
+  { "vendor": "Zotac", "colour": "#F5B800", "pattern": "Zotac", "pciVendorIds": ["0x19DA"] },
+  { "vendor": "EVGA", "colour": "#6E6E6E", "pattern": "\\bEVGA\\b", "pciVendorIds": ["0x3842"] },
+  { "vendor": "Palit", "colour": "#E86A1E", "pattern": "Palit", "pciVendorIds": ["0x1569"] },
+  { "vendor": "Gainward", "colour": "#C40000", "pattern": "Gainward", "pciVendorIds": ["0x10B0"] },
+  { "vendor": "PNY", "colour": "#1F3F8F", "pattern": "\\bPNY\\b", "pciVendorIds": ["0x196E"] },
+  { "vendor": "KFA2 / Galax", "colour": "#D11A2A", "pattern": "KFA2|Galax", "pciVendorIds": ["0x1B4C"] },
+  { "vendor": "Sapphire", "colour": "#0D6EB8", "pattern": "Sapphire", "pciVendorIds": ["0x1DA2"] },
+  { "vendor": "PowerColor", "colour": "#C21F1F", "pattern": "PowerColor", "pciVendorIds": ["0x148C"] },
+  { "vendor": "XFX", "colour": "#A61B29", "pattern": "\\bXFX\\b", "pciVendorIds": ["0x1682"] }
+]

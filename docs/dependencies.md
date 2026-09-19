@@ -128,8 +128,15 @@ Ryzen 9 9950X (32 logical CPUs), MSI MAG X870E TOMAHAWK WIFI (MS-7E59) BIOS 2.A6
   prototypes are transcribed — the P/Invoke file carries it.
 - Clocks-event-reason bits (NVML): GpuIdle 0x1, ApplicationsClocksSetting 0x2, SwPowerCap 0x4,
   HwSlowdown 0x8, SyncBoost 0x10, SwThermalSlowdown 0x20, HwThermalSlowdown 0x40,
-  HwPowerBrakeSlowdown 0x80, DisplayClockSetting 0x100. This box shows 0x400 at idle — newer
-  than the public header; decode known bits, show unknown as hex.
+  HwPowerBrakeSlowdown 0x80, DisplayClockSetting 0x100. This box shows 0x400 at idle **and under light load**,
+  and it disappears under heavy load (599/600 W → 0x4 SwPowerCap only), on driver 616.92 — so it
+  behaves like an idle/low-utilisation indicator on Blackwell; newer than the public header. Decode
+  known bits, show unknown as hex, and treat 0x400-only as "not loaded" for validity gates.
+- Measured on the dev box: heavy worker load holds SM 3210–3225 MHz at 599 W / 51 °C with
+  SwPowerCap set; a light (50 ms-dispatch) load bounces 1717–2812 MHz at 28 °C — clock drops
+  under light load are the boost governor, not throttling.
+- AM5 VSOC: AMD's AGESA cap is **1.30 V**; EXPO 6000+ kits run 1.25–1.30 V by design. Rails
+  need real nominal/limit tables (this box: SoC 1.304 V = at the cap, not a fault).
 
 ## Licence summary for THIRD-PARTY-NOTICES.md
 
@@ -145,3 +152,60 @@ Ryzen 9 9950X (32 logical CPUs), MSI MAG X870E TOMAHAWK WIFI (MS-7E59) BIOS 2.A6
 | System.Diagnostics.PerformanceCounter 10.0.12 | MIT | NuGet |
 | .NET runtime (self-contained) | MIT + Microsoft .NET Library License for coreclr | embedded in the published exe |
 | nvml.h prototypes | NVIDIA notice (royalty-free; reproduce disclaimer) | transcribed into Nvml.cs |
+
+## HWiNFO64 8.26 summary of the dev box (read off the GUI, 2026-09-16)
+
+- **GPU is the ASUS ROG Astral GeForce RTX 5090 LC OC** (HWiNFO names it from its subsystem-id
+  database; TPU lists the OC Edition at 2580 MHz boost). GB202-300, PCIe 5.0 x16 @ x16, 31.82 GB
+  GDDR7 512-bit, 176 ROPs / 680 TMUs, 21760 SH / 170 RT / 680 TC. Current clocks at the time:
+  GPU 2910 MHz, **memory 1979 MHz** (stock 1750 → the user's memory offset is +229 MHz ≈ 31.7 Gbps
+  effective), video 2287. So on this box §8's OC-offset row must report both core and memory offsets.
+- **CPU**: 9950X Granite Ridge stepping GNR-B0, TDP 170 W, base 4300 / boost max 5750 / min 600,
+  16×32 KB L1I + 16×48 KB L1D, 16×1 MB L2, 2×32 MB L3. HWiNFO's per-core window showed CCD0
+  cores at 5725 MHz (×57.25) and CCD1 cores parked at 2725 — the same effective-vs-nominal split
+  the Monitor's chip grid shows.
+- **Board**: MSI MAG X870E TOMAHAWK WIFI (MS-7E59), chipset AMD X870E (Promontory PROM21L.7),
+  BIOS **2.AC4 dated 2026-09-02** (the plan's 2.A60 line is stale — the user updated), UEFI,
+  Secure Boot, TPM, HVCI all on.
+- **Memory**: 32 GB DDR5 at **3100 MHz = 6200 MT/s**, FCLK 31.00 × 100, dual channel, CR 1T,
+  28-36-36-96, tRC 132, tRFC 884. Module G.Skill F5-6000J2836G16G in P0 CHANNEL A / DIMMA2 rated
+  DDR5-6000 / PC5-48000 UDIMM, no ECC. SPD profiles: EXPO 3000 MHz 28-36-36-96 1.40 V; EXPO 2200
+  22-36-27-71 1.40 V; JEDEC 2400 40-40-40-77 1.10 V, 1800 30-30-30-58, 1600 28-27-27-52. So the
+  kit's rated speed (6000) comes straight from SPD when HWiNFO or an SPD read is available — the
+  part-number parse is the fallback — and "running 6200 above the 6000 EXPO profile" is a manual
+  tune, consistent with Ryzen Master showing EXPO Mode OFF.
+- **Drives**: Samsung SSD 9100 PRO 2 TB on NVMe x4 32 GT/s (PCIe 5.0); CT2000P3PSSD8 on x4 16 GT/s;
+  **Samsung SSD 980 PRO 2 TB on NVMe x2 16 GT/s — half its lanes**. That is a real audit finding
+  ("an NVMe drive is linked at x2: its M.2 slot shares lanes; sequential reads halve") and a new §8
+  rule: **NVMe link width vs the drive's maximum**. Windows exposes PCIe link state without
+  admin through device properties `DEVPKEY_PciDevice_CurrentLinkWidth` / `MaxLinkWidth` /
+  `CurrentLinkSpeed` / `MaxLinkSpeed` (SetupAPI / `CM_Get_DevNode_PropertyW` on the NVMe
+  controller node) — verify the keys on this box before relying on them.
+- OS: Windows 11 Home x64 build 26200.9457.
+- **This card runs above every reference number** (user's custom OC on the Astral LC OC): memory
+  1979 MHz (stock 1750) → ~31.7 Gbps → ~2,026 GB/s theoretical vs the 1,792 GB/s spec; core held
+  3,204–3,225 MHz under heavy load vs 2,580 rated / 2,407 reference. Any "measured exceeds spec"
+  check must use live clocks as the ceiling, not the table. The 1979 MHz is HWiNFO's reading at
+  the moment above (an earlier snapshot of the offset); NVML at the Phase 1 verification read
+  16032 MHz (÷ 8 = 2004 MHz, 32.1 Gbps, 2052 GB/s), which is what the app, README and tests
+  pin — a 25 MHz difference in offset between two moments, not a unit error (the reference
+  ceiling reads 14001 = 28 Gbps either way; 7001 is the idle half-rate P-state).
+- **HWiNFO is closed-source freeware** (Pro tier paid; OEM licensing for bundling), not open
+  source: it cannot be built on or shipped. LibreHardwareMonitor (MPL-2.0) is the open base we
+  use; HWiNFO is reachable only through its documented shared-memory interface when the user
+  runs it (plan section 9b).
+- **NVAPI unit counts**: NVML has no shader/ROP/TMU counts. GPU-Z and HWiNFO read them through
+  NVAPI (`NvAPI_GPU_GetGpuCoreCount`, public; `NvAPI_GPU_GetROPCount`, a private interface id
+  verified against open-source readers before use). This is the basis of the missing-ROPs check.
+  Measured 2026-09-16 on driver 616.92 through `Nvapi.cs` (ids verified against falahati/NvAPIWrapper
+  and arcnmx/nvapi-rs, the public ones also against LibreHardwareMonitor; `GetROPCount` = 0xFDC129FA):
+  shaders 21760, SMs 170, ROPs 176, TMUs 680 on the Astral LC OC — HWiNFO's figures exactly.
+  `NvAPI_GPU_GetTotalSMCount` answers NVAPI_NOT_SUPPORTED on 616.92, so SMs come from the TPC count
+  (`GetShaderSubPipeCount` 85 × 2). The fill-rate cross-check (`strata-tune-bench --fillrate --seconds 6
+  --json`, 64 full-screen quads per frame into a 4096² RGBA8 target) read 456.5 GPixel/s over 6.007 s
+  (2554 frames) with the SM clock held at 2993 MHz: 0.867 of the 176-ROP ceiling (526.8 GPixel/s,
+  band 448–527 with the band's floor at the 0.85 achieved fraction, so that a 168-ROP card at this
+  very efficiency, 0.827 of the 176 ceiling, is flagged rather than passed), i.e. consistent with
+  176 ROPs; the 168-ROP band at that clock is 427–503, so this reading fits both, the line says
+  so, and the cross-check is a consistency test, never a count.
+- **PSU: Lian Li Edge 1300 W, 80 PLUS Platinum** (user, 2026-09-16). Settings must read psuWatts 1300 / psuRating 'platinum' on this box — a pass that entered Gold as a placeholder must be corrected.

@@ -1,0 +1,7 @@
+{
+  "_comment": "Links shown in the app (About dialog, Help menu). Fill donateUrl in with your Ko-fi / Buy Me a Coffee / GitHub Sponsors / PayPal.me page; the donate button is hidden while it is empty. Read at launch, so no rebuild is needed after editing.",
+  "projectUrl": "https://github.com/jawanjalkaustubh/strata-tune",
+  "issuesUrl": "https://github.com/jawanjalkaustubh/strata-tune/issues",
+  "donateUrl": "",
+  "donateLabel": "Support development"
+}

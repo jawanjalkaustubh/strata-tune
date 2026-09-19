@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>strata-tune-bench</AssemblyName>
+    <RootNamespace>StrataTune.Bench</RootNamespace>
+    <!-- LibraryImport emits unsafe marshalling stubs, the window class takes a function pointer, and mapped GPU memory is written through raw pointers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The bench prints ASCII key/value lines and one JSON line; no ICU keeps the self-contained publish small. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D12" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Compiled at start-up with d3dcompiler_47 (ships with Windows), so the build needs no shader toolchain. -->
+    <EmbeddedResource Include="Scene.hlsl" LogicalName="Scene.hlsl" />
+    <EmbeddedResource Include="Fill.hlsl" LogicalName="Fill.hlsl" />
+  </ItemGroup>
+</Project>

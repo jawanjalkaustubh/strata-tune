@@ -1,0 +1,40 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StrataTune.Shared", "StrataTune.Shared\StrataTune.Shared.csproj", "{B7AC3113-88BE-48B2-88F0-67C0129A3951}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StrataTune.Collector", "StrataTune.Collector\StrataTune.Collector.csproj", "{0A718E82-83CE-4E05-81AF-7FA561AD3AAA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StrataTune.Worker", "StrataTune.Worker\StrataTune.Worker.csproj", "{96E90033-3AAD-483F-9110-988A904FCADB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StrataTune.Bench", "StrataTune.Bench\StrataTune.Bench.csproj", "{D7525572-D4E5-4448-BA3C-DD2CEF858BBA}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B7AC3113-88BE-48B2-88F0-67C0129A3951}.Debug|x64.ActiveCfg = Debug|x64
+		{B7AC3113-88BE-48B2-88F0-67C0129A3951}.Debug|x64.Build.0 = Debug|x64
+		{B7AC3113-88BE-48B2-88F0-67C0129A3951}.Release|x64.ActiveCfg = Release|x64
+		{B7AC3113-88BE-48B2-88F0-67C0129A3951}.Release|x64.Build.0 = Release|x64
+		{0A718E82-83CE-4E05-81AF-7FA561AD3AAA}.Debug|x64.ActiveCfg = Debug|x64
+		{0A718E82-83CE-4E05-81AF-7FA561AD3AAA}.Debug|x64.Build.0 = Debug|x64
+		{0A718E82-83CE-4E05-81AF-7FA561AD3AAA}.Release|x64.ActiveCfg = Release|x64
+		{0A718E82-83CE-4E05-81AF-7FA561AD3AAA}.Release|x64.Build.0 = Release|x64
+		{96E90033-3AAD-483F-9110-988A904FCADB}.Debug|x64.ActiveCfg = Debug|x64
+		{96E90033-3AAD-483F-9110-988A904FCADB}.Debug|x64.Build.0 = Debug|x64
+		{96E90033-3AAD-483F-9110-988A904FCADB}.Release|x64.ActiveCfg = Release|x64
+		{96E90033-3AAD-483F-9110-988A904FCADB}.Release|x64.Build.0 = Release|x64
+		{D7525572-D4E5-4448-BA3C-DD2CEF858BBA}.Debug|x64.ActiveCfg = Debug|x64
+		{D7525572-D4E5-4448-BA3C-DD2CEF858BBA}.Debug|x64.Build.0 = Debug|x64
+		{D7525572-D4E5-4448-BA3C-DD2CEF858BBA}.Release|x64.ActiveCfg = Release|x64
+		{D7525572-D4E5-4448-BA3C-DD2CEF858BBA}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

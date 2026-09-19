@@ -1,0 +1,119 @@
+[
+  {"name": "Qwen3-VL 30B-A3B Thinking", "family": "qwen3-vl", "tags": ["chat", "vision", "reasoning"], "paramsB": 30.5, "activeParamsB": 3.3, "layers": 48, "kvHeads": 4, "headDim": 128, "hiddenSize": 2048, "maxContext": 262144, "visionEncoderGB": 0.82, "source": "https://ollama.com/library/qwen3-vl:30b", "activeParamsSource": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Thinking-2507", "notes": "Ollama counts 31.1B including the 27-block, 1152-wide vision tower; paramsB is the 30.5B text stack (same as Qwen3-30B-A3B) and the tower is visionEncoderGB, so neither is counted twice.", "quants": [
+      {"tag": "qwen3-vl:30b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 20000000000},
+      {"tag": "qwen3-vl:30b-a3b-thinking-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 34000000000},
+      {"tag": "qwen3-vl:30b-a3b-thinking-bf16", "quant": "bf16", "bytesPerWeight": 2.0, "downloadBytes": 62000000000}
+    ]},
+  {"name": "Qwen3.8 27B", "family": "qwen3.8", "tags": ["chat", "vision", "coding", "reasoning"], "paramsB": 27.32, "activeParamsB": 27.32, "layers": 16, "kvHeads": 4, "headDim": 256, "hiddenSize": 5120, "maxContext": 262144, "visionEncoderGB": 0.92, "mtpAcceptedTokens": 2.4, "source": "https://ollama.com/library/qwen3.8:27b", "notes": "qwen35 hybrid: 65 blocks with full attention every 4th, so only 16 hold a KV cache that grows with context (the 49 Gated DeltaNet blocks keep a fixed state); layers is those 16, not 65. paramsB is the dense text stack; the 461 M vision tower at bf16 is visionEncoderGB. The GGUF carries an MTP head (qwen35.nextn_predict_layers 1) that Ollama 0.34 runs as speculative decoding; mtpAcceptedTokens 2.4 is the lowest mean accepted draft length of seven timed runs on the dev box, 2.4-3.4 (docs/phase3-calibration.md); it assumes Ollama 0.34 or newer with the model fully in VRAM, where the draft runs.", "quants": [
+      {"tag": "qwen3.8:27b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 17740000000},
+      {"tag": "qwen3.8:27b-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 30000000000},
+      {"tag": "qwen3.8:27b-bf16", "quant": "bf16", "bytesPerWeight": 2.0, "downloadBytes": 56000000000}
+    ]},
+  {"name": "Qwen3 4B Thinking 2507", "family": "qwen3", "tags": ["chat", "reasoning"], "paramsB": 4.02, "activeParamsB": 4.02, "layers": 36, "kvHeads": 8, "headDim": 128, "hiddenSize": 2560, "maxContext": 262144, "visionEncoderGB": 0, "source": "https://ollama.com/library/qwen3:4b", "quants": [
+      {"tag": "qwen3:4b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 2500000000},
+      {"tag": "qwen3:4b-thinking-2507-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 4300000000},
+      {"tag": "qwen3:4b-thinking-2507-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 8100000000}
+    ]},
+  {"name": "Qwen3 30B-A3B Thinking 2507", "family": "qwen3", "tags": ["chat", "coding", "reasoning"], "paramsB": 30.5, "activeParamsB": 3.3, "layers": 48, "kvHeads": 4, "headDim": 128, "hiddenSize": 2048, "maxContext": 262144, "visionEncoderGB": 0, "source": "https://ollama.com/library/qwen3:30b-a3b", "activeParamsSource": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Thinking-2507", "quants": [
+      {"tag": "qwen3:30b-a3b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 19000000000},
+      {"tag": "qwen3:30b-a3b-thinking-2507-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 32000000000},
+      {"tag": "qwen3:30b-a3b-thinking-2507-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 61000000000}
+    ]},
+  {"name": "Qwen3 32B", "family": "qwen3", "tags": ["chat", "coding", "reasoning"], "paramsB": 32.8, "activeParamsB": 32.8, "layers": 64, "kvHeads": 8, "headDim": 128, "hiddenSize": 5120, "maxContext": 40960, "visionEncoderGB": 0, "source": "https://ollama.com/library/qwen3:32b", "quants": [
+      {"tag": "qwen3:32b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 20000000000},
+      {"tag": "qwen3:32b-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 35000000000},
+      {"tag": "qwen3:32b-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 66000000000}
+    ]},
+  {"name": "Qwen2.5-Coder 32B", "family": "qwen2.5-coder", "tags": ["coding"], "paramsB": 32.8, "activeParamsB": 32.8, "layers": 64, "kvHeads": 8, "headDim": 128, "hiddenSize": 5120, "maxContext": 32768, "visionEncoderGB": 0, "source": "https://ollama.com/library/qwen2.5-coder:32b", "quants": [
+      {"tag": "qwen2.5-coder:32b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 20000000000},
+      {"tag": "qwen2.5-coder:32b-instruct-q5_K_M", "quant": "q5_K_M", "bytesPerWeight": 0.7, "downloadBytes": 23000000000},
+      {"tag": "qwen2.5-coder:32b-instruct-q6_K", "quant": "q6_K", "bytesPerWeight": 0.82, "downloadBytes": 27000000000},
+      {"tag": "qwen2.5-coder:32b-instruct-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 35000000000},
+      {"tag": "qwen2.5-coder:32b-instruct-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 66000000000}
+    ]},
+  {"name": "Qwen2.5-Coder 14B", "family": "qwen2.5-coder", "tags": ["coding"], "paramsB": 14.8, "activeParamsB": 14.8, "layers": 48, "kvHeads": 8, "headDim": 128, "hiddenSize": 5120, "maxContext": 32768, "visionEncoderGB": 0, "source": "https://ollama.com/library/qwen2.5-coder:14b", "quants": [
+      {"tag": "qwen2.5-coder:14b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 9000000000},
+      {"tag": "qwen2.5-coder:14b-instruct-q6_K", "quant": "q6_K", "bytesPerWeight": 0.82, "downloadBytes": 12000000000},
+      {"tag": "qwen2.5-coder:14b-instruct-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 16000000000},
+      {"tag": "qwen2.5-coder:14b-instruct-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 30000000000}
+    ]},
+  {"name": "Qwen2.5-Coder 7B", "family": "qwen2.5-coder", "tags": ["coding"], "paramsB": 7.62, "activeParamsB": 7.62, "layers": 28, "kvHeads": 4, "headDim": 128, "hiddenSize": 3584, "maxContext": 32768, "visionEncoderGB": 0, "source": "https://ollama.com/library/qwen2.5-coder:7b", "quants": [
+      {"tag": "qwen2.5-coder:7b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 4700000000},
+      {"tag": "qwen2.5-coder:7b-instruct-q6_K", "quant": "q6_K", "bytesPerWeight": 0.82, "downloadBytes": 6300000000},
+      {"tag": "qwen2.5-coder:7b-instruct-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 8100000000},
+      {"tag": "qwen2.5-coder:7b-instruct-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 15000000000}
+    ]},
+  {"name": "Llama 3.3 70B", "family": "llama", "tags": ["chat", "coding"], "paramsB": 70.6, "activeParamsB": 70.6, "layers": 80, "kvHeads": 8, "headDim": 128, "hiddenSize": 8192, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/llama3.3:70b", "quants": [
+      {"tag": "llama3.3:70b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 43000000000},
+      {"tag": "llama3.3:70b-instruct-q5_K_M", "quant": "q5_K_M", "bytesPerWeight": 0.7, "downloadBytes": 50000000000},
+      {"tag": "llama3.3:70b-instruct-q6_K", "quant": "q6_K", "bytesPerWeight": 0.82, "downloadBytes": 58000000000},
+      {"tag": "llama3.3:70b-instruct-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 75000000000},
+      {"tag": "llama3.3:70b-instruct-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 141000000000}
+    ]},
+  {"name": "Llama 3.1 8B", "family": "llama", "tags": ["chat", "coding"], "paramsB": 8.03, "activeParamsB": 8.03, "layers": 32, "kvHeads": 8, "headDim": 128, "hiddenSize": 4096, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/llama3.1:8b", "quants": [
+      {"tag": "llama3.1:8b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 4900000000},
+      {"tag": "llama3.1:8b-instruct-q5_K_M", "quant": "q5_K_M", "bytesPerWeight": 0.7, "downloadBytes": 5700000000},
+      {"tag": "llama3.1:8b-instruct-q6_K", "quant": "q6_K", "bytesPerWeight": 0.82, "downloadBytes": 6600000000},
+      {"tag": "llama3.1:8b-instruct-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 8500000000},
+      {"tag": "llama3.1:8b-instruct-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 16000000000}
+    ]},
+  {"name": "Gemma 3 27B", "family": "gemma3", "tags": ["chat", "vision", "coding"], "paramsB": 27.4, "activeParamsB": 27.4, "layers": 10, "swa": {"layers": 52, "window": 1024}, "kvHeads": 16, "headDim": 128, "hiddenSize": 5376, "maxContext": 131072, "visionEncoderGB": 0.82, "source": "https://ollama.com/library/gemma3:27b", "notes": "62 blocks; gemma3.attention.sliding_window 1024 in the GGUF, and every 6th block is full attention (llama.cpp src/models/gemma3.cpp, swa period 6; Ollama 0.34 runs llama.cpp), so 10 blocks hold a KV cache that grows with context and 52 hold a 1024-token window that the iSWA cache sizes at the window.", "quants": [
+      {"tag": "gemma3:27b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 17000000000},
+      {"tag": "gemma3:27b-it-qat", "quant": "q4_0", "bytesPerWeight": 0.56, "downloadBytes": 18000000000, "notes": "Quantisation-aware trained q4_0"},
+      {"tag": "gemma3:27b-it-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 30000000000},
+      {"tag": "gemma3:27b-it-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 55000000000}
+    ]},
+  {"name": "Gemma 3 12B", "family": "gemma3", "tags": ["chat", "vision"], "paramsB": 12.2, "activeParamsB": 12.2, "layers": 8, "swa": {"layers": 40, "window": 1024}, "kvHeads": 8, "headDim": 256, "hiddenSize": 3840, "maxContext": 131072, "visionEncoderGB": 0.82, "source": "https://ollama.com/library/gemma3:12b", "notes": "48 blocks, 8 full attention and 40 on the 1024-token sliding window (same pattern as the 27B).", "quants": [
+      {"tag": "gemma3:12b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 8100000000},
+      {"tag": "gemma3:12b-it-qat", "quant": "q4_0", "bytesPerWeight": 0.56, "downloadBytes": 8900000000, "notes": "Quantisation-aware trained q4_0"},
+      {"tag": "gemma3:12b-it-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 13000000000},
+      {"tag": "gemma3:12b-it-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 24000000000}
+    ]},
+  {"name": "Gemma 3 4B", "family": "gemma3", "tags": ["chat", "vision"], "paramsB": 4.3, "activeParamsB": 4.3, "layers": 5, "swa": {"layers": 29, "window": 1024}, "kvHeads": 4, "headDim": 256, "hiddenSize": 2560, "maxContext": 131072, "visionEncoderGB": 0.82, "source": "https://ollama.com/library/gemma3:4b", "notes": "34 blocks, 5 full attention and 29 on the 1024-token sliding window (same pattern as the 27B).", "quants": [
+      {"tag": "gemma3:4b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 3300000000},
+      {"tag": "gemma3:4b-it-qat", "quant": "q4_0", "bytesPerWeight": 0.56, "downloadBytes": 4000000000, "notes": "Quantisation-aware trained q4_0"},
+      {"tag": "gemma3:4b-it-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 5000000000},
+      {"tag": "gemma3:4b-it-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 8600000000}
+    ]},
+  {"name": "DeepSeek-R1 0528 Qwen3 8B", "family": "deepseek-r1", "tags": ["reasoning", "chat"], "paramsB": 8.19, "activeParamsB": 8.19, "layers": 36, "kvHeads": 8, "headDim": 128, "hiddenSize": 4096, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/deepseek-r1:8b", "quants": [
+      {"tag": "deepseek-r1:8b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 5200000000},
+      {"tag": "deepseek-r1:8b-0528-qwen3-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 8900000000},
+      {"tag": "deepseek-r1:8b-0528-qwen3-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 16000000000}
+    ]},
+  {"name": "DeepSeek-R1 Qwen 14B", "family": "deepseek-r1", "tags": ["reasoning", "chat"], "paramsB": 14.8, "activeParamsB": 14.8, "layers": 48, "kvHeads": 8, "headDim": 128, "hiddenSize": 5120, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/deepseek-r1:14b", "quants": [
+      {"tag": "deepseek-r1:14b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 9000000000},
+      {"tag": "deepseek-r1:14b-qwen-distill-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 16000000000},
+      {"tag": "deepseek-r1:14b-qwen-distill-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 30000000000}
+    ]},
+  {"name": "DeepSeek-R1 Qwen 32B", "family": "deepseek-r1", "tags": ["reasoning", "coding"], "paramsB": 32.8, "activeParamsB": 32.8, "layers": 64, "kvHeads": 8, "headDim": 128, "hiddenSize": 5120, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/deepseek-r1:32b", "quants": [
+      {"tag": "deepseek-r1:32b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 20000000000},
+      {"tag": "deepseek-r1:32b-qwen-distill-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 35000000000},
+      {"tag": "deepseek-r1:32b-qwen-distill-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 66000000000}
+    ]},
+  {"name": "DeepSeek-R1 Llama 70B", "family": "deepseek-r1", "tags": ["reasoning"], "paramsB": 70.6, "activeParamsB": 70.6, "layers": 80, "kvHeads": 8, "headDim": 128, "hiddenSize": 8192, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/deepseek-r1:70b", "quants": [
+      {"tag": "deepseek-r1:70b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 43000000000},
+      {"tag": "deepseek-r1:70b-llama-distill-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 75000000000},
+      {"tag": "deepseek-r1:70b-llama-distill-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 141000000000}
+    ]},
+  {"name": "Phi-4 14B", "family": "phi4", "tags": ["chat", "reasoning"], "paramsB": 14.7, "activeParamsB": 14.7, "layers": 40, "kvHeads": 10, "headDim": 128, "hiddenSize": 5120, "maxContext": 16384, "visionEncoderGB": 0, "source": "https://ollama.com/library/phi4:14b", "quants": [
+      {"tag": "phi4:14b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 9100000000},
+      {"tag": "phi4:14b-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 16000000000},
+      {"tag": "phi4:14b-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 29000000000}
+    ]},
+  {"name": "Mistral Small 3.1 24B", "family": "mistral-small", "tags": ["chat", "vision", "coding"], "paramsB": 24.0, "activeParamsB": 24.0, "layers": 40, "kvHeads": 8, "headDim": 128, "hiddenSize": 5120, "maxContext": 131072, "visionEncoderGB": 0.6, "source": "https://ollama.com/library/mistral-small3.1:24b", "quants": [
+      {"tag": "mistral-small3.1:24b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 15000000000},
+      {"tag": "mistral-small3.1:24b-instruct-2503-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 26000000000},
+      {"tag": "mistral-small3.1:24b-instruct-2503-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 48000000000}
+    ]},
+  {"name": "Devstral Small 24B", "family": "devstral", "tags": ["coding"], "paramsB": 23.6, "activeParamsB": 23.6, "layers": 40, "kvHeads": 8, "headDim": 128, "hiddenSize": 5120, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/devstral:24b", "quants": [
+      {"tag": "devstral:24b", "quant": "q4_K_M", "bytesPerWeight": 0.56, "downloadBytes": 14000000000},
+      {"tag": "devstral:24b-small-2505-q8_0", "quant": "q8_0", "bytesPerWeight": 1.0, "downloadBytes": 25000000000},
+      {"tag": "devstral:24b-small-2505-fp16", "quant": "fp16", "bytesPerWeight": 2.0, "downloadBytes": 47000000000}
+    ]},
+  {"name": "gpt-oss 20B", "family": "gpt-oss", "tags": ["chat", "reasoning", "coding"], "paramsB": 20.9, "activeParamsB": 3.6, "layers": 12, "swa": {"layers": 12, "window": 128}, "kvHeads": 8, "headDim": 64, "hiddenSize": 2880, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/gpt-oss:20b", "activeParamsSource": "https://huggingface.co/openai/gpt-oss-20b", "notes": "24 blocks alternating full attention and a 128-token sliding window (gpt-oss.attention.sliding_window 128 in the GGUF; llama.cpp src/models/openai-moe.cpp, swa period 2).", "quants": [
+      {"tag": "gpt-oss:20b", "quant": "mxfp4", "bytesPerWeight": 0.67, "downloadBytes": 14000000000, "notes": "MXFP4 experts with bf16 attention and embeddings; bytes per weight is the download size over the parameter count, not a GGUF quant type."}
+    ]},
+  {"name": "gpt-oss 120B", "family": "gpt-oss", "tags": ["chat", "reasoning", "coding"], "paramsB": 117.0, "activeParamsB": 5.1, "layers": 18, "swa": {"layers": 18, "window": 128}, "kvHeads": 8, "headDim": 64, "hiddenSize": 2880, "maxContext": 131072, "visionEncoderGB": 0, "source": "https://ollama.com/library/gpt-oss:120b", "activeParamsSource": "https://huggingface.co/openai/gpt-oss-120b", "notes": "36 blocks alternating full attention and a 128-token sliding window, as the 20B.", "quants": [
+      {"tag": "gpt-oss:120b", "quant": "mxfp4", "bytesPerWeight": 0.56, "downloadBytes": 65000000000, "notes": "MXFP4 experts with bf16 attention and embeddings; bytes per weight is the download size over the parameter count, not a GGUF quant type."}
+    ]}
+]

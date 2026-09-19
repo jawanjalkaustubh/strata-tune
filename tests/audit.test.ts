@@ -1,0 +1,1022 @@
+import { describe, expect, it } from 'vitest';
+import { needsFillRateCrossCheck, parseSlot, rankFindings, rankTop, runAudit, timerHolders, type AuditFinding, type AuditInputs } from '../src/analysis/audit';
+import type { GpuFacts, HogsResult, LoadRun, PhysicalDisk, StaticSnapshot, Timers, Volume } from '../src/collector-types';
+import { NOW, cpuRun, devbox, loadRun } from './fixtures';
+
+const inputs = (snapshot: StaticSnapshot, extra: Partial<AuditInputs> = {}): AuditInputs =>
+  ({ snapshot, hogs: null, pcieUnderLoad: null, thermalRamp: null, cpuLoad: null, cpuPptW: null, curveOptimizer: NO_CO, nowIso: NOW, ...extra });
+/** Nothing typed into the Monitor gear: the advice may still suggest a Curve Optimizer. */
+const NO_CO = { coAllCore: null };
+/** The dev box as the user runs it: −30 all-core (polish 3 item 2). */
+const CO_30 = { coAllCore: -30 };
+const byId = (findings: AuditFinding[]) => Object.fromEntries(findings.map(f => [f.id, f]));
+const audit = (snapshot: StaticSnapshot, extra: Partial<AuditInputs> = {}) => byId(runAudit(inputs(snapshot, extra)));
+const score = (f: AuditFinding) => f.severity * f.costEstimate;
+
+const quietHogs: HogsResult = { seconds: 5, logicalCpus: 32, processes: [{ pid: 1234, name: 'explorer.exe', cpuPercent: 0.4, workingSetMiB: 180 }] };
+const busyHogs: HogsResult = {
+  seconds: 5, logicalCpus: 32,
+  processes: [{ pid: 4321, name: 'OneDrive.exe', cpuPercent: 40, workingSetMiB: 900 }, ...quietHogs.processes]
+};
+/** The timer at the platform default: nothing holds it, the rule reads info. */
+const quietTimers: Timers = { currentMs: 15.625, finestMs: 0.5, coarsestMs: 15.625, qpcFrequency: 10_000_000, qpcSource: 'TSC', qpcNote: 'invariant TSC', requesters: null, requestersNote: null };
+const flatRuns = { pcieUnderLoad: loadRun('light', 2), thermalRamp: loadRun('heavy', 20), cpuLoad: cpuRun(20), timers: quietTimers };
+/** What NVAPI reads on the dev box's RTX 5090 (docs/dependencies.md, HWiNFO agrees): the full configuration. */
+const FULL_5090 = { shaders: 21760, sms: 170, rops: 176, tmus: 680, source: 'nvapi' as const };
+const withUnits = (units: NonNullable<GpuFacts['units']> | null = FULL_5090, s = devbox()) => {
+  s.gpus[0].units = units;
+  return s;
+};
+/** A finished 6 s fill-rate run with the card at 2.9 GHz and the bench's result line. */
+const fillRun = (pixelsPerSecond: number): LoadRun =>
+  ({ ...loadRun('fillrate', 6, () => ({ smMhz: 2900 })), fillRate: { pixelsPerSecond, seconds: 6.01, frames: 2300, width: 4096, height: 4096 } });
+/** 15 % sag with HwThermalSlowdown from t = 15 s, the card at 84 °C: the true positive. */
+const throttlingRamp = loadRun('heavy', 20, t => ({ smMhz: t < 10 ? 2800 : 2380, temperatureC: t < 10 ? 70 : 84, clocksEventReasons: t >= 15 ? 0x40 : 0 }));
+const x8Link = loadRun('light', 2, () => ({ pcieWidth: 8 }));
+
+const ALL_IDS = [
+  'expo', 'ram-channels', 'pcie-link', 'rebar', 'power-plan', 'boot-drive-space', 'game-on-hdd',
+  'thermal-headroom', 'gpu-driver-age', 'background-hogs', 'gpu-power-limit', 'gpu-oc-offsets', 'gpu-units',
+  'cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-smt', 'cpu-idle-clock', 'ai-model-resident', 'timer-resolution'
+];
+
+describe('devbox fixture (plan §24: a tuned machine, nothing to fix)', () => {
+  it('without load runs the static checks pass and the load checks stay unknown', () => {
+    const f = audit(devbox());
+    expect(f.expo.state).toBe('ok');
+    expect(f.expo.detail).toContain('6200 MT/s, rated 6000 MT/s');
+    expect(f['ram-channels'].state).toBe('ok');
+    expect(f.rebar.state).toBe('ok');
+    expect(f['power-plan'].state).toBe('ok');
+    expect(f['power-plan'].detail).toMatch(/AMD recommends/);
+    expect(f['boot-drive-space'].state).toBe('ok');
+    expect(f['boot-drive-space'].detail).toBe('C: has 720 GB free of 1081 GB (67 %).');
+    expect(f['gpu-driver-age'].state).toBe('ok');
+    expect(f['gpu-power-limit'].state).toBe('info');
+    expect(f['gpu-power-limit'].detail).toBe('Power limit slider is at its maximum (600 W) — nothing to raise there. Clock and memory offsets are a separate lever.');
+    expect(f['gpu-oc-offsets'].state).toBe('info');
+    expect(f['gpu-oc-offsets'].detail).toBe("Core +150 MHz, memory +250 MHz (+500 on the effective rate, the slider's figure) offsets applied (driver max 3090).");
+    expect(f['cpu-smt'].state).toBe('ok');
+    for (const id of ['cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-idle-clock']) {
+      expect(f[id].state).toBe('unknown');
+      expect(f[id].detail).toBe('Measured with a 20-second all-core CPU load.');
+    }
+    expect(f['ai-model-resident'].state).toBe('info');
+    expect(f['ai-model-resident'].detail).toBe('qwen3-vl:30b holds 24 GB of VRAM; fine for AI work, costs games headroom.');
+    expect(f['ai-model-resident'].fix).toContain('ollama stop qwen3-vl:30b');
+    expect(f['pcie-link'].state).toBe('unknown');
+    expect(f['thermal-headroom'].state).toBe('unknown');
+    expect(f['background-hogs'].state).toBe('unknown');
+    expect(f['game-on-hdd'].state).toBe('unknown');
+    expect(f['game-on-hdd'].detail).toBe('Checked when a game is captured.');
+    // The fixture predates the NVAPI read, so the direct count is unavailable and the cross-check is offered.
+    expect(f['gpu-units'].state).toBe('unknown');
+    expect(f['gpu-units'].fix).toContain('fill-rate cross-check');
+    expect(f['hdd-present']).toBeUndefined();
+    expect(Object.keys(f).sort()).toEqual([...ALL_IDS].sort());
+  });
+
+  it('with flat load runs and a quiet idle sample every check is ok or info', () => {
+    const findings = runAudit(inputs(withUnits(), { ...flatRuns, hogs: quietHogs }));
+    const f = byId(findings);
+    expect(f['pcie-link'].state).toBe('ok');
+    expect(f['pcie-link'].detail).toContain('PCIe 5.0 x16');
+    expect(f['thermal-headroom'].state).toBe('ok');
+    expect(f['thermal-headroom'].detail).toContain('heavy load');
+    expect(f['background-hogs'].state).toBe('ok');
+    expect(f['gpu-oc-offsets'].detail).toBe("Core +150 MHz, memory +250 MHz (+500 on the effective rate, the slider's figure) offsets applied; held 2800 MHz under load (driver max 3090).");
+    expect(f['cpu-allcore-clock'].detail).toBe('All-core 5.2 GHz effective under load (spec base 4.3 GHz, single-core boost 5.7 GHz).');
+    expect(f['cpu-package-power'].detail).toBe('PBO / raised PPT active — measured 245 W over the stock 230 W; set your PPT limit here.');
+    expect(f['cpu-idle-clock'].detail).toContain('Idle: 194 MHz effective');
+    expect(f['gpu-units'].state).toBe('ok');
+    expect(findings.filter(x => x.state === 'bad' || x.state === 'warn')).toEqual([]);
+    expect(findings.map(x => x.state).filter(s => s === 'unknown')).toEqual(['unknown']);
+  });
+
+  it('every finding carries sentences a non-expert can read', () => {
+    for (const f of runAudit(inputs(devbox(), { ...flatRuns, hogs: quietHogs }))) {
+      expect(f.title.length).toBeGreaterThan(3);
+      expect(f.costText.length).toBeGreaterThan(3);
+      expect(f.detail.length).toBeGreaterThan(10);
+      expect(f.fix.length).toBeGreaterThan(10);
+      expect(f.costEstimate).toBeGreaterThanOrEqual(0);
+      expect(f.costEstimate).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe('memory speed', () => {
+  it('EXPO off: configured 4800 on a 6000 kit is bad and a BIOS fix', () => {
+    const s = devbox();
+    s.ram.modules.forEach(m => { m.configuredMts = 4800; });
+    const f = audit(s).expo;
+    expect(f.state).toBe('bad');
+    expect(f.severity).toBe(3);
+    expect(f.costEstimate).toBe(0.15);
+    expect(f.fixWhere).toBe('bios');
+    expect(f.detail).toContain('4800 MT/s but rated for 6000 MT/s');
+  });
+
+  it('within 5 % of rated is info, not a flag', () => {
+    const s = devbox();
+    s.ram.modules.forEach(m => { m.configuredMts = 5800; });
+    expect(audit(s).expo.state).toBe('info');
+  });
+
+  it('a JEDEC part below its rating is info at zero severity: there is no profile to enable', () => {
+    const s = devbox();
+    s.ram.modules.forEach(m => { m.partNumber = 'CT16G56C46U5.M8D1'; m.configuredMts = 5200; });
+    const f = audit(s).expo;
+    expect(f.state).toBe('info');
+    expect(f.severity).toBe(0);
+    expect(f.detail).toContain('5200 MT/s, below its JEDEC rating of 5600 MT/s');
+    expect(f.detail).toContain('no EXPO/XMP profile to enable');
+    s.ram.modules.forEach(m => { m.partNumber = 'KVR56U46BS8-16'; m.configuredMts = 4800; });
+    expect(audit(s).expo.state).toBe('info');
+    // The same layout with the Pro prefix carries a profile, so the same shortfall is a fault.
+    s.ram.modules.forEach(m => { m.partNumber = 'CP2K16G60C36U5B'; m.configuredMts = 4800; });
+    expect(audit(s).expo.state).toBe('bad');
+  });
+
+  it('an unknown kit says so and never flags', () => {
+    const s = devbox();
+    s.ram.modules.forEach(m => { m.partNumber = 'M378A1K43EB2-CWE'; m.configuredMts = 3200; });
+    const f = audit(s).expo;
+    expect(f.state).toBe('unknown');
+    expect(f.detail).toMatch(/could not determine the rated speed for M378A1K43EB2-CWE/i);
+    expect(f.severity).toBe(0);
+  });
+
+  it('the DIMM that returns SPD junk after its part number still resolves', () => {
+    const s = devbox();
+    s.ram.modules[1].partNumber = 'F5-6000J2836G16G��A�A�A�}';
+    expect(audit(s).expo.state).toBe('ok');
+  });
+
+  it('no modules or no configured speed is unknown', () => {
+    const s = devbox();
+    s.ram.modules.forEach(m => { m.configuredMts = 0; });
+    expect(audit(s).expo.state).toBe('unknown');
+    s.ram.modules = [];
+    expect(audit(s).expo.state).toBe('unknown');
+  });
+});
+
+describe('memory channels', () => {
+  it('a single stick is bad, up to 20 %; a laptop gets the SO-DIMM wording', () => {
+    const s = devbox();
+    s.ram.modules = [s.ram.modules[0]];
+    const f = audit(s)['ram-channels'];
+    expect(f.state).toBe('bad');
+    expect(f.costEstimate).toBe(0.2);
+    expect(f.fixWhere).toBe('hardware');
+    expect(f.detail).toContain('DIMMA2');
+    expect(f.fix).toContain('A2 and B2');
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    expect(audit(s)['ram-channels'].fix).toContain('SO-DIMM');
+  });
+
+  it('two sticks in one channel is bad', () => {
+    const s = devbox();
+    s.ram.modules[1].slot = 'DIMMA1';
+    const f = audit(s)['ram-channels'];
+    expect(f.state).toBe('bad');
+    expect(f.detail).toContain('channel A (DIMMA2 and DIMMA1)');
+  });
+
+  it('two sticks across channels is ok on ASUS and Gigabyte names too, with a note off the A2/B2 pair', () => {
+    const s = devbox();
+    s.ram.modules[0].slot = 'DIMM_A2';
+    s.ram.modules[1].slot = 'DIMM_B2';
+    expect(audit(s)['ram-channels'].state).toBe('ok');
+    expect(audit(s)['ram-channels'].detail).not.toContain('four-slot');
+    s.ram.modules[0].slot = 'DDR5_A1';
+    s.ram.modules[1].slot = 'DDR5_B1';
+    const f = audit(s)['ram-channels'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toContain('four-slot board');
+  });
+
+  it('three sticks warn, four are ok', () => {
+    const s = devbox();
+    const [a2, b2] = s.ram.modules;
+    s.ram.modules = [{ ...a2, slot: 'DIMMA1' }, a2, b2];
+    expect(audit(s)['ram-channels'].state).toBe('warn');
+    s.ram.modules = [{ ...a2, slot: 'DIMMA1' }, a2, { ...b2, slot: 'DIMMB1' }, b2];
+    expect(audit(s)['ram-channels'].state).toBe('ok');
+  });
+
+  it('slot names without a channel letter are unknown, not a flag', () => {
+    const s = devbox();
+    s.ram.modules[0].slot = 'DIMM 1';
+    s.ram.modules[1].slot = 'DIMM 2';
+    expect(audit(s)['ram-channels'].state).toBe('unknown');
+    expect(audit(s)['ram-channels'].fix).toContain('A2 and B2');
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    expect(audit(s)['ram-channels'].fix).not.toContain('A2 and B2');
+  });
+});
+
+describe('parseSlot', () => {
+  it.each([
+    ['DIMMA2', 'A', 2],
+    ['DIMM_B2', 'B', 2],
+    ['DDR5_A1', 'A', 1],
+    ['DIMM A2', 'A', 2],
+    ['ChannelA-DIMM0', 'A', 0],
+    ['A2', 'A', 2],
+    ['DIMM 2', null, 2],
+    ['DIMM1', null, 1],
+    ['Node0_Dimm1', null, null],
+    ['', null, null]
+  ])('%s → channel %s, slot %s', (locator, channel, slot) => {
+    expect(parseSlot(locator)).toEqual({ channel, slot });
+  });
+});
+
+describe('PCIe link under load', () => {
+  it('x8 of x16 is a warning with a reseat fix; a laptop is told to update instead', () => {
+    const f = audit(devbox(), { pcieUnderLoad: x8Link })['pcie-link'];
+    expect(f.state).toBe('warn');
+    expect(f.fixWhere).toBe('hardware');
+    expect(f.detail).toContain('PCIe 5.0 x8');
+    expect(f.detail).toContain('50 %');
+    expect(f.fix).toContain('reseat');
+    const s = devbox();
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    expect(audit(s, { pcieUnderLoad: x8Link })['pcie-link'].fix).not.toContain('reseat');
+  });
+
+  it('gen 3 x16 on a gen 5 slot is bad with a BIOS fix', () => {
+    const f = audit(devbox(), { pcieUnderLoad: loadRun('light', 2, () => ({ pcieGen: 3 })) })['pcie-link'];
+    expect(f.state).toBe('bad');
+    expect(f.fixWhere).toBe('bios');
+    expect(f.fix).toContain('Gen 5');
+  });
+
+  it('takes the best link seen, so idle-downclocked samples do not count', () => {
+    const run = loadRun('light', 2, t => (t < 1 ? { pcieGen: 1, pcieWidth: 16 } : {}));
+    expect(audit(devbox(), { pcieUnderLoad: run })['pcie-link'].state).toBe('ok');
+  });
+
+  it('is unknown without a finished run or without a GPU', () => {
+    const running = { ...x8Link, state: 'running' as const, qpcEnd: null };
+    expect(audit(devbox(), { pcieUnderLoad: running })['pcie-link'].state).toBe('unknown');
+    const s = devbox();
+    s.gpus = [];
+    expect(audit(s, { pcieUnderLoad: x8Link })['pcie-link'].state).toBe('unknown');
+  });
+});
+
+describe('Resizable BAR', () => {
+  it('256 MiB is off and bad; a laptop is not sent into a BIOS it does not have', () => {
+    const s = devbox();
+    s.gpus[0].bar1TotalMiB = 256;
+    const f = audit(s).rebar;
+    expect(f.state).toBe('bad');
+    expect(f.fixWhere).toBe('bios');
+    expect(f.costEstimate).toBe(0.1);
+    expect(f.detail).toContain('256 MiB window');
+    expect(f.fix).toContain('Above 4G Decoding');
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    expect(audit(s).rebar.fix).toContain('Laptops rarely expose');
+  });
+
+  it('a BAR between 512 MiB and 90 % of VRAM is a warning', () => {
+    const s = devbox();
+    s.gpus[0].bar1TotalMiB = 8192;
+    expect(audit(s).rebar.state).toBe('warn');
+  });
+
+  it('is unknown when the driver reports no BAR', () => {
+    const s = devbox();
+    s.gpus[0].bar1TotalMiB = 0;
+    expect(audit(s).rebar.state).toBe('unknown');
+  });
+});
+
+describe('power plan', () => {
+  it('laptop on Balanced warns; on Power saver is bad; on High performance is ok', () => {
+    const s = devbox();
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    const balanced = audit(s)['power-plan'];
+    expect(balanced.state).toBe('warn');
+    expect(balanced.costEstimate).toBe(0.2);
+    expect(balanced.fixWhere).toBe('windows');
+    s.powerPlan = { guid: 'a1841308-3541-4fab-bc81-f71556f20b4a', name: 'Power saver', overlayGuid: null };
+    expect(audit(s)['power-plan'].state).toBe('bad');
+    s.powerPlan = { guid: '8C5E7FDA-E8BF-4A96-9A85-A6E23A8C635C', name: 'High performance', overlayGuid: null };
+    expect(audit(s)['power-plan'].state).toBe('ok');
+    s.powerPlan = { guid: 'e9a42b02-d5df-448d-aa00-03f14749eb61', name: 'Ultimate Performance', overlayGuid: null };
+    expect(audit(s)['power-plan'].state).toBe('ok');
+  });
+
+  it('a Windows 11 laptop is judged by its power-mode overlay, not the Balanced scheme it has to keep', () => {
+    const s = devbox();
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    s.powerPlan = { guid: '381b4222-f694-41f0-9685-ff5bb260df2e', name: 'Balanced', overlayGuid: 'DED574B5-45A0-4F42-8737-46345C09C238' };
+    const best = audit(s)['power-plan'];
+    expect(best.state).toBe('ok');
+    expect(best.detail).toContain('Best performance');
+    s.powerPlan.overlayGuid = '3af9b8d9-7c97-431d-ad78-34a8bfea439f';
+    expect(audit(s)['power-plan'].state).toBe('ok');
+    s.powerPlan.overlayGuid = '961cc777-2547-4f9d-8174-7d86181b8a7a';
+    const saver = audit(s)['power-plan'];
+    expect(saver.state).toBe('bad');
+    expect(saver.detail).toContain('Best power efficiency');
+    // A desktop keeps the desktop rule whatever the slider says.
+    s.chassis = { isLaptop: false, chassisTypes: [3] };
+    expect(audit(s)['power-plan'].state).toBe('ok');
+  });
+
+  it('desktop Intel: Balanced ok, Power saver info, custom plan info at zero cost', () => {
+    const s = devbox();
+    s.cpu.name = '13th Gen Intel(R) Core(TM) i9-13900K';
+    expect(audit(s)['power-plan'].state).toBe('ok');
+    expect(audit(s)['power-plan'].detail).not.toMatch(/AMD/);
+    s.powerPlan = { guid: 'a1841308-3541-4fab-bc81-f71556f20b4a', name: 'Power saver', overlayGuid: null };
+    const saver = audit(s)['power-plan'];
+    expect(saver.state).toBe('info');
+    expect(saver.severity).toBe(1);
+    s.powerPlan = { guid: '11111111-2222-3333-4444-555555555555', name: 'MSI Gaming', overlayGuid: null };
+    const custom = audit(s)['power-plan'];
+    expect(custom.state).toBe('info');
+    expect(custom.severity).toBe(0);
+  });
+
+  it('is unknown without a plan GUID', () => {
+    const s = devbox();
+    s.powerPlan = { guid: '', name: '', overlayGuid: null };
+    expect(audit(s)['power-plan'].state).toBe('unknown');
+  });
+});
+
+describe('boot drive', () => {
+  it('95 % full is bad and severe', () => {
+    const s = devbox();
+    const c = s.volumes.find(v => v.isBoot)!;
+    c.freeBytes = Math.round(c.sizeBytes * 0.05);
+    const f = audit(s)['boot-drive-space'];
+    expect(f.state).toBe('bad');
+    expect(f.severity).toBe(3);
+    expect(f.costEstimate).toBe(0.3);
+    expect(f.costText).toMatch(/^Severe/);
+    expect(f.fixWhere).toBe('windows');
+  });
+
+  it('12 % free is a warning; no boot volume is unknown', () => {
+    const s = devbox();
+    const c = s.volumes.find(v => v.isBoot)!;
+    c.freeBytes = Math.round(c.sizeBytes * 0.12);
+    expect(audit(s)['boot-drive-space'].state).toBe('warn');
+    s.volumes = [];
+    expect(audit(s)['boot-drive-space'].state).toBe('unknown');
+  });
+});
+
+describe('hard drives', () => {
+  const hdd: PhysicalDisk = { deviceId: '3', friendlyName: 'WDC WD40EZAZ-00SF3B0', mediaType: 'HDD', busType: 'SATA', sizeBytes: 4000787030016 };
+  const h: Volume = { letter: 'H', label: 'Archive', fileSystem: 'NTFS', sizeBytes: 4000787030016, freeBytes: 1e12, isBoot: false, diskDeviceId: '3' };
+
+  it('a fixed HDD volume adds an info finding naming it; the game check stays unknown', () => {
+    const s = devbox();
+    s.disks.push(hdd);
+    s.volumes.push(h);
+    const f = audit(s);
+    expect(f['hdd-present'].state).toBe('info');
+    expect(f['hdd-present'].detail).toContain('H: (WDC WD40EZAZ-00SF3B0) is a spinning hard drive');
+    expect(f['game-on-hdd'].state).toBe('unknown');
+  });
+
+  it('a USB hard drive is not a game drive and is left alone', () => {
+    const s = devbox();
+    s.disks.push({ ...hdd, busType: 'USB' });
+    s.volumes.push(h);
+    expect(audit(s)['hdd-present']).toBeUndefined();
+  });
+});
+
+describe('thermal headroom (plan §8: heavy load, engagement gate, verdict from the steady window)', () => {
+  it('a 15 % sag with HwThermalSlowdown set is bad', () => {
+    const f = audit(devbox(), { thermalRamp: throttlingRamp })['thermal-headroom'];
+    expect(f.state).toBe('bad');
+    expect(f.severity).toBe(3);
+    expect(f.costEstimate).toBe(0.15);
+    expect(f.fixWhere).toBe('hardware');
+    expect(f.detail).toContain('thermal throttling under the heavy load');
+    expect(f.detail).toContain('15 %');
+    expect(f.detail).toContain('84 °C');
+  });
+
+  it('SwThermalSlowdown, HwSlowdown and HwPowerBrake count as throttling too', () => {
+    for (const bit of [0x20, 0x8, 0x80]) {
+      const run = loadRun('heavy', 20, t => ({ clocksEventReasons: t > 18 ? bit : 0 }));
+      expect(audit(devbox(), { thermalRamp: run })['thermal-headroom'].state).toBe('bad');
+    }
+  });
+
+  it('a 15 % sag at 82 °C with no bit warns at the sag', () => {
+    const warm = loadRun('heavy', 20, t => ({ smMhz: t < 10 ? 2800 : 2380, temperatureC: t < 10 ? 70 : 82 }));
+    const f = audit(devbox(), { thermalRamp: warm })['thermal-headroom'];
+    expect(f.state).toBe('warn');
+    expect(f.severity).toBe(2);
+    expect(f.costEstimate).toBe(0.15);
+    expect(f.detail).toContain('running out of thermal headroom');
+  });
+
+  it('worker start-up samples at idle clocks do not dilute the verdict', () => {
+    const late = loadRun('heavy', 20, t => ({ smMhz: t < 3 ? 1200 : t < 10 ? 2800 : 2380, temperatureC: 82 }));
+    expect(audit(devbox(), { thermalRamp: late })['thermal-headroom'].state).toBe('warn');
+  });
+
+  it('a sag on a cool card with no bit is info, never hardware advice; 5 % is ok', () => {
+    const cool = loadRun('heavy', 20, t => ({ smMhz: t < 10 ? 2800 : 2464, temperatureC: 58 }));
+    const f = audit(devbox(), { thermalRamp: cool })['thermal-headroom'];
+    expect(f.state).toBe('info');
+    expect(f.severity).toBe(0);
+    expect(f.detail).toContain('nothing points to heat');
+    const five = loadRun('heavy', 20, t => ({ smMhz: t < 10 ? 2800 : 2660 }));
+    expect(audit(devbox(), { thermalRamp: five })['thermal-headroom'].state).toBe('ok');
+  });
+
+  it('the power cap with steady clocks is normal: power-limited at N W (dev box: 599 W, 51 °C, 0x4)', () => {
+    const capped = loadRun('heavy', 20, t => ({ smMhz: 3215, temperatureC: 51, powerMw: 599_000, clocksEventReasons: t >= 1 ? 0x4 : 0x400 }));
+    const f = audit(devbox(), { thermalRamp: capped })['thermal-headroom'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toContain('Power-limited at 599 W, normal');
+  });
+
+  it('unknown unless the load engaged (dev box light ramp: 65 W of 600 W, 2878 to 2432 MHz at 29 °C)', () => {
+    const light = loadRun('light', 20, t => ({ smMhz: t < 10 ? 2878 : 2432, temperatureC: 29, powerMw: 65_000, clocksEventReasons: 0x400 }));
+    const f = audit(devbox(), { thermalRamp: light })['thermal-headroom'];
+    expect(f.state).toBe('unknown');
+    expect(f.severity).toBe(0);
+    expect(f.detail).toContain('did not engage');
+    expect(f.detail).toContain('65 W of its 600 W limit');
+  });
+
+  it('a card pre-warmed by a game that settles its boost in the first seconds is not a warning', () => {
+    const settling = loadRun('heavy', 20, t => ({ smMhz: t < 5 ? 2878 : 2432, temperatureC: t < 5 ? 72 : 60, clocksEventReasons: 0x400 }));
+    const f = audit(devbox(), { thermalRamp: settling })['thermal-headroom'];
+    expect(['ok', 'info']).toContain(f.state);
+    expect(f.severity).toBe(0);
+  });
+
+  it('an unfinished or too-short run, or a card with no power limit, is unknown', () => {
+    const running = { ...throttlingRamp, state: 'running' as const, qpcEnd: null };
+    expect(audit(devbox(), { thermalRamp: running })['thermal-headroom'].state).toBe('unknown');
+    expect(audit(devbox(), { thermalRamp: loadRun('heavy', 2) })['thermal-headroom'].state).toBe('unknown');
+    const s = devbox();
+    s.gpus[0].powerLimitMw = 0;
+    expect(audit(s, { thermalRamp: throttlingRamp })['thermal-headroom'].state).toBe('unknown');
+  });
+});
+
+describe('driver age', () => {
+  it('older than 180 days is info; no date is unknown; the fix names the maker', () => {
+    const s = devbox();
+    s.gpuDriver.date = '2025-12-01';
+    const f = audit(s)['gpu-driver-age'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toMatch(/616\.92 is \d+ days old/);
+    expect(f.fix).toContain('NVIDIA');
+    s.gpus = [];
+    expect(audit(s)['gpu-driver-age'].fix).not.toContain('NVIDIA');
+    s.gpuDriver.date = null;
+    expect(audit(s)['gpu-driver-age'].state).toBe('unknown');
+  });
+});
+
+describe('background hogs', () => {
+  it('a process at 40 % CPU is a warning that names it', () => {
+    const f = audit(devbox(), { hogs: busyHogs })['background-hogs'];
+    expect(f.state).toBe('warn');
+    expect(f.detail).toContain('OneDrive.exe (40 % CPU');
+    expect(f.detail).not.toContain('explorer.exe');
+  });
+
+  it('a working set over 2 GB is "holds", not "busy"; the Ollama runner is not a second card when the AI-model finding already names it', () => {
+    const s = devbox();
+    const hogs: HogsResult = { seconds: 5, logicalCpus: 32, processes: [{ pid: 9, name: 'llama-server', cpuPercent: 0, workingSetMiB: 3700 }, ...quietHogs.processes] };
+    expect(audit(s, { hogs })['background-hogs'].state).toBe('ok');
+    s.ollama = [];
+    const f = audit(s, { hogs })['background-hogs'];
+    expect(f.state).toBe('warn');
+    expect(f.detail).toBe('llama-server holds 3.6 GB while idle.');
+    expect(f.detail).not.toContain('Busy');
+    const both = audit(s, { hogs: { ...hogs, processes: [...busyHogs.processes, hogs.processes[0]] } })['background-hogs'];
+    expect(both.detail).toBe('Busy while idle: OneDrive.exe (40 % CPU, 0.9 GB). llama-server holds 3.6 GB while idle.');
+  });
+
+  it('names at most three and counts the rest; a 3 GB working set counts too', () => {
+    const many: HogsResult = {
+      seconds: 5, logicalCpus: 32,
+      processes: ['a.exe', 'b.exe', 'c.exe', 'd.exe'].map((name, i) => ({ pid: i, name, cpuPercent: 10 - i, workingSetMiB: 100 }))
+        .concat([{ pid: 9, name: 'chrome.exe', cpuPercent: 1, workingSetMiB: 3072 }])
+    };
+    const f = audit(devbox(), { hogs: many })['background-hogs'];
+    expect(f.detail).toContain('a.exe');
+    expect(f.detail).toContain('c.exe');
+    expect(f.detail).not.toContain('d.exe');
+    expect(f.detail).toContain('and 1 more');
+    expect(f.detail).toContain('chrome.exe holds 3.0 GB while idle');
+  });
+
+  it('WSL or Hyper-V guest memory (vmmem) is information with its own wording, not a program to close', () => {
+    const wsl: HogsResult = { seconds: 5, logicalCpus: 32, processes: [{ pid: 77, name: 'vmmemWSL', cpuPercent: 0.2, workingSetMiB: 6144 }, ...quietHogs.processes] };
+    const f = audit(devbox(), { hogs: wsl })['background-hogs'];
+    expect(f.state).toBe('info');
+    expect(f.severity).toBe(1);
+    expect(f.detail).toContain('vmmemWSL holds 6.0 GB');
+    expect(f.fix).toContain('VM');
+    const both = { ...wsl, processes: [...busyHogs.processes, ...wsl.processes] };
+    const w = audit(devbox(), { hogs: both })['background-hogs'];
+    expect(w.state).toBe('warn');
+    expect(w.detail).toContain('OneDrive.exe');
+    expect(w.detail).toContain('vmmemWSL holds');
+  });
+});
+
+describe('power limit and AI model', () => {
+  it('a limit below the maximum is info with the headroom in watts', () => {
+    const s = devbox();
+    s.gpus[0].powerLimitMw = 450000;
+    const f = audit(s)['gpu-power-limit'];
+    expect(f.state).toBe('info');
+    expect(f.costText).toBe('150 W of headroom.');
+    s.gpus[0].powerMaxLimitMw = 0;
+    expect(audit(s)['gpu-power-limit'].state).toBe('unknown');
+  });
+
+  it('Ollama not running means no row at all (plan §10: most people have no local model); running and empty is ok', () => {
+    const s = devbox();
+    s.ollama = null;
+    const absent = runAudit(inputs(s));
+    expect(absent.find(f => f.id === 'ai-model-resident')).toBeUndefined();
+    expect(absent).toHaveLength(ALL_IDS.length - 1);
+    s.ollama = [];
+    expect(audit(s)['ai-model-resident'].state).toBe('ok');
+  });
+});
+
+describe('GPU unit counts (missing ROPs, plan §8)', () => {
+  it('the full count is ok, with the shaders beside it', () => {
+    const f = audit(withUnits())['gpu-units'];
+    expect(f.state).toBe('ok');
+    expect(f.severity).toBe(0);
+    expect(f.detail).toBe('176 of 176 ROPs, 21,760 shaders: the full GeForce RTX 5090 configuration.');
+  });
+
+  it('168 of 176 is bad at 4 % with the RMA text naming the board partner from the subsystem id', () => {
+    const f = audit(withUnits({ ...FULL_5090, rops: 168 }))['gpu-units'];
+    expect(f.state).toBe('bad');
+    expect(f.severity).toBe(3);
+    expect(f.costEstimate).toBe(0.04);
+    expect(f.detail).toBe('Your card reports 168 ROPs; a GeForce RTX 5090 has 176. Early RTX 50-series batches shipped with a raster unit disabled (NVIDIA confirmed, Feb 2025), about 4 % slower.');
+    expect(f.fix).toBe('The vendor replaces affected cards — contact ASUS support with a GPU-Z screenshot or this report.');
+    expect(f.fixWhere).toBe('hardware');
+  });
+
+  it('a card without a subsystem id is sent to "the card\'s vendor"; a count above the reference blames the table', () => {
+    const s = withUnits({ ...FULL_5090, rops: 168 });
+    s.gpus[0].pciSubsystem = null;
+    expect(audit(s)['gpu-units'].fix).toContain("contact the card's vendor support");
+    const more = audit(withUnits({ ...FULL_5090, rops: 192 }))['gpu-units'];
+    expect(more.state).toBe('info');
+    expect(more.detail).toContain('the table row is wrong for this card, not the card');
+  });
+
+  it('no direct read is unknown, never a verdict, and points at the 6 s fill-rate cross-check; a card outside the table is unknown too', () => {
+    for (const units of [null, { ...FULL_5090, rops: null }]) {
+      const f = audit(withUnits(units))['gpu-units'];
+      expect(f.state).toBe('unknown');
+      expect(f.severity).toBe(0);
+      expect(f.detail).toBe('The driver did not answer the unit-count query (NVAPI), so the ROP count could not be read directly.');
+      expect(f.fix).toBe('Run the audit again with nothing else using the GPU: it then runs the 6-second fill-rate cross-check, which draws full-screen quads as fast as the GPU writes pixels and compares the rate with the 176 ROPs a GeForce RTX 5090 has.');
+    }
+    const s = withUnits();
+    s.gpus[0].name = 'NVIDIA GeForce RTX 2080 Ti';
+    expect(audit(s)['gpu-units'].state).toBe('unknown');
+    expect(audit(s)['gpu-units'].detail).toContain('not in the reference table');
+  });
+
+  it('the audit spends the 6 s run only when the card is in the table and the driver gave no ROP count', () => {
+    expect(needsFillRateCrossCheck(withUnits())).toBe(false);
+    expect(needsFillRateCrossCheck(withUnits({ ...FULL_5090, rops: 168 }))).toBe(false);
+    expect(needsFillRateCrossCheck(withUnits(null))).toBe(true);
+    expect(needsFillRateCrossCheck(withUnits({ ...FULL_5090, rops: null }))).toBe(true);
+    // The devbox fixture predates the NVAPI read (no units key at all): the cross-check runs.
+    expect(needsFillRateCrossCheck(devbox())).toBe(true);
+    const unlisted = withUnits(null);
+    unlisted.gpus[0].name = 'NVIDIA GeForce RTX 2080 Ti';
+    expect(needsFillRateCrossCheck(unlisted)).toBe(false);
+    const none = withUnits(null);
+    none.gpus = [];
+    expect(needsFillRateCrossCheck(none)).toBe(false);
+  });
+
+  it('the cross-check stands in for the direct read: 450 GPixel/s at 2.9 GHz is consistent with 176 (ok, with its band and the overlap said)', () => {
+    const f = audit(withUnits(null), { fillRate: fillRun(450e9) })['gpu-units'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toContain('Fill-rate cross-check: consistent with 176 ROPs (450 GPixel/s at 2.9 GHz; inside the 168-ROP band (414–487 GPixel/s) as well, so the two counts overlap at this reading).');
+    expect(f.detail).toContain('A consistency check, not a count');
+  });
+
+  it('425 GPixel/s at 2.9 GHz is below the 176 band and inside the 168 band: a warning that sends the user to GPU-Z, then the vendor', () => {
+    const f = audit(withUnits(null), { fillRate: fillRun(425e9) })['gpu-units'];
+    expect(f.state).toBe('warn');
+    expect(f.severity).toBe(2);
+    expect(f.costEstimate).toBe(0.04);
+    expect(f.detail).toContain('below the 176-ROP band (425 GPixel/s at 2.9 GHz is 83 % of the 510 GPixel/s ceiling; the band starts at 85 %) and inside the 168-ROP band (414–487 GPixel/s)');
+    expect(f.fix).toBe('Confirm the count with GPU-Z (it reads the ROPs directly). The vendor replaces affected cards — contact ASUS support with a GPU-Z screenshot or this report.');
+  });
+
+  it('400 GPixel/s at 2.9 GHz is below both bands: no conclusion, and a failed or resultless run offers the check again', () => {
+    const f = audit(withUnits(null), { fillRate: fillRun(400e9) })['gpu-units'];
+    expect(f.state).toBe('unknown');
+    expect(f.detail).toContain('no conclusion: 400 GPixel/s at 2.9 GHz is below the 168-ROP band (414–487 GPixel/s) as well as the 176-ROP band (434–510 GPixel/s); the run did not reach the raster limit');
+    expect(f.fix).toBe('Close anything else using the GPU and run the audit again.');
+    const failed = audit(withUnits(null), { fillRate: { ...fillRun(450e9), state: 'failed', exitCode: 11 } })['gpu-units'];
+    expect(failed.fix).toContain('it then runs the 6-second fill-rate cross-check');
+    const noLine = audit(withUnits(null), { fillRate: { ...fillRun(450e9), fillRate: null } })['gpu-units'];
+    expect(noLine.fix).toContain('it then runs the 6-second fill-rate cross-check');
+  });
+
+  it('with a direct read the cross-check is appended, never decisive', () => {
+    const f = audit(withUnits(), { fillRate: fillRun(425e9) })['gpu-units'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toContain('176 of 176 ROPs');
+    expect(f.detail).toContain('Fill-rate cross-check: below the 176-ROP band');
+  });
+});
+
+describe('ranking', () => {
+  const brokenBox = () => {
+    const s = devbox();
+    s.ram.modules = [{ ...s.ram.modules[0], configuredMts: 4800 }];
+    s.gpus[0].bar1TotalMiB = 256;
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    const c = s.volumes.find(v => v.isBoot)!;
+    c.freeBytes = Math.round(c.sizeBytes * 0.05);
+    return runAudit(inputs(s, { pcieUnderLoad: x8Link, thermalRamp: throttlingRamp, hogs: busyHogs }));
+  };
+
+  it('orders by severity × cost, BIOS fixes first on a tie, check order after that', () => {
+    const findings = brokenBox();
+    expect(findings).toHaveLength(ALL_IDS.length);
+    expect(findings.slice(0, 9).map(f => f.id)).toEqual([
+      'boot-drive-space',   // 3 × 0.30
+      'ram-channels',       // 3 × 0.20
+      'expo',               // 3 × 0.15, bios
+      'thermal-headroom',   // 3 × 0.15, hardware
+      'power-plan',         // 2 × 0.20
+      'rebar',              // 2 × 0.10, bios
+      'background-hogs',    // 2 × 0.10, windows
+      'pcie-link',          // 2 × 0.05, earlier check
+      'ai-model-resident'   // 1 × 0.10
+    ]);
+    for (let i = 1; i < findings.length; i++) expect(score(findings[i - 1])).toBeGreaterThanOrEqual(score(findings[i]));
+  });
+
+  it('rankTop returns five, in the same order, without touching its input', () => {
+    const findings = brokenBox();
+    const reversed = [...findings].reverse();
+    const top = rankTop(reversed, 5);
+    expect(top).toHaveLength(5);
+    expect(top.map(f => f.id)).toEqual(findings.slice(0, 5).map(f => f.id));
+    expect(reversed[0].id).toBe(findings[findings.length - 1].id);
+    expect(rankFindings(reversed)).not.toBe(reversed);
+    expect(rankTop(runAudit(inputs(devbox())), 5)).toHaveLength(5);
+  });
+});
+
+describe('GPU overclock (item 7)', () => {
+  it('offsets on this box are info, with the held clock once the ramp has run', () => {
+    const f = audit(devbox(), { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3210 })) })['gpu-oc-offsets'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe("Core +150 MHz, memory +250 MHz (+500 on the effective rate, the slider's figure) offsets applied; held 3210 MHz under load (driver max 3090).");
+    expect(f.fix).toContain('lower the overclock first');
+  });
+
+  it('zero offsets are "the driver reports none", never a fact; a memory-only or negative offset is still reported; absent data is unknown', () => {
+    const s = devbox();
+    s.gpus[0].clockOffsets = { smMhz: 0, memMhz: 0, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
+    expect(audit(s)['gpu-oc-offsets'].state).toBe('ok');
+    expect(audit(s)['gpu-oc-offsets'].detail).toBe('The driver reports no clock offsets (driver max 3090).');
+    const held = audit(s, { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3090, memMhz: 14001 })) })['gpu-oc-offsets'];
+    expect(held.state).toBe('ok');
+    expect(held.detail).toBe('The driver reports no clock offsets; held 3090 MHz under load (driver max 3090).');
+    s.gpus[0].clockOffsets = { smMhz: null, memMhz: 500, maxClockSmMhz: null, maxClockMemMhz: null };
+    expect(audit(s)['gpu-oc-offsets'].detail).toBe("memory +250 MHz (+500 on the effective rate, the slider's figure) offsets applied.");
+    s.gpus[0].clockOffsets = { smMhz: -100, memMhz: 0, maxClockSmMhz: null, maxClockMemMhz: null };
+    expect(audit(s)['gpu-oc-offsets'].detail).toBe('Core -100 MHz, memory +0 MHz offsets applied.');
+    s.gpus[0].clockOffsets = { smMhz: null, memMhz: null, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
+    expect(audit(s)['gpu-oc-offsets'].state).toBe('unknown');
+    s.gpus[0].clockOffsets = null;
+    const f = audit(s)['gpu-oc-offsets'];
+    expect(f.state).toBe('unknown');
+    expect(f.detail).toContain('NVML 12.5');
+  });
+
+  it('the dev box: offsets 0 / 0 yet 3226 / 16032 MHz held above the 3090 / 14001 MHz ceilings is an overclock by another route', () => {
+    const s = devbox();
+    s.gpus[0].clockOffsets = { smMhz: 0, memMhz: 0, maxClockSmMhz: 3090, maxClockMemMhz: 14001 };
+    const f = audit(s, { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3226, memMhz: 16032 })) })['gpu-oc-offsets'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe('The driver reports no clock offsets, yet the card held 3226 MHz core / 16032 MHz memory under load, above its 3090 / 14001 MHz maximums: an overclock is applied by another route (a vendor tool or a VF curve).');
+    expect(f.fix).toContain('lower the overclock first');
+    // Memory alone over its ceiling is enough; one boost step over is not.
+    const mem = audit(s, { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3000, memMhz: 16032 })) })['gpu-oc-offsets'];
+    expect(mem.state).toBe('info');
+    expect(mem.detail).toContain('above its 3090 / 14001 MHz maximums');
+    const step = audit(s, { thermalRamp: loadRun('heavy', 20, () => ({ smMhz: 3105, memMhz: 14001 })) })['gpu-oc-offsets'];
+    expect(step.state).toBe('ok');
+  });
+});
+
+describe('CPU rules (item 6) and the PPT setting (item 2)', () => {
+  it('this box with PBO: 245 W over the 230 W stock PPT is the PBO inference, pointing at the setting', () => {
+    const f = audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-package-power'];
+    expect(f.state).toBe('info');
+    expect(f.severity).toBe(0);
+    expect(f.detail).toBe('PBO / raised PPT active — measured 245 W over the stock 230 W; set your PPT limit here.');
+    expect(f.fix).toContain('with the button below (Monitor page, gear > CPU tuning you set in BIOS > PPT)');
+    expect(f.fixWhere).toBe('app');
+  });
+
+  it('with the PPT set to 300 W the same run is ok against the configured limit; at 95 % of it, info', () => {
+    const f = audit(devbox(), { cpuLoad: cpuRun(20), cpuPptW: 300 })['cpu-package-power'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toBe('245 W under the all-core load, within the 300 W PPT limit (set by you).');
+    const capped = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 298 })), cpuPptW: 300 })['cpu-package-power'];
+    expect(capped.state).toBe('info');
+    expect(capped.detail).toContain('At the 300 W PPT limit (set by you) under the all-core load (298 W)');
+    const over = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 340 })), cpuPptW: 300 })['cpu-package-power'];
+    expect(over.detail).toContain('Measured 340 W over the configured 300 W limit');
+  });
+
+  it('stock-bound: 225 W on the 230 W stock PPT is at the limit, labelled stock; 150 W is ok', () => {
+    const at = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 225 })) })['cpu-package-power'];
+    expect(at.state).toBe('info');
+    expect(at.detail).toBe('At the 230 W PPT limit (stock) under the all-core load (225 W): normal, the limit is what stops the CPU boosting further.');
+    const under = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ packageW: 150 })) })['cpu-package-power'];
+    expect(under.state).toBe('ok');
+    expect(under.detail).toBe('150 W under the all-core load, within the 230 W PPT limit (stock).');
+  });
+
+  it('an unknown part with no setting is info asking for the limit; with the setting it judges', () => {
+    const s = devbox();
+    s.cpu.name = 'AMD Ryzen 9 9999X 16-Core Processor';
+    expect(audit(s, { cpuLoad: cpuRun(20) })['cpu-package-power'].detail).toContain('not in the table');
+    expect(audit(s, { cpuLoad: cpuRun(20), cpuPptW: 250 })['cpu-package-power'].state).toBe('info');
+    expect(audit(s, { cpuLoad: cpuRun(20), cpuPptW: 250 })['cpu-package-power'].detail).toContain('At the 250 W PPT limit');
+  });
+
+  it('thermal: 88 °C on a 95 °C part is ok; 92 °C sustained on Ryzen is info, by design; pinned with sagging clocks is a warn (polish 3 item 1)', () => {
+    const ok = audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-thermal'];
+    expect(ok.state).toBe('ok');
+    expect(ok.detail).toBe('Held 88 °C under the all-core load (peak 88 °C), 7 °C below the 95 °C limit.');
+    const warm = audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 92 : 49 })) })['cpu-thermal'];
+    expect(warm.state).toBe('info');
+    expect(warm.severity).toBe(0);
+    expect(warm.detail).toContain('held 92 °C, 3 °C from its 95 °C limit');
+    expect(warm.detail).toContain('by design');
+    const pinned = cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 49, avgEffectiveMhz: t < 10 ? 5200 : 4700 }));
+    const sagging = audit(devbox(), { cpuLoad: pinned })['cpu-thermal'];
+    expect(sagging.state).toBe('warn');
+    expect(sagging.severity).toBe(2);
+    expect(sagging.costEstimate).toBeCloseTo(0.1, 2);
+    expect(sagging.detail).toBe('The CPU sat at its 95 °C limit under the all-core load and its clocks fell 10 % (5200 to 4700 MHz effective): it is thermally throttling.');
+    expect(sagging.fix).toContain('fresh paste');
+    expect(sagging.fix).toContain('Curve Optimizer undervolt');
+    expect(sagging.costText).toContain('Throttling');
+    expect(sagging.fixWhere).toBe('hardware');
+  });
+
+  it('this box: the 9950X pinned at Tjmax with the clocks holding is info, by design, with the hotter-room sentence as the detail', () => {
+    const f = audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95.2 : 44, avgEffectiveMhz: t > 0 ? 5384 - t * 1.6 : 452 })) })['cpu-thermal'];
+    expect(f.state).toBe('info');
+    expect(f.severity).toBe(0);
+    expect(f.costEstimate).toBe(0);
+    expect(f.detail).toBe('The CPU sat at its 95 °C limit under the all-core load, with clocks holding (5375 to 5357 MHz effective). Ryzen boosts until it meets its limit, so this is by design under an all-core load; games load it less. Nothing is lost now, but a hotter room or a longer load has no headroom left.');
+    expect(f.costText).toBe('Nothing lost: the clocks held.');
+    expect(f.fix).toBe('Nothing required; a lower PPT or a Curve Optimizer undervolt in the BIOS buys headroom at little cost.');
+    expect(f.fixWhere).toBe('none');
+    expect(f.fix).not.toContain('paste');
+  });
+
+  it('sagging 5 % while pinned is the warn threshold; 4 % holds as info', () => {
+    const at = (drop: number) => audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 49, avgEffectiveMhz: t < 10 ? 5200 : 5200 * (1 - drop) })) })['cpu-thermal'];
+    expect(at(0.05).state).toBe('warn');
+    expect(at(0.04).state).toBe('info');
+    expect(at(0.04).detail).toContain('clocks holding');
+  });
+
+  it('already within 2 °C of Tjmax before the load starts is the cooler, not the boost: warn, pump first', () => {
+    const hot = audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 93.4 })) })['cpu-thermal'];
+    expect(hot.state).toBe('warn');
+    expect(hot.severity).toBe(2);
+    expect(hot.detail).toBe('The CPU was already at 93 °C before the all-core load started, 2 °C from its 95 °C limit, and held 95 °C under it (5200 to 5200 MHz effective): the cooler is not keeping up even at rest.');
+    expect(hot.costText).toContain('games will sit at the limit too');
+    expect(hot.fix).toMatch(/^Check the pump and fans first/);
+    expect(hot.fix).toContain('Curve Optimizer undervolt');
+    // 3 °C below before the load is the by-design card again.
+    expect(audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 92 })) })['cpu-thermal'].state).toBe('info');
+    // No pre-load reading at all: nothing to judge the rest by, the all-core verdict stands.
+    expect(audit(devbox(), { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 95 : null })) })['cpu-thermal'].state).toBe('info');
+  });
+
+  it('a Curve Optimizer the user set (polish 3 item 2) is never recommended back; without one it is an option', () => {
+    const pinned = cpuRun(20, t => ({ tctlC: t > 0 ? 95.2 : 44 }));
+    const set = audit(devbox(), { cpuLoad: pinned, curveOptimizer: CO_30 })['cpu-thermal'];
+    expect(set.state).toBe('info');
+    expect(set.fix).toBe('Nothing required; you already run −30 all-core Curve Optimizer, so the remaining levers are a lower PPT in the BIOS or better cooling.');
+    expect(set.fix).not.toContain('Curve Optimizer undervolt');
+    const unset = audit(devbox(), { cpuLoad: pinned })['cpu-thermal'];
+    expect(unset.fix).toContain('a Curve Optimizer undervolt in the BIOS');
+    // The cooler advice keeps the settings lever last, and adapts the same way.
+    const sagging = cpuRun(20, t => ({ tctlC: t > 0 ? 95 : 49, avgEffectiveMhz: t < 10 ? 5200 : 4700 }));
+    const coolerSet = audit(devbox(), { cpuLoad: sagging, curveOptimizer: CO_30 })['cpu-thermal'];
+    expect(coolerSet.fix).toBe('Improve CPU cooling: reseat the cooler with fresh paste, check the pump and fans, raise the fan curve; on Ryzen you already run −30 all-core Curve Optimizer, so the remaining levers are a lower PPT in the BIOS or better cooling.');
+    // A per-core note counts as set too; a 0 does not (the BIOS default is no offset).
+    const perCore = audit(devbox(), { cpuLoad: pinned, curveOptimizer: { coAllCore: null, coPerCore: '−30, cores 3 and 7 at −20' } })['cpu-thermal'];
+    expect(perCore.fix).toContain('you already run a per-core Curve Optimizer (−30, cores 3 and 7 at −20)');
+    expect(audit(devbox(), { cpuLoad: pinned, curveOptimizer: { coAllCore: 0 } })['cpu-thermal'].fix).toContain('a Curve Optimizer undervolt');
+    // Intel has no Curve Optimizer: the cooler advice ends without the Ryzen levers.
+    const s = devbox();
+    s.cpu.name = '13th Gen Intel(R) Core(TM) i9-13900K';
+    const intel = audit(s, { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 100 : 49, avgEffectiveMhz: t < 10 ? 5200 : 4700 })), curveOptimizer: CO_30 })['cpu-thermal'];
+    expect(intel.state).toBe('warn');
+    expect(intel.fix).toBe('Improve CPU cooling: reseat the cooler with fresh paste, check the pump and fans, raise the fan curve.');
+  });
+
+  it('thermal on an Intel part warns harder near Tjmax, and an unknown part gets the numbers without a verdict', () => {
+    const s = devbox();
+    s.cpu.name = '13th Gen Intel(R) Core(TM) i9-13900K';
+    const f = audit(s, { cpuLoad: cpuRun(20, t => ({ tctlC: t > 0 ? 97 : 40 })) })['cpu-thermal'];
+    expect(f.state).toBe('warn');
+    expect(f.severity).toBe(2);
+    expect(f.detail).toContain('held 97 °C, 3 °C from its 100 °C limit');
+    expect(f.detail).not.toContain('by design');
+    expect(f.costText).toContain('Little headroom');
+    expect(f.fix).toContain('cooling');
+    s.cpu.name = 'Some CPU';
+    const u = audit(s, { cpuLoad: cpuRun(20) })['cpu-thermal'];
+    expect(u.state).toBe('info');
+    expect(u.detail).toContain('Peaked at 88 °C');
+  });
+
+  it('all-core clock: info with the spec, warn below 90 % of base, plain info for an unknown part', () => {
+    expect(audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-allcore-clock'].state).toBe('info');
+    const slow = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ avgEffectiveMhz: 3700 })) })['cpu-allcore-clock'];
+    expect(slow.state).toBe('warn');
+    expect(slow.detail).toBe('All-core 3.7 GHz effective under load, below the 4.3 GHz base clock: heat or a power limit is holding the CPU back.');
+    expect(slow.fixWhere).toBe('bios');
+    const s = devbox();
+    s.cpu.name = 'Some CPU';
+    expect(audit(s, { cpuLoad: cpuRun(20) })['cpu-allcore-clock'].detail).toBe('All cores ran at 5.2 GHz effective under the load.');
+  });
+
+  it('SMT: 16 cores 32 threads is ok; 16 and 16 on a 32-thread part is info with a BIOS fix; no counts is unknown', () => {
+    expect(audit(devbox())['cpu-smt'].detail).toBe('16 cores, 32 threads: SMT on.');
+    const s = devbox();
+    s.cpu.logical = 16;
+    const f = audit(s)['cpu-smt'];
+    expect(f.state).toBe('info');
+    expect(f.fixWhere).toBe('bios');
+    expect(f.detail).toContain('SMT (Hyper-Threading) is off');
+    expect(f.fix).toContain('turn SMT (AMD) or Hyper-Threading (Intel) on');
+    s.cpu.logical = 0;
+    expect(audit(s)['cpu-smt'].state).toBe('unknown');
+  });
+
+  it('SMT: a Core Ultra 9 285K at 24/24 has none to turn on, so it is ok; a part the table does not count is hedged', () => {
+    const s = devbox();
+    s.cpu.name = 'Intel(R) Core(TM) Ultra 9 285K';
+    s.cpu.cores = 24;
+    s.cpu.logical = 24;
+    const f = audit(s)['cpu-smt'];
+    expect(f.state).toBe('ok');
+    expect(f.detail).toBe('24 cores, 24 threads: this part has no SMT.');
+    s.cpu.name = 'AMD Ryzen 5 9600X 6-Core Processor';
+    s.cpu.cores = 6;
+    s.cpu.logical = 6;
+    const hedged = audit(s)['cpu-smt'];
+    expect(hedged.state).toBe('info');
+    expect(hedged.detail).toContain('appears off, or this part has none');
+    expect(hedged.fix).toContain('If the BIOS has');
+  });
+
+  it('idle clock reads the pre-load sample; missing sensors are unknown, never zero', () => {
+    const f = audit(devbox(), { cpuLoad: cpuRun(20) })['cpu-idle-clock'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe('Idle: 194 MHz effective while the cores report up to 5480 MHz; the effective figure is the real rate, the other is the boost the cores stand ready to reach.');
+    const blind = audit(devbox(), { cpuLoad: cpuRun(20, () => ({ avgEffectiveMhz: null })) });
+    expect(blind['cpu-idle-clock'].state).toBe('unknown');
+    expect(blind['cpu-allcore-clock'].state).toBe('unknown');
+    expect(blind['cpu-thermal'].state).toBe('ok');
+  });
+
+  it('a failed or GPU-kind run leaves every CPU rule but SMT unknown; a short run keeps only the idle sample', () => {
+    const failed = { ...cpuRun(20), state: 'failed' as const };
+    for (const run of [failed, loadRun('heavy', 20)]) {
+      const f = audit(devbox(), { cpuLoad: run });
+      for (const id of ['cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-idle-clock']) expect(f[id].state).toBe('unknown');
+      expect(f['cpu-smt'].state).toBe('ok');
+    }
+    const short = audit(devbox(), { cpuLoad: cpuRun(2) });
+    for (const id of ['cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power']) expect(short[id].state).toBe('unknown');
+    expect(short['cpu-idle-clock'].state).toBe('info');
+  });
+});
+
+describe('missing inputs never flag', () => {
+  it('an empty snapshot with no runs yields only ok and unknown at zero cost', () => {
+    const empty: StaticSnapshot = {
+      capturedAt: NOW,
+      os: { caption: '', build: '' },
+      chassis: { isLaptop: false, chassisTypes: [] },
+      cpu: { name: '', family: 0, model: 0, cores: 0, logical: 0, maxClockMhz: 0 },
+      motherboard: { manufacturer: '', product: '', biosVersion: '', biosDate: '' },
+      ram: { totalMiB: 0, modules: [] },
+      gpus: [],
+      gpuDriver: { version: '', date: null },
+      powerPlan: { guid: '', name: '', overlayGuid: null },
+      disks: [],
+      volumes: [],
+      ollama: null
+    };
+    const findings = runAudit(inputs(empty));
+    // Every rule but the Ollama row, which does not exist when Ollama is not running.
+    expect(findings).toHaveLength(ALL_IDS.length - 1);
+    for (const f of findings) {
+      expect(['ok', 'unknown']).toContain(f.state);
+      expect(f.severity).toBe(0);
+      expect(f.costEstimate).toBe(0);
+    }
+  });
+
+  it('a laptop with an empty snapshot still does not flag its power plan', () => {
+    const s = devbox();
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    s.powerPlan = { guid: '', name: '', overlayGuid: null };
+    expect(audit(s)['power-plan'].state).toBe('unknown');
+  });
+});
+
+describe("timer resolution (plan section 8, the About hub's Timers tool feeds it)", () => {
+  const timers = (over: Partial<Timers> = {}): Timers => ({ ...quietTimers, ...over });
+  const discord = { pid: 4242, name: 'Discord.exe', path: 'C:\Apps\Discord.exe', periodMs: 0.5, own: false };
+  const own = { pid: 77, name: 'electron.exe', path: null, periodMs: 1, own: true };
+
+  it('no probe answers unknown; the platform default is info with the counter named', () => {
+    expect(audit(devbox())['timer-resolution'].state).toBe('unknown');
+    const f = audit(devbox(), { timers: timers() })['timer-resolution'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe('15.625 ms, the platform default: nothing is holding it raised. A game raises it to 0.5–1 ms itself while it runs; if one does not, its frame pacing gets uneven. The performance counter runs at 10 MHz from the TSC.');
+    expect(f.severity).toBe(0);
+  });
+
+  it('a background app holding the finest step with nothing running is the one warning, and it is named', () => {
+    const f = audit(devbox(), { timers: timers({ currentMs: 0.5, requesters: [discord, own] }) })['timer-resolution'];
+    expect(f.state).toBe('warn');
+    expect(f.severity).toBe(1);
+    expect(f.detail).toContain('Discord.exe (asks for 0.5 ms) holds the timer at its finest step, 0.5 ms, with nothing running that needs it.');
+    expect(f.detail).toContain('On a desktop this costs a little idle power');
+    expect(f.detail).not.toContain('electron.exe');
+    expect(f.fix).toContain('Settings > Apps > Startup');
+    const laptop = devbox();
+    laptop.chassis = { isLaptop: true, chassisTypes: [10] };
+    expect(audit(laptop, { timers: timers({ currentMs: 0.5, requesters: [discord] }) })['timer-resolution'].detail).toContain('On a laptop this costs battery');
+  });
+
+  it('raised but not at the finest step, or held only by Strata Tune, or by nobody the trace could name, is info', () => {
+    const media = audit(devbox(), { timers: timers({ currentMs: 1, requesters: [{ ...discord, periodMs: 1 }] }) })['timer-resolution'];
+    expect(media.state).toBe('info');
+    expect(media.detail).toContain('raised from the 15.625 ms default by Discord.exe (asks for 1 ms). Normal for a media or chat app');
+    const ours = audit(devbox(), { timers: timers({ currentMs: 1, requesters: [own] }) })['timer-resolution'];
+    expect(ours.state).toBe('info');
+    expect(ours.detail).toContain('only Strata Tune itself holds it');
+    const untraced = audit(devbox(), { timers: timers({ currentMs: 0.5 }) })['timer-resolution'];
+    expect(untraced.state).toBe('info');
+    expect(untraced.detail).toContain('the trace that names the holder did not run');
+    const failed = audit(devbox(), { timers: timers({ currentMs: null }) })['timer-resolution'];
+    expect(failed.state).toBe('unknown');
+  });
+
+  it('holders are named once per program with a count, finest period first (the dev box listed claude.exe nine times)', () => {
+    const many = [
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => ({ pid: 100 + i, name: 'claude.exe', path: null, periodMs: 1, own: false })),
+      { pid: 7, name: 'iCUE.exe', path: null, periodMs: 4, own: false },
+      { pid: 8, name: 'Discord.exe', path: null, periodMs: 1, own: false },
+      { pid: 9, name: 'Discord.exe', path: null, periodMs: 0.5, own: false },
+      { pid: 10, name: 'Discord.exe', path: null, periodMs: null, own: false }
+    ];
+    expect(timerHolders(many)).toEqual(['Discord.exe ×3 (asks for 0.5 ms)', 'claude.exe ×9 (asks for 1 ms)', 'iCUE.exe (asks for 4 ms)']);
+    const f = audit(devbox(), { timers: timers({ currentMs: 0.5, requesters: many }) })['timer-resolution'];
+    expect(f.state).toBe('warn');
+    expect(f.detail).toContain('Discord.exe ×3 (asks for 0.5 ms), claude.exe ×9 (asks for 1 ms) and iCUE.exe (asks for 4 ms) hold the timer at its finest step');
+    expect(f.detail).not.toContain('claude.exe (asks for 1 ms), claude.exe');
+    expect(f.fix).toContain('Close them');
+  });
+});

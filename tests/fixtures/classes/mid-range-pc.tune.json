@@ -1,0 +1,51 @@
+{
+  "class": "mid-range-pc",
+  "snapshot": {
+    "chassis": {
+      "isLaptop": false,
+      "chassisTypes": [
+        3
+      ]
+    },
+    "cpu": {
+      "name": "AMD Ryzen 5 7600X 6-Core Processor"
+    },
+    "gpus": [
+      {
+        "name": "AMD Radeon RX 7700 XT",
+        "vram": {
+          "totalMiB": 12272
+        }
+      }
+    ]
+  },
+  "tune": {
+    "status": {
+      "enabled": false,
+      "state": "IDLE",
+      "baseline": {
+        "coreKhz": 0,
+        "memKhz": 0,
+        "coreMhz": 0,
+        "memMhz": 0
+      },
+      "candidate": null,
+      "appliedAt": null,
+      "reverted": null,
+      "result": null,
+      "history": [],
+      "nvapi": {
+        "available": false,
+        "reason": "NVIDIA cards only in this version: the Radeon RX 7700 XT is read through the library's sensors, and an ADLX write path is planned",
+        "deltas": null,
+        "range": null
+      },
+      "run": null,
+      "flightAvailable": false,
+      "stateFile": "C:\\ProgramData\\Strata Tune\\tune-state.json",
+      "problem": null,
+      "estimateMinutes": 16
+    },
+    "export": null
+  }
+}

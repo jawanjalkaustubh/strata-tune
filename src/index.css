@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: #2a3142;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: #3d465c; background-clip: content-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+
+  ::selection { background: #059669; color: #f8fafc; }
+
+  :where(button, [role="button"], a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px #0c0e14, 0 0 0 4px #10b981;
+    border-radius: inherit;
+  }
+  :where(button, [role="button"]):focus:not(:focus-visible) { outline: none; }
+}
+
+/* Instrument-panel typography (plan 17a): tracked uppercase labels, tabular
+   figures. In the components layer so a colour utility on the same element
+   still wins. The chip-* classes size SVG text inside the diagrams, in the
+   diagram's own units: 10 px at the diagrams' natural size, which is the least
+   that reads on a 1080p monitor at 100 % scaling, and larger as the diagram
+   scales with its column. */
+@layer components {
+  .label { @apply text-[11px] uppercase tracking-[0.08em] text-studio-muted; }
+  .figure { @apply font-mono tabular-nums; }
+  .chip-label { font: 600 10px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.08em; }
+  .chip-figure { font: 500 11px/1 ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .chip-big { font: 500 15px/1 ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .chip-nominal { font: 400 10px/1 ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+  /* Panels are moved and resized by the user (plan item 3), so their inner layout follows
+     the panel's own width, not the viewport: a diagram beside its bars and two bar
+     columns from 560 px (the CPU and GPU panels at 1280 are 598 px inside, and the bar
+     rows go compact below), the board's three groups from 860 px, one column beneath. */
+  .panel-body { container-type: inline-size; }
+  .split { display: flex; flex-direction: column; gap: 0.75rem 1rem; }
+  .split-2, .split-3 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem 1.5rem; }
+  @container (min-width: 560px) {
+    .split { flex-direction: row; }
+    .split-2, .split-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @container (min-width: 860px) {
+    .split-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
+  /* A bar row is label · track · figure. The figure column is a fixed width so every
+     track in a column ends on the same line and the limit ticks line up; a column of
+     bars (.bars) is its own container, and one narrower than 360 px (the CPU bars beside
+     the chip at 1280) shortens the label and drops the "of N W" under the figure instead
+     of squeezing the track. */
+  .bars { container-type: inline-size; }
+  .bar-row { display: grid; grid-template-columns: 7.5rem minmax(5rem, 1fr) 9rem; align-items: center; column-gap: 0.75rem; min-width: 0; }
+  .bar-sub { margin-left: 0.25rem; }
+  @container (max-width: 360px) {
+    .bar-row { grid-template-columns: 7.5rem minmax(3rem, 1fr) 5.5rem; }
+    .bar-sub { display: block; margin-left: 0; }
+  }
+}
+
+.custom-titlebar { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+
+.btn {
+  @apply inline-flex items-center gap-1.5 px-2.5 h-7 rounded-control text-mini font-medium
+         text-studio-muted hover:text-studio-text hover:bg-studio-panel-hi transition-colors
+         disabled:opacity-40 disabled:pointer-events-none;
+}
+.btn-accent {
+  @apply bg-studio-accent text-white hover:bg-studio-accent-hover hover:text-white;
+}
+.btn-icon {
+  @apply inline-flex items-center justify-center w-7 h-7 rounded-control text-studio-muted
+         hover:text-studio-text hover:bg-studio-panel-hi transition-colors;
+}

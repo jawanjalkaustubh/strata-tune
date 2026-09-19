@@ -1,0 +1,171 @@
+/* The report's own stylesheet (plan §17a rules, §19): the same file renders the
+   Capture page and the exported single HTML, so nothing here leans on Tailwind or
+   on a network font. Tokens on the root; every element sets its own font and
+   margins so the app's preflight and a bare browser agree. */
+.rp {
+  --bg: #0c0e14;
+  --surface: #121620;
+  --panel: #161b26;
+  --panel-hi: #1c2230;
+  --border: #232938;
+  --border-light: #323b4e;
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --subtle: #64748b;
+  --ok: #10b981;
+  --ok-text: #34d399;
+  --warn: #fbbf24;
+  --warn-text: #fbbf24;
+  --bad: #f43f5e;
+  --bad-text: #fb7185;
+  --idle: #7d8ca3;
+  --idle-text: #94a3b8;
+  --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+  font: 13px/1.5 var(--sans);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: 24px 16px 40px;
+}
+.rp *, .rp *::before, .rp *::after { box-sizing: inherit; margin: 0; padding: 0; }
+.rp-page { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+
+.rp .label { font: 500 11px/1.4 var(--sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.rp .figure { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.rp .ok { color: var(--ok-text); }
+.rp .warn { color: var(--warn-text); }
+.rp .bad { color: var(--bad-text); }
+.rp .idle { color: var(--idle-text); }
+
+/* Header: monogram, wordmark, session line. */
+.rp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 4px 0 8px; flex-wrap: wrap; }
+.rp-brand { display: flex; align-items: center; gap: 10px; }
+.rp-brand img { width: 28px; height: 28px; display: block; }
+.rp-brand .label { color: var(--text); font-weight: 600; }
+.rp-brand .rp-kind { color: var(--subtle); }
+.rp-meta { text-align: right; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.rp-meta .figure { color: var(--text); }
+@media (max-width: 640px) { .rp-meta { text-align: left; } }
+
+/* Panels: 1 px border, lighter surface, no shadow. */
+.rp-panel { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 14px 16px; min-width: 0; }
+.rp-panel > .label { margin-bottom: 10px; }
+/* Two columns only where two panels of tables fit; two sheets side by side on a 1920 screen are 960 px each and stack. */
+.rp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 1000px) { .rp-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* Verdict */
+.rp-verdict { border-left-width: 3px; }
+.rp-verdict.ok { border-left-color: var(--ok); }
+.rp-verdict.warn { border-left-color: var(--warn); }
+.rp-verdict.bad { border-left-color: var(--bad); }
+.rp-verdict.idle { border-left-color: var(--idle); }
+.rp-verdict h1 { font: 600 26px/1.2 var(--sans); letter-spacing: -0.01em; color: var(--text); margin: 2px 0 6px; }
+.rp-verdict p { font-size: 14px; color: var(--muted); max-width: 70ch; }
+.rp-verdict p strong { color: var(--text); font-weight: 500; }
+.rp-verdict .rp-figures { display: flex; gap: 28px; margin-top: 14px; flex-wrap: wrap; }
+.rp-figures .figure { font-size: 20px; line-height: 1.1; color: var(--text); }
+.rp-figures .label { margin-top: 2px; }
+
+/* Chart */
+.rp-chart { display: block; width: 100%; height: auto; overflow: visible; }
+.rp-chart text { font: 500 11px var(--mono); font-variant-numeric: tabular-nums; fill: var(--muted); }
+.rp-chart .axis { stroke: var(--border-light); stroke-width: 1; }
+.rp-chart .grid { stroke: var(--border); stroke-width: 1; }
+.rp-chart .peak { fill: none; stroke: var(--subtle); stroke-width: 1; stroke-opacity: 0.6; }
+.rp-chart .line { fill: none; stroke: var(--ok); stroke-width: 1.5; stroke-linejoin: round; }
+.rp-chart .ref-typical { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 3 3; stroke-opacity: 0.8; }
+.rp-chart .ref-worst { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 3 3; stroke-opacity: 0.8; }
+.rp-chart .ref-label { font-family: var(--sans); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
+.rp-chart .ref-typical-t { fill: var(--ok-text); }
+.rp-chart .ref-worst-t { fill: var(--warn-text); }
+.rp-chart .dot-warn { fill: var(--warn); }
+.rp-chart .dot-bad { fill: var(--bad); }
+/* The engine's dots sit on the worst-frame trace, which is near their own colour: a light rim keeps them visible on it. */
+.rp-chart .dot-idle { fill: var(--idle); stroke: var(--text); stroke-width: 1; stroke-opacity: 0.6; }
+.rp-chart .dot-ok { fill: var(--ok); }
+.rp-chart .clipped { fill: var(--panel); stroke-width: 1.5; }
+.rp-legend { display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap; }
+.rp-legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.rp-legend i { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+.rp-legend i.sq { border-radius: 1px; height: 2px; width: 12px; }
+.rp-legend i.engine { background: var(--idle); box-shadow: inset 0 0 0 1px rgba(241, 245, 249, 0.6); }
+.rp-legend i.hollow { background: var(--panel); border: 1.5px solid var(--warn); }
+
+/* Cause rows: label · thin bar · figures, then the paragraph and the action. */
+.rp-cause { padding: 12px 0; border-top: 1px solid var(--border); }
+.rp-cause:first-of-type { border-top: 0; padding-top: 4px; }
+.rp-cause-row { display: grid; grid-template-columns: 9.5rem minmax(5rem, 1fr) max-content; align-items: center; gap: 12px; }
+@media (max-width: 640px) { .rp-cause-row { grid-template-columns: 1fr max-content; } .rp-cause-row .rp-bar { grid-column: 1 / -1; } }
+.rp-cause-name { font-size: 13px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rp-bar { position: relative; height: 6px; border-radius: 999px; background: var(--border); min-width: 0; }
+.rp-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 999px; display: block; }
+.rp-bar i.ok { background: var(--ok); }
+.rp-bar i.warn { background: var(--warn); }
+.rp-bar i.bad { background: var(--bad); }
+.rp-bar i.idle { background: var(--idle); }
+.rp-cause-fig { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+.rp-cause-fig .figure { font-size: 13px; color: var(--text); }
+.rp-cause-fig .sub { font-size: 11px; color: var(--subtle); }
+.rp-pill { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; border: 1px solid; font: 500 10px/1 var(--sans); letter-spacing: 0.08em; text-transform: uppercase; }
+.rp-pill.ok { color: var(--ok-text); border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.1); }
+.rp-pill.idle { color: var(--idle-text); border-color: rgba(100, 116, 139, 0.4); background: rgba(100, 116, 139, 0.1); }
+.rp-pill.warn { color: var(--warn-text); border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.1); }
+.rp-cause p { margin-top: 8px; color: var(--muted); max-width: 78ch; }
+.rp-cause .rp-action { margin-top: 4px; color: var(--text); }
+.rp-cause .rp-action.engine { color: var(--idle-text); }
+.rp-cause .rp-action .label { display: inline; margin-right: 6px; }
+.rp-cause .rp-detail { margin-top: 4px; color: var(--subtle); font-size: 12px; }
+
+/* Bound */
+.rp-bound p { color: var(--text); font-size: 14px; max-width: 70ch; }
+.rp-bound .rp-rows { margin-top: 12px; display: grid; gap: 6px; }
+.rp-row { display: grid; grid-template-columns: 7.5rem minmax(5rem, 1fr) 5rem; align-items: center; gap: 12px; }
+.rp-row .figure { font-size: 12px; text-align: right; color: var(--text); }
+
+/* Measurements table, last. */
+.rp-table { width: 100%; border-collapse: collapse; }
+.rp-table td { padding: 6px 0; border-top: 1px solid var(--border); vertical-align: baseline; }
+.rp-table tr:first-child td { border-top: 0; }
+.rp-table td:last-child { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.rp-table td:last-child .sub { color: var(--subtle); font-family: var(--sans); font-size: 11px; margin-left: 6px; }
+
+/* Bench check: one row per script segment, designed against classified, a mark at the end. After the measurements rules, whose td padding it widens. */
+.rp-bench p { color: var(--muted); max-width: 78ch; margin-bottom: 10px; }
+.rp-bench-table th { text-align: left; padding: 0 16px 6px 0; font-weight: 500; white-space: nowrap; }
+.rp-bench-table td { padding-right: 16px; }
+.rp-bench-table td:first-child { white-space: nowrap; }
+.rp-bench-table td:last-child, .rp-bench-table th:last-child { padding-right: 0; text-align: right; width: 2rem; }
+.rp-bench-table td:nth-child(2) { color: var(--muted); white-space: nowrap; font-size: 12px; }
+.rp-bench-table tr.unscored td { color: var(--subtle); }
+@media (max-width: 640px) { .rp-bench-table th:nth-child(2), .rp-bench-table td:nth-child(2) { display: none; } }
+
+.rp-foot { color: var(--subtle); font-size: 11px; padding-top: 4px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* Score sheet (plan §16 'Save as .html'): the share card scales with the page, the stat tables carry avg and max columns. */
+.rp-card-panel { padding: 0; overflow: hidden; background: var(--bg); }
+.rp-card { display: block; width: 100%; height: auto; }
+.rp-stats td:nth-child(2), .rp-stats td:nth-child(3) { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; text-align: right; }
+.rp-stats td:nth-child(2) { width: 9rem; }
+.rp-stats td:nth-child(3) { width: 12rem; }
+.rp-stats .sub { color: var(--subtle); font-family: var(--sans); font-size: 11px; margin-left: 6px; }
+.rp-shares { margin-top: 10px; color: var(--muted); font-size: 12px; }
+.rp-shares .label { display: inline; margin-right: 6px; }
+.rp-note { color: var(--muted); font-size: 12px; max-width: 70ch; }
+.rp-sub-label { margin-top: 12px; margin-bottom: 6px; }
+.rp-line { color: var(--text); font-size: 13px; max-width: 90ch; margin-bottom: 4px; }
+.rp-rungs th { text-align: left; padding: 0 16px 6px 0; font-weight: 500; white-space: nowrap; }
+.rp-rungs td { padding-right: 16px; }
+.rp-rungs td:last-child { padding-right: 0; }
+.rp-rungs td.figure { white-space: nowrap; }
+.rp-rungs tr.stop td { color: var(--muted); font-size: 12px; }
+.rp-why { color: var(--subtle); font-size: 11px; margin-top: 2px; max-width: 40ch; }
+/* The hardware line is prose (a 68-character board name, a driver, a Windows build): it wraps inside its panel, never clipped and never wider than the column (plan §17a). */
+.rp-hardware { table-layout: fixed; }
+.rp-hardware td:first-child { width: 7.5rem; }
+.rp-hardware td:last-child { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.rp-validity td:last-child { text-align: left; font-family: var(--sans); white-space: normal; color: var(--muted); }
+.rp-validity td:last-child .figure { margin-right: 6px; }

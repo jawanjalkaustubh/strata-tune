@@ -1,0 +1,55 @@
+{
+  "capturedAt": "2026-09-15T20:13:16-06:00",
+  "os": { "caption": "Microsoft Windows 11 Home", "build": "26200" },
+  "chassis": { "isLaptop": false, "chassisTypes": [3] },
+  "cpu": { "name": "AMD Ryzen 9 9950X 16-Core Processor", "family": 26, "model": 68, "cores": 16, "logical": 32, "maxClockMhz": 4300 },
+  "motherboard": {
+    "manufacturer": "Micro-Star International Co., Ltd.",
+    "product": "MAG X870E TOMAHAWK WIFI (MS-7E59)",
+    "biosVersion": "2.A60",
+    "biosDate": "2025-04-22"
+  },
+  "ram": {
+    "totalMiB": 32768,
+    "modules": [
+      { "slot": "DIMMA2", "partNumber": "F5-6000J2836G16G", "manufacturer": "G Skill Intl", "capacityMiB": 16384, "configuredMts": 6200, "reportedMts": 6200 },
+      { "slot": "DIMMB2", "partNumber": "F5-6000J2836G16G", "manufacturer": "G Skill Intl", "capacityMiB": 16384, "configuredMts": 6200, "reportedMts": 6200 }
+    ]
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 5090",
+      "driver": "616.92",
+      "pcie": { "currentGen": 5, "currentWidth": 16, "maxGen": 5, "maxWidth": 16, "gpuMaxGen": 5 },
+      "bar1TotalMiB": 32768,
+      "vram": { "totalMiB": 32607, "usedMiB": 3124 },
+      "powerMw": 62609,
+      "powerLimitMw": 600000,
+      "powerMaxLimitMw": 600000,
+      "clocks": { "smMhz": 1275, "memMhz": 7001 },
+      "temperatureC": 29,
+      "utilisation": { "gpu": 3, "memory": 3 },
+      "clocksEventReasons": { "raw": 1024, "names": [] },
+      "pciSubsystem": { "vendorId": 4163, "deviceId": 35266 },
+      "clockOffsets": { "smMhz": 150, "memMhz": 500, "maxClockSmMhz": 3090, "maxClockMemMhz": 14001 }
+    }
+  ],
+  "gpuDriver": { "version": "616.92", "date": "2026-08-12" },
+  "powerPlan": { "guid": "381b4222-f694-41f0-9685-ff5bb260df2e", "name": "Balanced", "overlayGuid": null },
+  "disks": [
+    { "deviceId": "0", "friendlyName": "Samsung SSD 9100 PRO 2TB", "mediaType": "SSD", "busType": "NVMe", "sizeBytes": 2000398934016 },
+    { "deviceId": "1", "friendlyName": "CT2000P3PSSD8", "mediaType": "SSD", "busType": "NVMe", "sizeBytes": 2000398934016 },
+    { "deviceId": "2", "friendlyName": "Samsung SSD 980 PRO 2TB", "mediaType": "SSD", "busType": "NVMe", "sizeBytes": 2000398934016 }
+  ],
+  "volumes": [
+    { "letter": "C", "label": "Windows", "fileSystem": "NTFS", "sizeBytes": 1160714911744, "freeBytes": 773094113280, "isBoot": true, "diskDeviceId": "2" },
+    { "letter": "D", "label": "Data", "fileSystem": "NTFS", "sizeBytes": 209379655680, "freeBytes": 152471339008, "isBoot": false, "diskDeviceId": "2" },
+    { "letter": "E", "label": "Scratch", "fileSystem": "NTFS", "sizeBytes": 630304366592, "freeBytes": 322122547200, "isBoot": false, "diskDeviceId": "2" },
+    { "letter": "F", "label": "Games", "fileSystem": "NTFS", "sizeBytes": 2000398934016, "freeBytes": 768276000000, "isBoot": false, "diskDeviceId": "1" },
+    { "letter": "G", "label": "Models", "fileSystem": "NTFS", "sizeBytes": 2000398934016, "freeBytes": 1786073000000, "isBoot": false, "diskDeviceId": "0" }
+  ],
+  "ollama": [
+    { "name": "qwen3-vl:30b", "sizeBytes": 19700000000, "sizeVramBytes": 24000000000 }
+  ]
+}
