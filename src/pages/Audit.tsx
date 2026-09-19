@@ -5,7 +5,8 @@ import { rankTop, type AuditFinding } from '../analysis/audit';
 import { useCollectorStatus } from '../components/useCollectorStatus';
 import { CollectorStatusPill } from '../components/CollectorStatusPill';
 import { navigate } from '../components/navigate';
-import { auditRun, STEPS, totalSeconds, type AuditResult, type Step } from '../components/audit/run';
+import { auditRun, STEPS, totalSeconds, type AuditResult, type AuditRun, type Step } from '../components/audit/run';
+import type { CollectorApi } from '../api';
 
 const KEY = 'strata-tune.audit';
 const TOP = 5;
@@ -87,6 +88,45 @@ interface Running {
   steps: Step[];
   step: number;
   stepStartedAt: number;
+}
+
+/**
+ * The run in flight lives here, outside the panel, because the Tune page unmounts when the
+ * user looks at the Monitor mid-audit: on the first laptop (2026-09-19) the run went on
+ * invisibly, the panel came back with Run enabled, and a second audit's three load steps
+ * were refused with 409 by the first's. A panel that mounts while a run is live re-attaches
+ * to it: the same progress line, the same Stop, and its result when it lands.
+ */
+interface LiveRun {
+  run: AuditRun;
+  running: Running;
+  /** Settles with the result or the error, once; never rejects unhandled. */
+  outcome: Promise<{ result: AuditResult } | { error: string }>;
+}
+
+let live: LiveRun | null = null;
+const watchers = new Set<(running: Running | null) => void>();
+
+function startLive(c: CollectorApi): LiveRun {
+  const first: Running = { steps: STEPS, step: 0, stepStartedAt: Date.now() };
+  const run = auditRun(c, (steps, step) => {
+    if (!live) return;
+    live.running = { steps, step, stepStartedAt: Date.now() };
+    for (const w of watchers) w(live.running);
+  });
+  const outcome = run.done
+    .then((result) => {
+      // A stopped run is shown, not kept: the last complete audit stays the one to come back to.
+      if (!result.interrupted) save(result);
+      return { result };
+    })
+    .catch((e: unknown) => ({ error: ipcErrorMessage(e) }))
+    .finally(() => {
+      live = null;
+      for (const w of watchers) w(null);
+    });
+  live = { run, running: first, outcome };
+  return live;
 }
 
 /** The progress line with its Stop beside it from the first second (plan section 17c); `now` paces the bar. */
@@ -184,12 +224,30 @@ export const AuditResultView: React.FC<ResultProps> = ({ saved, canRun, onRun })
 export const AuditPanel: React.FC = () => {
   const status = useCollectorStatus();
   const [saved, setSaved] = useState<AuditResult | null>(loadSaved);
-  const [running, setRunning] = useState<Running | null>(null);
+  const [running, setRunning] = useState<Running | null>(() => live?.running ?? null);
   const [now, setNow] = useState(0);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   // Stop for the run in flight (plan section 17c); set by run(), cleared when it ends.
-  const stopRef = useRef<(() => void) | null>(null);
+  const stopRef = useRef<(() => void) | null>(live?.run.stop ?? null);
+
+  // Follow the module's run: its steps while it goes, its result when it lands, whether this panel started it or found it running.
+  const attach = (l: LiveRun) => {
+    stopRef.current = l.run.stop;
+    void l.outcome.then((o) => {
+      if ('error' in o) setError(o.error);
+      else setSaved(o.result);
+      stopRef.current = null;
+    });
+  };
+  useEffect(() => {
+    const w = (r: Running | null) => setRunning(r);
+    watchers.add(w);
+    if (live) attach(live);
+    return () => {
+      watchers.delete(w);
+    };
+  }, []);
 
   useEffect(() => {
     if (!running) return;
@@ -208,22 +266,13 @@ export const AuditPanel: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [running]);
 
-  const run = async () => {
-    if (!api || running) return;
+  const run = () => {
+    // One run at a time across mounts: a panel that comes back mid-run shows that run, never starts another.
+    if (!api || running || live) return;
     setError('');
-    const r = auditRun(api.collector, (steps, step) => setRunning({ steps, step, stepStartedAt: Date.now() }));
-    stopRef.current = r.stop;
-    try {
-      const result = await r.done;
-      // A stopped run is shown, not kept: the last complete audit stays the one to come back to.
-      if (!result.interrupted) save(result);
-      setSaved(result);
-    } catch (e) {
-      setError(ipcErrorMessage(e));
-    } finally {
-      stopRef.current = null;
-      setRunning(null);
-    }
+    const l = startLive(api.collector);
+    setRunning(l.running);
+    attach(l);
   };
 
   const copy = () => {
