@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('strata', {
     startBench: () => ipcRenderer.invoke('capture:startBench'),
     stop: () => ipcRenderer.invoke('capture:stop'),
     arm: (on) => ipcRenderer.invoke('capture:arm', on),
+    // Adds the account to Performance Log Users through one UAC prompt (electron/presentmon.ts grantTraceAccess).
+    grantTrace: () => ipcRenderer.invoke('capture:grantTrace'),
     onState: on('capture:state'),
     onFrames: on('capture:frames')
   },

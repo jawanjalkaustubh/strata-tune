@@ -5,6 +5,7 @@ const OUTSIDE_ELECTRON: CaptureState = {
   status: 'idle',
   armed: false,
   presentMon: { installed: false, message: 'Not running inside Electron' },
+  trace: null,
   target: null,
   startedAt: null,
   frames: 0,

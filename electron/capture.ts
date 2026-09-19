@@ -17,7 +17,7 @@ import { BENCH_EXE, BENCH_SECONDS, benchSize, preflight, spawnBench, type BenchC
 import type { CollectorClient } from './collector';
 import { DEFAULT_ALLOWLIST, type GameMode, type GameModeState } from './game-mode';
 import { curate, type ProcessInfo, type ProcessPick } from './picker';
-import { availability, PresentMonHost, type PresentMonAvailability, type PresentMonExit } from './presentmon';
+import { availability, grantTraceAccess, PresentMonHost, traceAccess, type PresentMonAvailability, type PresentMonExit, type TraceAccess } from './presentmon';
 import { hold, release } from './keepAwake';
 import * as sessions from './sessions';
 import type { CaptureSession, FrameRow, GpuSample } from '../src/analysis/session-types';
@@ -26,7 +26,7 @@ import { exportReportFile, reportFileNameOf } from '../src/report/export';
 import type { Report, ReportFile } from '../src/report/report-types';
 import type { ScoreSheet } from '../src/report/score-types';
 
-export type { PresentMonAvailability } from './presentmon';
+export type { PresentMonAvailability, TraceAccess } from './presentmon';
 export type { SessionListItem } from './sessions';
 export type { ProcessInfo, ProcessPick, PickGroup } from './picker';
 export type { BenchSummary } from './bench-run';
@@ -45,6 +45,8 @@ export interface CaptureState {
   /** Game Mode is watching for a game; a capture starts on its own when one appears. */
   armed: boolean;
   presentMon: PresentMonAvailability;
+  /** Whether this account may open PresentMon's trace session (Performance Log Users); null until the check answers. */
+  trace: TraceAccess | null;
   target: CaptureTarget | null;
   startedAt: string | null;
   frames: number;
@@ -185,7 +187,8 @@ export class CaptureController extends EventEmitter {
     private readonly gameMode: GameMode
   ) {
     super();
-    this.state = { status: 'idle', armed: false, presentMon: availability(), target: null, startedAt: null, frames: 0, message: '', lastSessionId: null, lastTrigger: null };
+    this.state = { status: 'idle', armed: false, presentMon: availability(), trace: null, target: null, startedAt: null, frames: 0, message: '', lastSessionId: null, lastTrigger: null };
+    void this.checkTrace();
     this.presentMon.on('frame', (rows: FrameRow[]) => this.frames(rows));
     this.presentMon.on('exit', (exit: PresentMonExit) => void this.finish(exit));
     // The fullscreen probe (a PowerShell spawn) runs only while armed; the faster poll too, so a game is caught within 10 s.
@@ -208,6 +211,20 @@ export class CaptureController extends EventEmitter {
 
   private get busy(): boolean {
     return this.starting || this.run !== null;
+  }
+
+  /** The Performance Log Users check, at start and after the app adds the account. */
+  private async checkTrace(): Promise<TraceAccess> {
+    const trace = await traceAccess();
+    this.set({ trace });
+    return trace;
+  }
+
+  /** Adds the account to Performance Log Users (one UAC prompt) and re-checks; the message says what happened and that a sign-out is needed. */
+  async grantTrace(): Promise<{ ok: boolean; message: string }> {
+    const r = await grantTraceAccess();
+    await this.checkTrace();
+    return r;
   }
 
   arm(on: boolean): CaptureState {
@@ -427,6 +444,10 @@ export class CaptureController extends EventEmitter {
     let exit = presentMonExit;
     // A note is a remark the report shows: the plain sentence a bad exit carries (presentmon.ts exitMessage), never a raw exit code, and nothing for a clean run.
     if (exit.message) run.notes.push(exit.message);
+    // PresentMon gone with a complaint while the bench still plays (the trace session refused,
+    // exit 6, on the first laptop): nothing it draws from here on is captured, so it is closed
+    // rather than left running its 90 s script on the user's screen for nothing.
+    if (run.bench && exit.message && run.frames === 0) await run.bench.close();
     // The bench's own exit says how the run went: its summary is the session's, and its message outranks PresentMon's.
     const bench: BenchExit | null = run.bench ? await Promise.race([run.bench.done, delay(BENCH_EXIT_WAIT_MS).then(() => null)]) : null;
     if (bench) {
@@ -484,6 +505,7 @@ export function registerCaptureIpc(ipc: IpcMain, controller: CaptureController, 
   ipc.handle('capture:startBench', () => controller.startBench());
   ipc.handle('capture:stop', () => controller.stop());
   ipc.handle('capture:arm', (_e, on: boolean) => controller.arm(!!on));
+  ipc.handle('capture:grantTrace', () => controller.grantTrace());
   ipc.handle('sessions:list', () => sessions.list());
   ipc.handle('sessions:load', (_e, id: string): CaptureSession => sessions.load(id));
   ipc.handle('sessions:delete', (_e, id: string) => sessions.remove(id));

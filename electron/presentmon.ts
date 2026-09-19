@@ -69,6 +69,66 @@ export function availability(): PresentMonAvailability {
   return { installed: false, message: `PresentMon is not installed: run scripts\\setup-tools.ps1 to fetch it (expected at ${exe})` };
 }
 
+/**
+ * Whether this account may open an ETW trace session without elevation, which is what
+ * PresentMon needs: membership of Performance Log Users (well-known SID S-1-5-32-559),
+ * counted in the token this process runs with. The dev box's account is a member and the
+ * README assumed everyone's is; the first laptop's was not, and the first capture failed with
+ * exit 6 after the bench had already started (2026-09-19). Checked once at start and again
+ * after the app adds the account, so the Capture page can say so before Start.
+ */
+export interface TraceAccess {
+  allowed: boolean;
+  /** One sentence for the page when not allowed. */
+  reason: string | null;
+}
+
+const PERFORMANCE_LOG_USERS_SID = 'S-1-5-32-559';
+export const PERFORMANCE_LOG_USERS = 'Performance Log Users';
+
+export function traceAccess(): Promise<TraceAccess> {
+  return new Promise((resolve) => {
+    execFile('whoami', ['/groups', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 }, (err, stdout) => {
+      if (err) {
+        // The check itself failing is not a refusal: Start still tries, and PresentMon's exit says the rest.
+        resolve({ allowed: true, reason: null });
+        return;
+      }
+      const line = stdout.split(/\r?\n/).find((l) => l.includes(PERFORMANCE_LOG_USERS_SID));
+      // A group listed "for deny only" is one the token carries but cannot use (a filtered admin token, for instance).
+      const allowed = !!line && !/deny only/i.test(line);
+      resolve({
+        allowed,
+        reason: allowed ? null : `Capturing frames needs your Windows account in the ${PERFORMANCE_LOG_USERS} group, which it is not in yet. Strata Tune can add it (Windows asks once); sign out and back in afterwards for it to take.`
+      });
+    });
+  });
+}
+
+/**
+ * Adds this account to Performance Log Users through one UAC prompt (net localgroup, run
+ * elevated by the shell). Membership lands in the next logon's token, so the answer says to
+ * sign out and back in; nothing else on the machine changes.
+ */
+export function grantTraceAccess(): Promise<{ ok: boolean; message: string }> {
+  const user = process.env.USERNAME ?? '';
+  if (!user) return Promise.resolve({ ok: false, message: 'Could not read the account name from the environment.' });
+  // PowerShell's Start-Process -Verb RunAs is the shell's own elevation; -Wait returns the exit code net.exe gave.
+  const script = `$p = Start-Process -FilePath net.exe -ArgumentList 'localgroup','"${PERFORMANCE_LOG_USERS}"','"${user.replace(/"/g, '')}"','/add' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode`;
+  return new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, timeout: 120_000 }, (err) => {
+      if (err) {
+        const code = (err as { code?: number | string }).code;
+        // 1223 is the UAC prompt declined; 2 is net.exe's "already a member" (NET HELPMSG 1378 spelled as exit 2).
+        const message = code === 1223 || /canceled|cancelled/i.test(err.message) ? 'The prompt was declined; nothing changed.' : code === 2 ? `The account is already in ${PERFORMANCE_LOG_USERS}: sign out and back in for Windows to apply it.` : `Windows did not add the account (${err.message.trim().split('\n')[0]}). You can do it by hand: run "net localgroup \\"${PERFORMANCE_LOG_USERS}\\" ${user} /add" as administrator, then sign out and back in.`;
+        resolve({ ok: code === 2, message });
+        return;
+      }
+      resolve({ ok: true, message: `Added ${user} to ${PERFORMANCE_LOG_USERS}. Sign out and back in (or restart), then capture.` });
+    });
+  });
+}
+
 function exitMessage(code: number | null, stderrTail: string): string | null {
   switch (code) {
     case 0:

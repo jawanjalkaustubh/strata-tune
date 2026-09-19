@@ -64,6 +64,8 @@ export interface CaptureApi {
   startBench(): Promise<CaptureState>;
   stop(): Promise<CaptureState>;
   arm(on: boolean): Promise<CaptureState>;
+  /** Adds the account to Performance Log Users (one UAC prompt); the message says what happened and that a sign-out is needed. */
+  grantTrace(): Promise<{ ok: boolean; message: string }>;
   onState(cb: (state: CaptureState) => void): () => void;
   onFrames(cb: (frames: CaptureFrames) => void): () => void;
 }
