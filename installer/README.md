@@ -5,11 +5,16 @@ to fix it. Free, no accounts, no telemetry, no cloud calls. Everything runs on y
 
 ## Run it
 
+This is the portable zip: nothing is installed into Windows and nothing runs at startup. The
+same release also has `Strata-Tune-Setup-x64.exe`, which does steps 1 and 2 for you (Program
+Files, a Start Menu entry, a desktop shortcut if you tick it, the PawnIO driver fetched from its
+official release, your account into *Performance Log Users* for Capture, and a launch at the end).
+
 1. Unzip this folder anywhere you like (for example `C:\Program Files\Strata Tune` or your
-   Desktop). Nothing is installed into Windows and nothing runs at startup.
+   Desktop).
 2. Install the **PawnIO** driver if you don't have it: <https://pawnio.eu>. It is a small,
    signed kernel driver that LibreHardwareMonitor uses to read CPU, board and memory sensors.
-   Without it the sensor service cannot read your CPU and the Monitor page stays empty.
+   Without it the sensor service cannot read your CPU and the Monitor's CPU panel says so.
 3. Double-click **Strata Tune.exe**. On first launch the app shows its disclaimer and waits for
    *I understand*. Then Windows asks once, with a UAC prompt, to start
    `strata-tune-collector.exe` elevated. That is the sensor service; it listens only on

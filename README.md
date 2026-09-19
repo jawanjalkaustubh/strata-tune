@@ -5,7 +5,8 @@ to fix it. Free, no accounts, no telemetry, no cloud calls. Everything runs on y
 Fifth member of the Strata family (Code, Photo, Video, Snap/Remote).
 
 **[Download the latest release](https://github.com/jawanjalkaustubh/strata-tune/releases/latest)**
-(portable zip, Windows 10/11 x64, no installer).
+(Windows 10/11 x64): `Strata-Tune-Setup-x64.exe` installs everything in one go, or the portable
+zip needs nothing installed.
 
 ## What it does
 
@@ -28,19 +29,28 @@ Fifth member of the Strata family (Code, Photo, Video, Snap/Remote).
 
 ## Install and run
 
-1. Download `Strata-Tune-Windows-x64.zip` from the
-   [latest release](https://github.com/jawanjalkaustubh/strata-tune/releases/latest) and unzip it
-   anywhere. Nothing is installed into Windows and nothing runs at startup.
-2. Install the **PawnIO** driver from <https://pawnio.eu> if you don't have it. It is the small,
-   signed driver LibreHardwareMonitor uses to read CPU, board and memory sensors. Without it the
-   sensor service cannot read your CPU.
-3. Run **Strata Tune.exe**. The first launch shows the disclaimer and waits for *I understand*.
+**Setup (one click).** Run `Strata-Tune-Setup-x64.exe` from the
+[latest release](https://github.com/jawanjalkaustubh/strata-tune/releases/latest). It puts the app
+under Program Files with a Start Menu entry and, if you tick it, a desktop shortcut; fetches the
+**PawnIO** driver from its official release (checked against a pinned hash) and installs it
+silently when it is not there yet; adds your account to *Performance Log Users* so Capture works
+without an administrator prompt (takes effect after you sign out and back in); and launches
+Strata Tune at the end. Uninstall from Settings > Apps; it asks whether to keep your sessions,
+logs and settings, and leaves PawnIO for the other tools that use it.
+
+**Portable zip.** Or unzip `Strata-Tune-Windows-x64.zip` anywhere: nothing is installed into
+Windows and nothing runs at startup.
+
+1. With the zip, install the **PawnIO** driver from <https://pawnio.eu> if you don't have it. It
+   is the small, signed driver LibreHardwareMonitor uses to read CPU, board and memory sensors.
+   Without it the sensor service cannot read your CPU (the Monitor page says so).
+2. Run **Strata Tune.exe**. The first launch shows the disclaimer and waits for *I understand*.
    Then Windows asks once (UAC) to start `strata-tune-collector.exe` elevated: that is the sensor
    service. It listens only on `127.0.0.1` with a per-launch secret, answers only this app, and
    exits when the app closes. Decline and the app still opens, with a *Retry* where the sensors
    would be.
-4. Windows SmartScreen may show "Windows protected your PC" because this release is not
-   code-signed: *More info* → *Run anyway*.
+3. Windows SmartScreen may show "Windows protected your PC" on the setup or the exe because this
+   release is not code-signed: *More info* → *Run anyway*.
 
 **Requirements.** Windows 10 or 11 x64. Any CPU (sensor rules exist for AMD Ryzen and Intel
 Core). A GPU is optional. An NVIDIA GeForce card with a current driver gets everything: the six
@@ -69,8 +79,9 @@ yourself is at your own risk and may affect your warranty. Read [DISCLAIMER.md](
 The design lives in [docs/master-plan.md](docs/master-plan.md); the original idea
 document is [docs/spec-original.md](docs/spec-original.md). Electron 34 + React 18 + Vite +
 TypeScript for the app, a .NET 10 collector for the sensors (elevated, loopback only), a DX12
-worker and bench. `installer/package.ps1` builds the release zip; `scripts/build-collector.ps1`
-publishes the native exes it needs.
+worker and bench. `installer/package.ps1` builds the release zip and, with Inno Setup 6
+installed (`winget install JRSoftware.InnoSetup`), the setup from `installer/strata-tune.iss`;
+`scripts/build-collector.ps1` publishes the native exes it needs.
 
 ## Development status
 
