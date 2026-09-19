@@ -1,13 +1,73 @@
 # Strata Tune
 
-PC tuning and diagnostics: what is wrong with this PC, what it costs, and how to
-fix it. Fifth member of the Strata family (Code, Photo, Video, Snap/Remote).
-Standalone Electron app; free, no telemetry, no accounts, no cloud calls.
+PC tuning and diagnostics for Windows: what is wrong with this PC, what it costs, and how
+to fix it. Free, no accounts, no telemetry, no cloud calls. Everything runs on your machine.
+Fifth member of the Strata family (Code, Photo, Video, Snap/Remote).
+
+**[Download the latest release](https://github.com/jawanjalkaustubh/strata-tune/releases/latest)**
+(portable zip, Windows 10/11 x64, no installer).
+
+## What it does
+
+| Page | What you get |
+|---|---|
+| **Tune** | An audit of this PC: a snapshot, a short idle sample, a light PCIe load and a 20 s thermal ramp, judged by rules for the CPU, the GPU, memory, timers and power, ranked by severity and what the fix costs. Beneath it, off by default, the **Headroom hunt**: it adds small clock steps on top of your current GPU tune, tests each for a minute with a workload whose result it can check, scores every step, and hands you the values to type into your vendor's tool. It never changes voltage, power limits or fans, and it leaves the card as it found it. |
+| **Monitor** | An instrument panel: CPU, GPU and board panels in their vendor colours, the chip diagram, clocks and limits, the 12V-2x6 connector per pin where the card reports it, rails, fans, system power and the wall-side estimate for your PSU. |
+| **Capture** | Frame times from any windowed game or benchmark, or from the built-in 90 s stutter bench that needs no game. The report names each stutter's likely cause (engine tick, shader compilation, engine stall, driver, paging and so on) and says whether the CPU or the GPU is the limit. Exports as one self-contained HTML file. |
+| **AI Models** | Which local AI models fit this machine and how fast they will run: every quant of every model sized against VRAM and RAM, tokens/s estimated from measured bandwidth, one-click `ollama pull`, and real measurements through Ollama when it is installed. |
+
+## Screenshots
+
+| Tune | Monitor |
+|---|---|
+| ![Tune page](docs/screenshots/tune.png) | ![Monitor page](docs/screenshots/monitor.png) |
+
+| Capture | AI Models |
+|---|---|
+| ![Capture page](docs/screenshots/capture.png) | ![AI Models page](docs/screenshots/ai-models.png) |
+
+## Install and run
+
+1. Download `Strata-Tune-Windows-x64.zip` from the
+   [latest release](https://github.com/jawanjalkaustubh/strata-tune/releases/latest) and unzip it
+   anywhere. Nothing is installed into Windows and nothing runs at startup.
+2. Install the **PawnIO** driver from <https://pawnio.eu> if you don't have it. It is the small,
+   signed driver LibreHardwareMonitor uses to read CPU, board and memory sensors. Without it the
+   sensor service cannot read your CPU.
+3. Run **Strata Tune.exe**. The first launch shows the disclaimer and waits for *I understand*.
+   Then Windows asks once (UAC) to start `strata-tune-collector.exe` elevated: that is the sensor
+   service. It listens only on `127.0.0.1` with a per-launch secret, answers only this app, and
+   exits when the app closes. Decline and the app still opens, with a *Retry* where the sensors
+   would be.
+4. Windows SmartScreen may show "Windows protected your PC" because this release is not
+   code-signed: *More info* → *Run anyway*.
+
+**Requirements.** Windows 10 or 11 x64. Any CPU (sensor rules exist for AMD Ryzen and Intel
+Core). A GPU is optional; the GPU audit, the card panel, the AI Models measurements and the
+Headroom hunt need an NVIDIA GeForce card with a current driver. Capture runs without elevation
+when your account is in the *Performance Log Users* group. Install [Ollama](https://ollama.com)
+to measure real tokens/s on the AI Models page.
+
+**Where things go.** Sessions, logs and settings live in `%LOCALAPPDATA%\Strata Tune`; delete
+the folder and the app is back to first launch.
+
+## Overclocking, plainly
+
+The Headroom hunt is behind a settings switch and a warning. It stops at the first small
+mistake (a wrong result or a driver reset), long before the card would hang; you may see the
+screen freeze for a second or two when the driver resets, and that is the signal it stops on.
+A crash can still lose unsaved work in other apps, so save first. Any overclock you then apply
+yourself is at your own risk and may affect your warranty. Read [DISCLAIMER.md](DISCLAIMER.md).
+
+## Development
 
 The design lives in [docs/master-plan.md](docs/master-plan.md); the original idea
-document is [docs/spec-original.md](docs/spec-original.md).
+document is [docs/spec-original.md](docs/spec-original.md). Electron 34 + React 18 + Vite +
+TypeScript for the app, a .NET 10 collector for the sensors (elevated, loopback only), a DX12
+worker and bench. `installer/package.ps1` builds the release zip; `scripts/build-collector.ps1`
+publishes the native exes it needs.
 
-## Status
+## Development status
 
 | Phase | State |
 |---|---|
