@@ -1103,3 +1103,17 @@ describe("timer resolution (plan section 8, the About hub's Timers tool feeds it
     expect(f.fix).toContain('Close them');
   });
 });
+
+describe('the first laptop with PawnIO installed (2026-09-19, 20 s all-core load: 92 °C, 3.4 GHz, 37 W)', () => {
+  it('the package-power card on a laptop names the vendor app\'s mode, never the BIOS or Ryzen Master', () => {
+    const s = devbox();
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    s.cpu = { name: 'AMD Ryzen 9 6900HS with Radeon Graphics', family: 25, model: 68, cores: 8, logical: 16, maxClockMhz: 3301 };
+    const run = cpuRun(20, () => ({ packageW: 37, tctlC: 92, avgEffectiveMhz: 3400, maxCoreMhz: 3480 }));
+    const f = audit(s, { cpuLoad: run })['cpu-package-power'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe("The vendor app's power mode runs the CPU above its 35 W default: 37 W under the all-core load. Set the mode's PPT here.");
+    expect(f.fix).toContain("your vendor app's mode runs at");
+    expect(f.fix).not.toMatch(/BIOS|Ryzen Master/);
+  });
+});

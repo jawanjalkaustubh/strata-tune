@@ -717,13 +717,19 @@ function checkCpuPackagePower(s: StaticSnapshot, run: LoadRun | null, cpuPptW: n
   const stock = spec?.stockPowerW;
   const configured = cpuPptW !== null && cpuPptW > 0 ? Math.round(cpuPptW) : null;
   // The control is the gear on the Monitor page (the button under this card opens it); there is no Settings page.
-  const setIt = `Enter the limit you set in the BIOS or Ryzen Master with the button below (Monitor page, gear > CPU tuning you set in BIOS > ${name}), so the Package bar and this check use it.`;
+  // On a laptop the limit is the vendor app's power mode, not a BIOS setting (plan 17d row 2; the Monitor's gear menu says the same).
+  const laptop = s.chassis.isLaptop;
+  const setIt = laptop
+    ? `Enter the ${name} your vendor app's mode runs at with the button below (Monitor page, gear > CPU power mode you set in the vendor app > ${name}), so the Package bar and this check use it.`
+    : `Enter the limit you set in the BIOS or Ryzen Master with the button below (Monitor page, gear > CPU tuning you set in BIOS > ${name}), so the Package bar and this check use it.`;
   if (configured === null && stock === undefined) {
     return finding(base, info(`Package power averaged ${measured} W under the all-core load; this part's stock limit is not in the table, so there is no verdict until the limit is set.`, setIt));
   }
   if (configured === null && stock !== undefined && measured > stock * PBO_OVER_STOCK) {
     // Never claim to read the limit: the sensors cannot (dependencies.md); the measurement over stock is the inference.
-    return finding(base, info(`PBO / raised ${name} active — measured ${measured} W over the stock ${stock} W; set your ${name} limit here.`, setIt));
+    return finding(base, info(laptop
+      ? `The vendor app's power mode runs the CPU above its ${stock} W default: ${measured} W under the all-core load. Set the mode's ${name} here.`
+      : `PBO / raised ${name} active — measured ${measured} W over the stock ${stock} W; set your ${name} limit here.`, setIt));
   }
   const limit = configured ?? stock!;
   const label = configured === null ? ' (stock)' : ' (set by you)';
