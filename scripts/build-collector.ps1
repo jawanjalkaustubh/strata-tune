@@ -1,6 +1,6 @@
 # Strata Tune - shipping build of the collector and the worker.
 #
-# Publishes both as self-contained single-file win-x64 executables (the pins and the
+# Publishes all three (collector, worker, bench) as self-contained single-file win-x64 executables (the pins and the
 # reasons are in docs/dependencies.md) into resources/collector/, which is gitignored and
 # is the folder the packaged app carries as process.resourcesPath/collector. Native
 # libraries the .NET host cannot embed (Mono.Posix's helper, pulled in by
@@ -34,7 +34,8 @@ Get-ChildItem $Out | Remove-Item -Recurse -Force
 
 $Projects = @(
   @{ Name = 'collector'; Path = 'collector\StrataTune.Collector\StrataTune.Collector.csproj'; Exe = 'strata-tune-collector.exe' },
-  @{ Name = 'worker';    Path = 'collector\StrataTune.Worker\StrataTune.Worker.csproj';       Exe = 'strata-tune-worker.exe' }
+  @{ Name = 'worker';    Path = 'collector\StrataTune.Worker\StrataTune.Worker.csproj';       Exe = 'strata-tune-worker.exe' },
+  @{ Name = 'bench';     Path = 'collector\StrataTune.Bench\StrataTune.Bench.csproj';         Exe = 'strata-tune-bench.exe' }
 )
 
 Push-Location $RepoRoot
