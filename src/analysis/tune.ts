@@ -535,10 +535,10 @@ export function scoreLine(r: TuneResult): string | null {
   const official = r.official?.score;
   if (official) {
     const stepped = r.official?.steppedDown ? "; the official run passed one fine step below the ladders' rungs" : '';
-    return `${thousands(official.points)} points at +${c.coreMhz} / +${c.memMhz}: ${signedPercent(percentOver(official.points, found.points))} over your current tune (${thousands(found.points)}), ${signedPercent(percentOver(official.points, REFERENCE_POINTS))} over a reference 5090 (${thousands(REFERENCE_POINTS)})${stepped}`;
+    return `${thousands(official.points)} points at +${c.coreMhz} / +${c.memMhz}: ${signedPercent(percentOver(official.points, found.points))} over your current tune (${thousands(found.points)}), ${signedPercent(percentOver(official.points, REFERENCE_POINTS))} over an estimated reference 5090 (${thousands(REFERENCE_POINTS)})${stepped}`;
   }
   const failed = r.official ? `; the official run of the certified pair failed (${r.official.note})` : '';
-  return `${thousands(found.points)} points as found: ${signedPercent(percentOver(found.points, REFERENCE_POINTS))} over a reference 5090 (${thousands(REFERENCE_POINTS)})${failed}`;
+  return `${thousands(found.points)} points as found: ${signedPercent(percentOver(found.points, REFERENCE_POINTS))} over an estimated reference 5090 (${thousands(REFERENCE_POINTS)})${failed}`;
 }
 
 /** Plan section 16, rule 4 (TuneSupervisor.HoldsNowLine): what the card holds now against as found, and "re-apply in your vendor tool" when they differ by more than 1 %. */

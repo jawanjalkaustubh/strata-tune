@@ -317,7 +317,7 @@ internal sealed class TuneHunt(TuneSupervisor owner, Sources sources, RingBuffer
         run.ClimbFrom = new(asFound.Held, asFound.TopSmMhz, "as found") { MeanSm = asFound.MeanSmMhz, Throughput = asFound.Score.ThroughputGsps };
         run.BestThroughputGsps = asFound.Score.ThroughputGsps;
         run.BestBandwidthGBs = asFound.Score.BandwidthGBs;
-        Event(run, $"as found: {asFound.Score.Points} points ({asFound.Score.ComputePoints} compute + {asFound.Score.BandwidthPoints} bandwidth; {TuneScoring.PercentOver(asFound.Score.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % against a reference 5090's {TuneScoring.ReferencePoints}); holds {asFound.Held.SmMhz} / {asFound.Held.MemMhz} MHz sustained ({asFound.MeanSmMhz:F0} MHz mean), {asFound.TopSmMhz} MHz at the top of the curve; {asFound.Score.ThroughputGsps:F2} Gsteps/s, {asFound.Score.BandwidthGBs:F0} GB/s, repeats spread {run.BaselineSpread:P1} so a memory rung must fall more than {TuneLadder.RegressionFloor(run.BaselineSpread):P1} under the best to count as a regression; on the cap a core rung counts as added when its sustained mean rises more than {TuneLadder.MeanClockNoiseMhz(run.BaselineMeanSmSpreadMhz):F0} MHz or its throughput more than {TuneLadder.ThroughputNoise(run.BaselineThroughputSpread):P1}");
+        Event(run, $"as found: {asFound.Score.Points} points ({asFound.Score.ComputePoints} compute + {asFound.Score.BandwidthPoints} bandwidth; {TuneScoring.PercentOver(asFound.Score.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % against an estimated reference 5090's {TuneScoring.ReferencePoints}); holds {asFound.Held.SmMhz} / {asFound.Held.MemMhz} MHz sustained ({asFound.MeanSmMhz:F0} MHz mean), {asFound.TopSmMhz} MHz at the top of the curve; {asFound.Score.ThroughputGsps:F2} Gsteps/s, {asFound.Score.BandwidthGBs:F0} GB/s, repeats spread {run.BaselineSpread:P1} so a memory rung must fall more than {TuneLadder.RegressionFloor(run.BaselineSpread):P1} under the best to count as a regression; on the cap a core rung counts as added when its sustained mean rises more than {TuneLadder.MeanClockNoiseMhz(run.BaselineMeanSmSpreadMhz):F0} MHz or its throughput more than {TuneLadder.ThroughputNoise(run.BaselineThroughputSpread):P1}");
     }
 
     /// <summary>The decision before the first write (plan section 16, rules 1–3, in
@@ -532,7 +532,7 @@ internal sealed class TuneHunt(TuneSupervisor owner, Sources sources, RingBuffer
                     run.MemoryCertified = m with { Deltas = m.Deltas with { MemKhz = pair.MemKhz }, Held = official.Held ?? m.Held };
                 Finish(run);
                 var asFound = run.AsFound!.Score!.Points;
-                Event(run, $"official: {score.Points} points at +{pair.CoreMhz - baseline.CoreMhz} / +{pair.MemMhz - baseline.MemMhz}: {TuneScoring.PercentOver(score.Points, asFound):+0.0;-0.0} % over your current tune's {asFound}, {TuneScoring.PercentOver(score.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % over a reference 5090");
+                Event(run, $"official: {score.Points} points at +{pair.CoreMhz - baseline.CoreMhz} / +{pair.MemMhz - baseline.MemMhz}: {TuneScoring.PercentOver(score.Points, asFound):+0.0;-0.0} % over your current tune's {asFound}, {TuneScoring.PercentOver(score.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % over an estimated reference 5090");
                 return;
             }
             run.Official = official;

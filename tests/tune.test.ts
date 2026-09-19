@@ -476,7 +476,7 @@ describe('export text (mirrored from TuneSupervisor.ExportText, ScoreLine and Ho
     expect(text).toContain('Strata Tune headroom, 2026-09-16 (high confidence');
     expect(text).toContain('the card as found holds 3225 / 16008; certified +45 core / +60 memory on top → 3270 / 16068; first silent error at +60 core (stage 1)');
     // 3889.5 Gsteps/s + 1441.2 GB/s = 6797 + 5015 = 11,812 against as found 6698 + 5003 = 11,701.
-    expect(scoreLine(base)).toBe('11,812 points at +45 / +60: +0.9 % over your current tune (11,701), +18.1 % over a reference 5090 (10,000)');
+    expect(scoreLine(base)).toBe('11,812 points at +45 / +60: +0.9 % over your current tune (11,701), +18.1 % over an estimated reference 5090 (10,000)');
     expect(text).toContain('11,812 points at +45 / +60');
     expect(text).toContain('Type into GPU Tweak / Afterburner: core +45, memory +120');
     expect(text).toContain('Type these into your vendor tool; Strata Tune left the card as it found it.');
@@ -507,8 +507,8 @@ describe('export text (mirrored from TuneSupervisor.ExportText, ScoreLine and Ho
   });
 
   it('the score line without an official run is the as-found score alone, and names a failed official run; a stepped-down official run says so', () => {
-    expect(scoreLine({ ...base, official: null })).toBe('11,701 points as found: +17.0 % over a reference 5090 (10,000)');
-    expect(scoreLine({ ...base, official: { ...base.official!, verdict: 'unstable', score: null, note: 'silent error' } })).toBe('11,701 points as found: +17.0 % over a reference 5090 (10,000); the official run of the certified pair failed (silent error)');
+    expect(scoreLine({ ...base, official: null })).toBe('11,701 points as found: +17.0 % over an estimated reference 5090 (10,000)');
+    expect(scoreLine({ ...base, official: { ...base.official!, verdict: 'unstable', score: null, note: 'silent error' } })).toBe('11,701 points as found: +17.0 % over an estimated reference 5090 (10,000); the official run of the certified pair failed (silent error)');
     expect(scoreLine({ ...base, official: { ...base.official!, steppedDown: true } })).toContain("; the official run passed one fine step below the ladders' rungs");
     expect(scoreLine({ ...base, asFound: null })).toBeNull();
     expect(exportText({ ...base, asFound: null, official: null }, '2026-09-16')).not.toContain('points');

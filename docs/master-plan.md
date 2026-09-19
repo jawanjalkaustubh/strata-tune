@@ -694,7 +694,9 @@ bench scores without making the PC completely hang — which usually happens wit
 the user force-restarts").** That is the product in one sentence and the page says it that way:
 *Headroom — finds your card's highest stable score without the hang.* Each 60 s rung yields a
 **score** (points from the sustained half's compute throughput and the memory bandwidth, on one
-fixed scale where the reference 5090 at reference clocks is 10,000, so numbers compare across
+fixed scale where the reference 5090 at reference clocks is 10,000 (an estimate: the kernel's
+cost measured on the dev box scaled to the reference clocks, never a measured reference card, and
+every surface says "estimated reference 5090" — user, 2026-09-19), so numbers compare across
 cards and across people), and the ladder is shown as a score climb: "+0 → 10,420 · +15 → 10,480 ·
 +30 → 10,530 · +45 → silent error, stopped". The certified pair then gets the **2-minute scored
 run** that replaces the 5-minute soak as the official number — the same shape, hash-checked

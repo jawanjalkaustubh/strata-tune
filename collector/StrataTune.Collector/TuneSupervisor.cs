@@ -460,8 +460,8 @@ internal sealed class TuneSupervisor
             return null;
         var c = r.Certified;
         if (r.Official?.Score is { } official)
-            return $"{official.Points:N0} points at +{c.CoreMhz} / +{c.MemMhz}: {TuneScoring.PercentOver(official.Points, found.Points):+0.0;-0.0} % over your current tune ({found.Points:N0}), {TuneScoring.PercentOver(official.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % over a reference 5090 ({TuneScoring.ReferencePoints:N0}){(r.Official.SteppedDown ? "; the official run passed one fine step below the ladders' rungs" : "")}";
-        return $"{found.Points:N0} points as found: {TuneScoring.PercentOver(found.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % over a reference 5090 ({TuneScoring.ReferencePoints:N0}){(r.Official is not null ? $"; the official run of the certified pair failed ({r.Official.Note})" : "")}";
+            return $"{official.Points:N0} points at +{c.CoreMhz} / +{c.MemMhz}: {TuneScoring.PercentOver(official.Points, found.Points):+0.0;-0.0} % over your current tune ({found.Points:N0}), {TuneScoring.PercentOver(official.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % over an estimated reference 5090 ({TuneScoring.ReferencePoints:N0}){(r.Official.SteppedDown ? "; the official run passed one fine step below the ladders' rungs" : "")}";
+        return $"{found.Points:N0} points as found: {TuneScoring.PercentOver(found.Points, TuneScoring.ReferencePoints):+0.0;-0.0} % over an estimated reference 5090 ({TuneScoring.ReferencePoints:N0}){(r.Official is not null ? $"; the official run of the certified pair failed ({r.Official.Note})" : "")}";
     }
 
     /// <summary>Plan section 16, rule 4: what the card holds now against as found, and "re-apply

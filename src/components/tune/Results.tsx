@@ -191,7 +191,7 @@ export const Results: React.FC<Props> = ({ status, export: exp, gates, busy, dev
   );
 };
 
-/** "11,812 points at +45 / +60: +0.9 % over your current tune (11,701), +18.1 % over a reference 5090 (10,000)", with the device class beside it (plan 17d rule 3). */
+/** "11,812 points at +45 / +60: +0.9 % over your current tune (11,701), +18.1 % over an estimated reference 5090 (10,000)", with the device class beside it (plan 17d rule 3). */
 const ScoreLine: React.FC<{ r: TuneResult; deviceClass: DeviceClass | null }> = ({ r, deviceClass }) => {
   const official = r.official?.score;
   const found = r.asFound?.score;
@@ -210,8 +210,8 @@ const ScoreLine: React.FC<{ r: TuneResult; deviceClass: DeviceClass | null }> = 
         </span>
       )}
       {headline && (
-        <span className="figure text-[12px] text-studio-muted" title={`A reference RTX 5090 at reference clocks scores ${points(REFERENCE_POINTS)}`}>
-          {signedPercent(percentOver((official ?? found)!.points, REFERENCE_POINTS))} over a reference 5090
+        <span className="figure text-[12px] text-studio-muted" title={`${points(REFERENCE_POINTS)} is where a reference RTX 5090 at reference clocks (2407 MHz boost, 28 Gbps) would land, estimated by scaling this kernel's measured cost; no reference card was measured`}>
+          {signedPercent(percentOver((official ?? found)!.points, REFERENCE_POINTS))} over an estimated reference 5090
         </span>
       )}
       {deviceClass && <Pill tone="idle" className="normal-case tracking-normal" title="Scores are on one absolute scale; the class says what kind of machine this is">{DEVICE_CLASS_LABEL[deviceClass]}</Pill>}
