@@ -59,6 +59,9 @@ internal sealed class LhmSampler : IDisposable
             ("motherboard", pawnIoUsable, () => _computer.IsMotherboardEnabled = true),
             ("gpu", true, () => _computer.IsGpuEnabled = true),
             ("memory", true, () => _computer.IsMemoryEnabled = true),
+            // A laptop's battery (charge, wear, the watts flowing in or out) is the Monitor's
+            // battery panel (plan 17d, laptop rows); a desktop has no node and the group is a no-op.
+            ("battery", true, () => _computer.IsBatteryEnabled = true),
             ("storage", true, () => _computer.IsStorageEnabled = true),
         ];
         foreach (var (name, wanted, enable) in stages)

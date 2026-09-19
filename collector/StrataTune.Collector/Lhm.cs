@@ -61,6 +61,7 @@ internal static class Lhm
             IsMotherboardEnabled = pawnIoUsable,
             IsGpuEnabled = true,
             IsMemoryEnabled = true,
+            IsBatteryEnabled = true,
             IsStorageEnabled = true,
         };
         computer.Open();

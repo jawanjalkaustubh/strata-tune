@@ -17,7 +17,30 @@ public sealed record StaticSnapshot(
     PowerPlanInfo PowerPlan,
     IReadOnlyList<PhysicalDisk> Disks,
     IReadOnlyList<Volume> Volumes,
-    IReadOnlyList<OllamaModel>? Ollama);
+    IReadOnlyList<OllamaModel>? Ollama,
+    IReadOnlyList<DisplayAdapter> Adapters,
+    BatteryInfo Battery);
+
+/// <summary>Every display adapter Windows knows, NVIDIA or not (<see cref="StaticSnapshot.Gpus"/>
+/// is NVML's list, so an AMD or Intel card is only ever seen here). <see cref="DedicatedMiB"/>
+/// is the driver's own figure from the display class registry key, because
+/// Win32_VideoController.AdapterRAM is a 32-bit field that reads 4 GB on any bigger card.
+/// <see cref="Integrated"/> is a heuristic (under 1 GiB of dedicated memory, or the name a
+/// processor's own graphics carry), the difference between "no discrete GPU" and a discrete
+/// card the app has no driver API for. Seen on the first laptop (an ASUS GA402RJ): the RX 6700S
+/// with 8176 MiB beside the 6900HS's Radeon Graphics with 512.</summary>
+public sealed record DisplayAdapter(
+    string Name,
+    string Vendor,
+    long DedicatedMiB,
+    string DriverVersion,
+    string? DriverDate,
+    bool Integrated);
+
+/// <summary>GetSystemPowerStatus at capture time: whether the machine runs from the wall or
+/// the battery, which is what an efficiency power mode on a laptop means (plan 17c). Percent
+/// is null when Windows does not know it.</summary>
+public sealed record BatteryInfo(bool Present, bool OnAc, int? Percent);
 
 public sealed record OsInfo(string Caption, string Build);
 
