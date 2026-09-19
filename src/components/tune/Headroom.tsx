@@ -23,6 +23,8 @@ import { VendorForm } from './VendorForm';
 import { takeEnableRetry } from './enableRetry';
 import { openSettings } from '../navigate';
 import { HEADROOM_NEEDS_NVIDIA, HEADROOM_OFF, HEADROOM_TAGLINE, WRITES_SENTENCE } from './text';
+import { cachedSnapshot } from '../monitor/cache';
+import { discreteAdapter } from '../../analysis/adapters';
 
 const Notice: React.FC<{ tone?: 'muted' | 'bad' | 'ok'; children: React.ReactNode }> = ({ tone = 'muted', children }) => (
   <div className={`rounded-md border px-3 py-2 text-mini whitespace-normal break-words ${tone === 'bad' ? 'border-rose-500/40 bg-rose-500/10 text-rose-200' : tone === 'ok' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-studio-border bg-studio-panel/50 text-studio-muted'}`}>{children}</div>
@@ -90,6 +92,32 @@ export const Headroom: React.FC = () => {
     api?.version().then(setVersion).catch(() => undefined);
   }, []);
 
+  // Whether this PC has the card the hunt needs, known before the switch: the snapshot the
+  // Monitor caches per connection (the same WMI walk, fetched once), read here even while
+  // Headroom is off so the off-line can say why there is no switch on an AMD or Intel machine.
+  const [needsNvidia, setNeedsNvidia] = useState<string | null>(null);
+  useEffect(() => {
+    if (!api || !connected) {
+      setNeedsNvidia(null);
+      return;
+    }
+    let alive = true;
+    cachedSnapshot()
+      .then((s) => {
+        if (!alive) return;
+        if (s.gpus.length > 0) {
+          setNeedsNvidia(null);
+          return;
+        }
+        const card = discreteAdapter(s);
+        setNeedsNvidia(card ? `this PC's ${card.name} is ${card.vendor === 'amd' ? 'an AMD' : card.vendor === 'intel' ? 'an Intel' : 'not an NVIDIA'} card, and the hunt writes clock offsets through NVIDIA's driver only in this version` : 'this PC has no discrete graphics card');
+      })
+      .catch(() => alive && setNeedsNvidia(null));
+    return () => {
+      alive = false;
+    };
+  }, [connected]);
+
   // If Settings could not reach the collector when the flag was set, this is the one retry. Never a loop on the
   // file flag alone: a disable made from Settings or from another instance sharing the collector must stand.
   const fileFlag = tune.status?.enabled;
@@ -115,6 +143,10 @@ export const Headroom: React.FC = () => {
   const applied = tune.run?.state === 'running' || tune.status?.state === 'PENDING';
   const wasApplied = useRef(false);
   const [lostWhileApplied, setLostWhileApplied] = useState(false);
+  // "Free VRAM" beside the Ollama refusal: evict the resident models (keep_alive 0, the family's Free GPU rule) and ask the collector again.
+  // Declared here, above the off-line's early return: a hook after it made the switch-on render one hook more than the
+  // render before (React #310) and blanked the whole window on the first laptop, 2026-09-19.
+  const [freeing, setFreeing] = useState(false);
   useEffect(() => {
     if (connected) {
       wasApplied.current = applied;
@@ -128,6 +160,18 @@ export const Headroom: React.FC = () => {
   }, [connected, applied, lostWhileApplied, tune.status, tune.run]);
 
   if (!enabled) {
+    // Plan 17d: nothing offered that the machine cannot do. A PC without an NVIDIA card
+    // (the first laptop's RX 6700S, 2026-09-19) gets the reason, not a switch to a hunt the
+    // collector refuses before it touches anything.
+    if (needsNvidia) {
+      return (
+        <section id="headroom" className="rounded-md border border-studio-border bg-studio-panel/50 px-3 py-2 min-w-0">
+          <p className="text-mini text-studio-muted">
+            {HEADROOM_NEEDS_NVIDIA.replace(/\.$/, '')}: {needsNvidia}. Nothing is changed on this PC.
+          </p>
+        </section>
+      );
+    }
     return (
       <section id="headroom" className="rounded-md border border-studio-border bg-studio-panel/50 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <p className="text-mini text-studio-muted">{HEADROOM_OFF}</p>
@@ -144,8 +188,6 @@ export const Headroom: React.FC = () => {
   // While a hunt runs, the climb shows that hunt alone: the last result's rungs and official run belong to the card before it.
   const asFound = running ? (tune.run?.asFound ?? null) : (tune.run?.asFound ?? result?.asFound ?? null);
   const official = running ? null : (result?.official ?? null);
-  // "Free VRAM" beside the Ollama refusal: evict the resident models (keep_alive 0, the family's Free GPU rule) and ask the collector again.
-  const [freeing, setFreeing] = useState(false);
   const freeVram = () => {
     if (!api || freeing) return;
     setFreeing(true);
@@ -160,7 +202,8 @@ export const Headroom: React.FC = () => {
   const estimate = status ? estimateMinutes('hunt', null, !!vendor) : null;
   const held = heldFor(gpu, result?.baselineHeld);
   const ceilingMem = gpu?.clockOffsets?.maxClockMemMhz ?? null;
-  const unavailable = status && !status.nvapi.available ? status.nvapi.reason ?? 'this card has no NVAPI pstate interface' : null;
+  // The snapshot's sentence about the card comes first; the collector's reason (a DLL path on a machine without an NVIDIA driver) only when there is nothing better to say.
+  const unavailable = status && !status.nvapi.available ? needsNvidia ?? status.nvapi.reason ?? 'this card has no NVAPI pstate interface' : null;
   const cap = powerCapSentence(gpu);
 
   const save = async () => {

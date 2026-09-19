@@ -322,6 +322,17 @@ describe('Tune page pieces render the dev box on top of its vendor tune', () => 
     expect(powerCapSentence(undefined)).toBeNull();
   });
 
+  it('every hook in the Headroom section comes before the off-line\'s early return (React #310 blanked the window on the first laptop when the switch went on, 2026-09-19)', () => {
+    // The tests render with react-dom/server, which cannot re-render a mounted component, so
+    // the rule is read off the source: the component's hooks all sit above `if (!enabled) {`.
+    const source = readFileSync(join(__dirname, '..', 'src', 'components', 'tune', 'Headroom.tsx'), 'utf8');
+    const component = source.slice(source.indexOf('export const Headroom: React.FC'));
+    const earlyReturn = component.indexOf('if (!enabled) {');
+    expect(earlyReturn).toBeGreaterThan(0);
+    const after = component.slice(earlyReturn);
+    expect(after).not.toMatch(/\buse(State|Effect|Memo|Ref|Callback|LayoutEffect|Reducer|Context)\(/);
+  });
+
   it("live monitor: a run's closing sentence and the last event wrap under their label, never widening the panel (workflow 13b)", () => {
     const sentence = 'the driver is not adding our offset on top of your tune: the +30 MHz core rung held 3337 MHz against 3337 MHz your tune through our route (at least 3355 was expected)';
     const failed: TuneRun = { ...HUNTING, state: 'failed', error: sentence, lastEvent: sentence };

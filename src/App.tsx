@@ -13,6 +13,7 @@ import { Monitor } from './pages/Monitor';
 import { Capture } from './pages/Capture';
 import { Advisor } from './pages/Advisor';
 import { Tune } from './pages/Tune';
+import { PageBoundary } from './components/PageBoundary';
 
 /** Tune is the home page (plan 17): the audit on top, the Headroom hunt beneath it behind the settings switch. */
 export const HOME: Page = 'tune';
@@ -82,7 +83,9 @@ export const App: React.FC = () => {
     <div className="h-full flex flex-col bg-studio-bg text-studio-text">
       <TitleBar support={support} onOpenAbout={() => setShowAbout(true)} onOpenSettings={() => setShowSettings(true)} />
       <main className="flex-1 flex flex-col min-h-0 overflow-auto">
-        <Current />
+        <PageBoundary page={page}>
+          <Current />
+        </PageBoundary>
       </main>
       <BottomBar page={page} onSelect={setPage} status={[`Collector: ${statusLabel(collector)}`, captureStatusLabel(capture)].filter(Boolean).join(' · ')} />
       <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} version={version} support={support} />
