@@ -1057,7 +1057,7 @@
    "hardware": "/battery",
    "hardwareName": "Battery",
    "hardwareType": "Battery",
-   "name": "Full Charged Capacity",
+   "name": "Fully-Charged Capacity",
    "sensorType": "Energy",
    "unit": "mWh"
   },

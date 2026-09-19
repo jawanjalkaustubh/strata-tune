@@ -13,6 +13,7 @@ import { CpuPanel, cpuKey } from '../components/monitor/CpuPanel';
 import { GpuPanel, gpuKey } from '../components/monitor/GpuPanel';
 import { BoardPanel, BOARD_KEY, boardName } from '../components/monitor/BoardPanel';
 import { SystemPower } from '../components/monitor/SystemPower';
+import { BatteryPanel } from '../components/monitor/BatteryPanel';
 import { panelName, type PanelChrome } from '../components/monitor/Panel';
 import { cpuLimits } from '../components/monitor/cpuLimits';
 import { cpuTuningSummary } from '../components/monitor/cpuTuning';
@@ -85,7 +86,9 @@ export const Monitor: React.FC = () => {
   const opened = useRef(Date.now());
   const grid = useRef<HTMLDivElement>(null);
   const wide = useMediaQuery('(min-width: 1280px)');
-  const layout = useMemo(() => parseLayout(settings.monitorLayout), [settings.monitorLayout]);
+  // The laptop default puts the battery beside the board; known from the remembered snapshot at once, so the grid does not reflow on connect.
+  const laptop = !!snapshot?.chassis.isLaptop;
+  const layout = useMemo(() => parseLayout(settings.monitorLayout, laptop), [settings.monitorLayout, laptop]);
 
   useEffect(() => {
     if (!api || !connected) {
@@ -202,14 +205,17 @@ export const Monitor: React.FC = () => {
   const gpu = tick?.gpu[0] ?? snapshot?.gpus[0];
   const names = settings.panelNames;
   const cpuTitle = snapshot && index ? panelName(names, cpuKey(index), snapshot.cpu.name) : undefined;
-  const gpuName = gpu ? panelName(names, gpuKey(gpu), gpuTitle(gpu)) : undefined;
   const boardTitle = snapshot ? panelName(names, BOARD_KEY, boardName(snapshot)) : undefined;
   const tuning = cpuTuningSummary(settings, cpuLimits(snapshot?.cpu.name).powerName ?? 'PPT');
   // Plan 17d rule 2: computed once here, never string-matched inside a panel.
   const caps = useMemo(() => capsOf(snapshot, index, tick), [snapshot, index, tick]);
+  // The header names the card whatever its vendor: NVML's title, else the adapter Windows lists, else the processor's graphics.
+  const gpuName = gpu ? panelName(names, gpuKey(gpu), gpuTitle(gpu)) : caps.dgpu?.name ?? caps.igpuAdapter?.name;
 
+  // The battery panel exists only where the tree has a battery node; the grid is packed without it elsewhere.
+  const visible = useMemo(() => layout.filter((p) => p.id !== 'battery' || caps.battery), [layout, caps.battery]);
   // A resize in progress is placed as if it had landed, so the grid reflows under the pointer.
-  const placed = placeLayout(resize ? layout.map((p) => (p.id === resize.id ? { id: p.id, span: resize.span, height: resize.height } : p)) : layout);
+  const placed = placeLayout(resize ? visible.map((p) => (p.id === resize.id ? { id: p.id, span: resize.span, height: resize.height } : p)) : visible);
   const { rows, lastRow } = rowsOf(placed);
   /** The grid cell: its placed position and spans, and the user's height, which on the last row is a minimum so that row still takes the remainder. */
   const cellStyle = (id: PanelId): React.CSSProperties => {
@@ -236,6 +242,8 @@ export const Monitor: React.FC = () => {
         return <GpuPanel index={index} tick={tick} ring={ring} panel={chrome(id)} caps={caps} />;
       case 'power':
         return <SystemPower index={index} tick={tick} ring={ring} snapshot={snapshot} panel={chrome(id)} caps={caps} />;
+      case 'battery':
+        return <BatteryPanel index={index} tick={tick} ring={ring} snapshot={snapshot} panel={chrome(id)} />;
       case 'board':
         return <BoardPanel index={index} tick={tick} ring={ring} snapshot={snapshot} panel={chrome(id)} />;
     }
@@ -261,7 +269,7 @@ export const Monitor: React.FC = () => {
         <button className="btn-icon" data-menu-anchor onClick={() => setMenu((m) => !m)} title={caps.laptop ? 'Monitor settings: CPU power mode you set in the vendor app, layout' : 'Monitor settings: CPU tuning you set in BIOS, layout'} aria-label="Monitor settings" aria-expanded={menu}>
           <Settings2 size={14} />
         </button>
-        {menu && <MonitorMenu cpuName={snapshot?.cpu.name} laptop={caps.laptop} layoutIsDefault={isDefaultLayout(layout)} onClose={closeMenu} />}
+        {menu && <MonitorMenu cpuName={snapshot?.cpu.name} laptop={caps.laptop} layoutIsDefault={isDefaultLayout(layout, laptop)} onClose={closeMenu} />}
       </header>
 
       {!connected ? (
@@ -280,7 +288,7 @@ export const Monitor: React.FC = () => {
             cursor: drag ? 'grabbing' : resize ? 'nwse-resize' : undefined
           }}
         >
-          {layout.map((p) => (
+          {visible.map((p) => (
             <div key={p.id} data-panel={p.id} className="min-w-0 min-h-0" style={cellStyle(p.id)}>
               {panel(p.id)}
             </div>

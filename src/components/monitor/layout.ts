@@ -4,7 +4,8 @@
  * is the array order. Persisted as settings.monitorLayout, which settings.ts types as
  * unknown because this file owns the shape; anything that does not parse is the default.
  */
-export type PanelId = 'cpu' | 'gpu' | 'power' | 'board';
+/** 'battery' exists only on a machine whose sensor tree has a battery node (plan 17d, the laptop rows); the page leaves it out of the grid elsewhere. */
+export type PanelId = 'cpu' | 'gpu' | 'power' | 'battery' | 'board';
 export type Span = 2 | 3 | 4 | 6;
 
 export interface PanelPlace {
@@ -28,19 +29,35 @@ export interface PlacedPanel extends PanelPlace {
 export const COLUMNS = 6;
 export const SPANS: Span[] = [2, 3, 4, 6];
 export const MIN_HEIGHT = 120;
-const IDS: PanelId[] = ['cpu', 'gpu', 'power', 'board'];
+const IDS: PanelId[] = ['cpu', 'gpu', 'power', 'battery', 'board'];
 
+/**
+ * The desktop default: CPU and power stacked beside the two-row GPU panel, the board across
+ * the bottom. The battery panel is in the order (a saved layout may move it) but the page
+ * leaves it out of the grid on a machine without a battery node, so the desktop grid is the
+ * four-panel one it always was.
+ */
 export const DEFAULT_LAYOUT: Layout = [
   { id: 'cpu', span: 3 },
   { id: 'gpu', span: 3, rows: 2 },
   { id: 'power', span: 3 },
+  { id: 'battery', span: 3 },
   { id: 'board', span: 6 }
 ];
+
+/**
+ * The laptop default (plan 17d): the battery beside the board on the third row, because a
+ * laptop's board panel is nearly always the one-sentence kind (no super-IO chip the library
+ * reads) and a fifth 3-wide panel over a 6-wide board would leave a panel-sized hole.
+ */
+export const LAPTOP_LAYOUT: Layout = DEFAULT_LAYOUT.map((p) => (p.id === 'board' ? { ...p, span: 3 as Span } : p));
+
+export const defaultLayout = (laptop: boolean): Layout => (laptop ? LAPTOP_LAYOUT : DEFAULT_LAYOUT);
 
 const isSpan = (x: unknown): x is Span => typeof x === 'number' && (SPANS as number[]).includes(x);
 
 /** A saved layout is trusted only panel by panel; a panel missing from it takes its default place at the end. */
-export function parseLayout(raw: unknown): Layout {
+export function parseLayout(raw: unknown, laptop = false): Layout {
   const out: Layout = [];
   if (Array.isArray(raw)) {
     for (const p of raw) {
@@ -51,12 +68,19 @@ export function parseLayout(raw: unknown): Layout {
       out.push({ id: id as PanelId, span, ...(rows === 2 ? { rows: 2 } : {}), ...(h !== undefined ? { height: h } : {}) });
     }
   }
-  for (const d of DEFAULT_LAYOUT) if (!out.some((x) => x.id === d.id)) out.push({ ...d });
+  const defaults = defaultLayout(laptop);
+  // A layout saved before the battery panel existed (2026-09-19) gets it in its default slot, before the board, not at the end.
+  for (const d of defaults) {
+    if (out.some((x) => x.id === d.id)) continue;
+    const before = out.findIndex((x) => defaults.findIndex((y) => y.id === x.id) > defaults.findIndex((y) => y.id === d.id));
+    out.splice(before < 0 ? out.length : before, 0, { ...d });
+  }
   return out;
 }
 
-export function isDefaultLayout(layout: Layout): boolean {
-  return layout.length === DEFAULT_LAYOUT.length && layout.every((p, i) => p.id === DEFAULT_LAYOUT[i].id && p.span === DEFAULT_LAYOUT[i].span && (p.rows ?? 1) === (DEFAULT_LAYOUT[i].rows ?? 1) && p.height === undefined);
+export function isDefaultLayout(layout: Layout, laptop = false): boolean {
+  const defaults = defaultLayout(laptop);
+  return layout.length === defaults.length && layout.every((p, i) => p.id === defaults[i].id && p.span === defaults[i].span && (p.rows ?? 1) === (defaults[i].rows ?? 1) && p.height === undefined);
 }
 
 /** Dense packing, the way CSS grid's `auto-flow: row dense` walks: each panel takes the first cell, row-major, where it fits. */

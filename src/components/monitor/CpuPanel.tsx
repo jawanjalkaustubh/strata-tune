@@ -10,6 +10,9 @@ import { cpuLayout, groupCores } from './cpuLayout';
 import { cpuLimits } from './cpuLimits';
 import { vendorOf } from './vendors';
 
+/** The main window's open handler routes https out of the app (support.ts openExternal, not imported here so the panel renders in node tests without a window). */
+const PAWNIO_URL = 'https://pawnio.eu';
+
 interface Props {
   index: SensorIndex;
   tick: Tick;
@@ -93,6 +96,30 @@ export const CpuPanel: React.FC<Props> = ({ index, tick, ring, snapshot, panel, 
       </button>
     </>
   ) : undefined;
+
+  // No CPU node in the tree: the library reads the CPU through PawnIO, so this is the driver
+  // missing (the first laptop, 2026-09-19: an empty panel with no sentence), or an ARM64 part
+  // the library does not read. One sentence and the way to fix it, never blank bars.
+  if (!cpuKey(index)) {
+    const arm64 = !!snapshot && /Snapdragon/i.test(snapshot.cpu.name);
+    return (
+      <Panel kind="CPU" title={snapshot?.cpu.name ?? 'CPU'} vendor={vendor} {...panel}>
+        <p className="text-mini text-studio-muted">
+          {arm64 ? (
+            'No CPU sensors: the sensor library does not read this ARM64 processor yet.'
+          ) : (
+            <>
+              No CPU sensors: the PawnIO driver is not installed, so the temperature, clocks and package power cannot be read. Install it from{' '}
+              <button className="underline decoration-dotted underline-offset-2 hover:text-studio-text" onClick={() => window.open(PAWNIO_URL, '_blank', 'noopener')} title={PAWNIO_URL}>
+                pawnio.eu
+              </button>{' '}
+              and restart Strata Tune.
+            </>
+          )}
+        </p>
+      </Panel>
+    );
+  }
 
   return (
     <Panel kind="CPU" title={snapshot?.cpu.name ?? 'CPU'} nameKey={cpuKey(index)} vendor={vendor} {...panel}>
