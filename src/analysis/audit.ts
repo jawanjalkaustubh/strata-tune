@@ -20,6 +20,7 @@ import { fillRateEstimate } from './gpuUnits';
 import { lookupGpu } from './hardware-tables';
 import { cleanPartNumber, ratedSpeedFor } from './kits';
 import { hasAny, hasBit, SW_POWER_CAP, THERMAL_OR_BRAKE } from './nvmlBits';
+import { discreteAdapter, gpuSummary, integratedAdapter } from './adapters';
 
 export type AuditState = 'ok' | 'warn' | 'bad' | 'info' | 'unknown';
 export type FixWhere = 'bios' | 'windows' | 'game' | 'hardware' | 'none' | 'app';
@@ -60,6 +61,12 @@ export interface AuditInputs {
   nowIso: string;
   /** GET /timers, traced when the timer is held raised (plan section 8's timer-resolution row); absent or null answers 'unknown'. */
   timers?: Timers | null;
+  /**
+   * Whether the sensor tree has a CPU node (the library reads the CPU through PawnIO). False
+   * makes the four CPU rules say so in one sentence instead of "the sensor was not readable
+   * during the load run" four times (the first laptop, 2026-09-19); absent means not checked.
+   */
+  cpuSensors?: boolean;
 }
 
 type Base = Pick<AuditFinding, 'id' | 'title' | 'costText' | 'fixWhere'>;
@@ -154,6 +161,10 @@ function cpuSteady(run: LoadRun | null): CpuSample[] | null {
 }
 
 const CPU_RUN_MISSING = unknown('Measured with a 20-second all-core CPU load.', 'Run the audit; the CPU load test is part of it.');
+/** No CPU node in the tree: the library reads the CPU through PawnIO, so the driver is what is missing, and the fix is the same for every CPU rule. */
+const CPU_SENSORS_MISSING = unknown('The CPU sensors need the PawnIO driver, which is not installed on this PC.', 'Install PawnIO from pawnio.eu (About shows its status), restart Strata Tune and run the audit again.');
+/** The CPU rules' shared gate: the run, then the sensors it needs. */
+const cpuRunOrWhy = (run: LoadRun | null, cpuSensors: boolean | undefined) => (cpuSensors === false ? CPU_SENSORS_MISSING : cpuSteady(run) ? null : CPU_RUN_MISSING);
 /** Windows keeps WSL 2 and Hyper-V guest memory in these; they are not background programs to close. */
 const isVmHost = (name: string) => /^vmmem(WSL)?(\.exe)?$/i.test(name);
 
@@ -168,6 +179,16 @@ function checkExpo(s: StaticSnapshot): AuditFinding {
     const kit = ratedSpeedFor(m.partNumber);
     if (!kit) {
       const part = cleanPartNumber(m.partNumber) || 'an unlabelled module';
+      // Laptop memory (soldered or SO-DIMM) is a JEDEC part the platform sets the speed of;
+      // an unknown module there is not a profile to enable, so it is a plain sentence, not a
+      // question (the first laptop's Samsung DDR5-4800 read "not in the table yet").
+      if (s.chassis.isLaptop) {
+        const configured = Math.min(...modules.map(x => x.configuredMts).filter(x => x > 0));
+        return finding(base, info(
+          `Laptop memory runs at the speed the platform sets${Number.isFinite(configured) ? ` (${configured} MT/s here)` : ''}; there is no EXPO/XMP profile to enable. ${part} is not in the module table, so its rating is not checked.`,
+          'Nothing to change.'
+        ));
+      }
       return finding(base, unknown(`Could not determine the rated speed for ${part}; this kit is not in the table yet.`));
     }
     rated.push(kit.ratedMts);
@@ -251,10 +272,28 @@ function checkChannels(s: StaticSnapshot): AuditFinding {
   return finding(base, ok(`Two modules in ${slots}: one per channel.${pairNote}`));
 }
 
-function checkPcie(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
+/**
+ * The six GPU rules read NVML and NVAPI, so on a machine without an NVIDIA card they have no
+ * inputs at all. Plan 17d: they are omitted, never six "unknown" cards reading "No NVIDIA GPU
+ * was found" (the first laptop, an RX 6700S, 2026-09-19), and this one card says what the
+ * machine has and what is not checked on it, in one sentence each.
+ */
+function checkGpuCoverage(s: StaticSnapshot): AuditFinding | null {
+  if (s.gpus.length > 0) return null;
+  const base: Base = { id: 'gpu-coverage', title: 'GPU checks', costText: 'Nothing at stake: what this version can and cannot check on this card.', fixWhere: 'none' };
+  const card = discreteAdapter(s);
+  const igpu = integratedAdapter(s);
+  const has = card ? `This PC's card is ${gpuSummary(s)}${igpu ? `, with ${igpu.name} beside it for the desktop` : ''}.` : igpu ? `This PC has no discrete graphics card: ${igpu.name} is the processor's own.` : 'Windows lists no graphics adapter.';
+  const what = card
+    ? `The PCIe link, Resizable BAR, thermal headroom, power limit, overclock and unit-count checks read NVIDIA's driver and are not run on ${card.vendor === 'amd' ? 'an AMD' : card.vendor === 'intel' ? 'an Intel' : 'this'} card in this version; the Monitor page shows what its driver reports.`
+    : 'The GPU checks (PCIe link, Resizable BAR, thermal headroom, power limit, overclock, unit counts) need a discrete card and are not run.';
+  return finding(base, info(`${has} ${what}`, card ? 'Nothing to change; AMD and Intel checks are planned.' : 'Nothing to change.'));
+}
+
+function checkPcie(s: StaticSnapshot, run: LoadRun | null): AuditFinding | null {
   const base: Base = { id: 'pcie-link', title: 'GPU PCIe link', costText: '2–8 %.', fixWhere: 'hardware' };
   const gpu = s.gpus[0];
-  if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
+  if (!gpu) return null;
   const samples = doneSamples(run);
   if (!samples) return finding(base, unknown('Measured under a short GPU load, because the link slows down while the card idles.', 'Run the audit; the load test is part of it.'));
   const gen = Math.max(...samples.map(x => x.pcieGen));
@@ -279,10 +318,10 @@ function checkPcie(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
   });
 }
 
-function checkRebar(s: StaticSnapshot): AuditFinding {
+function checkRebar(s: StaticSnapshot): AuditFinding | null {
   const base: Base = { id: 'rebar', title: 'Resizable BAR', costText: '0–10 %, depending on the game.', fixWhere: 'bios' };
   const gpu = s.gpus[0];
-  if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
+  if (!gpu) return null;
   const bar = gpu.bar1TotalMiB;
   const vram = gpu.vram.totalMiB;
   if (!(bar > 0) || !(vram > 0)) return finding(base, unknown('The driver did not report the BAR size.'));
@@ -295,6 +334,19 @@ function checkRebar(s: StaticSnapshot): AuditFinding {
     return finding(base, { state: 'bad', severity: 2, costEstimate: 0.1, detail: `Off: the CPU reaches video memory through a ${bar} MiB window instead of all ${vramGb} GB.`, fix });
   }
   return finding(base, { state: 'warn', severity: 1, costEstimate: 0.05, detail: `Partly on: ${bar} MiB of ${vram} MiB is addressable.`, fix: `${fix} A BIOS update can help when the setting is already on.` });
+}
+
+/** The app a laptop maker puts its performance modes in, by the board's manufacturer string; null for a maker without one the rule knows. */
+export function laptopVendorApp(manufacturer: string): string | null {
+  const m = manufacturer.toLowerCase();
+  if (/asus/.test(m)) return 'Armoury Crate';
+  if (/lenovo/.test(m)) return 'Lenovo Vantage';
+  if (/\bhp\b|hewlett/.test(m)) return 'Omen Gaming Hub';
+  if (/\bmsi\b|micro-star/.test(m)) return 'MSI Center';
+  if (/acer/.test(m)) return 'Acer NitroSense or PredatorSense';
+  if (/dell|alienware/.test(m)) return 'Alienware Command Center';
+  if (/razer/.test(m)) return 'Razer Synapse';
+  return null;
 }
 
 function checkPowerPlan(s: StaticSnapshot): AuditFinding {
@@ -311,12 +363,36 @@ function checkPowerPlan(s: StaticSnapshot): AuditFinding {
     if (overlay === OVERLAY_BEST_PERFORMANCE || overlay === OVERLAY_BETTER_PERFORMANCE) {
       return finding(base, ok(`Power mode ${overlay === OVERLAY_BEST_PERFORMANCE ? 'Best performance' : 'Better performance'}: the CPU and GPU are allowed full speed.`));
     }
+    // On battery an efficiency mode is what Windows does by design; the finding is that the
+    // machine is unplugged, not a setting to change (plan 17c: the power page is battery-aware;
+    // the first laptop read "holds the CPU at low clocks even when plugged in" while unplugged).
+    if (s.battery?.present && !s.battery.onAc) {
+      const mode = overlay === OVERLAY_BEST_EFFICIENCY ? 'Best power efficiency' : guid === POWER_SAVER ? 'Power saver' : name;
+      return finding(base, {
+        state: 'info', severity: 1, costEstimate: 0.1,
+        costText: 'Large while unplugged: the CPU and GPU run slower on battery.',
+        detail: `On battery (${s.battery.percent !== null ? `${s.battery.percent} %, ` : ''}${mode}): Windows holds the CPU and GPU back to save charge, which is what it should do unplugged.`,
+        fix: 'Plug in before gaming; then set Power mode to Best performance in Settings > System > Power & battery.'
+      });
+    }
     if (overlay === OVERLAY_BEST_EFFICIENCY) {
       return finding(base, { state: 'bad', severity: 3, costEstimate: 0.25, detail: 'Power mode Best power efficiency holds the CPU at low clocks even when plugged in.', fix });
     }
     if (performance) return finding(base, ok(`${name}: the CPU and GPU are allowed full speed.`));
     if (guid === POWER_SAVER) {
       return finding(base, { state: 'bad', severity: 3, costEstimate: 0.25, detail: 'Power saver on a laptop holds the CPU at low clocks even when plugged in.', fix });
+    }
+    // The laptop maker's own plan ("ASUS Recommended" on the first laptop) with the slider at
+    // Balanced: the performance modes live in the vendor app, so the advice names it rather
+    // than calling the maker's default a fault.
+    const vendorApp = laptopVendorApp(s.motherboard.manufacturer);
+    if (guid !== BALANCED && vendorApp) {
+      return finding(base, {
+        state: 'info', severity: 1, costEstimate: 0.1,
+        costText: 'Whatever the quiet mode holds back: the vendor app decides.',
+        detail: `${name} is the laptop maker's plan with Windows' Power mode at Balanced; the performance modes on this laptop live in ${vendorApp}.`,
+        fix: `Before gaming pick the performance mode in ${vendorApp} and set Power mode to Best performance in Settings > System > Power & battery.`
+      });
     }
     return finding(base, { state: 'warn', severity: 2, costEstimate: 0.2, detail: `${name} on a laptop can hold back the CPU and GPU while gaming.`, fix });
   }
@@ -366,10 +442,10 @@ function checkHddPresent(s: StaticSnapshot): AuditFinding | null {
   });
 }
 
-function checkThermal(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
+function checkThermal(s: StaticSnapshot, run: LoadRun | null): AuditFinding | null {
   const base: Base = { id: 'thermal-headroom', title: 'GPU thermal headroom', costText: 'Throttling: the card slows itself down when it runs hot.', fixWhere: 'hardware' };
   const gpu = s.gpus[0];
-  if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
+  if (!gpu) return null;
   const samples = doneSamples(run);
   if (!samples || !run) {
     return finding(base, unknown('Measured with a 20-second heavy GPU load.', 'Run the audit; the load test is part of it.'));
@@ -462,10 +538,10 @@ function checkHogs(hogs: HogsResult | null, s: StaticSnapshot): AuditFinding {
   });
 }
 
-function checkPowerLimit(s: StaticSnapshot): AuditFinding {
+function checkPowerLimit(s: StaticSnapshot): AuditFinding | null {
   const base: Base = { id: 'gpu-power-limit', title: 'GPU power limit', costText: 'A few percent at most; heat and noise go up with it.', fixWhere: 'app' };
   const gpu = s.gpus[0];
-  if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
+  if (!gpu) return null;
   if (!(gpu.powerLimitMw > 0) || !(gpu.powerMaxLimitMw > 0)) return finding(base, unknown('The driver did not report the power limits.'));
   if (gpu.powerLimitMw >= gpu.powerMaxLimitMw) {
     // The slider being at its stop says nothing about overclocking headroom: the user may
@@ -493,10 +569,10 @@ function checkPowerLimit(s: StaticSnapshot): AuditFinding {
  */
 const BOOST_STEP_MHZ = 15;
 
-function checkGpuOffsets(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
+function checkGpuOffsets(s: StaticSnapshot, run: LoadRun | null): AuditFinding | null {
   const base: Base = { id: 'gpu-oc-offsets', title: 'GPU overclock', costText: 'Whatever the overclock gives: a few percent, at the cost of stability if pushed.', fixWhere: 'app' };
   const gpu = s.gpus[0];
-  if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
+  if (!gpu) return null;
   const offsets = gpu.clockOffsets;
   if (!offsets) return finding(base, unknown('This driver does not report clock offsets; NVML 12.5 or newer does.'));
   if (offsets.smMhz === null && offsets.memMhz === null) return finding(base, unknown('The card did not report its clock offsets.'));
@@ -546,10 +622,11 @@ function restTctl(run: LoadRun | null): number | null {
   return t !== null && t !== undefined && Number.isFinite(t) ? Math.round(t) : null;
 }
 
-function checkCpuThermal(s: StaticSnapshot, run: LoadRun | null, co: CurveOptimizer): AuditFinding {
+function checkCpuThermal(s: StaticSnapshot, run: LoadRun | null, co: CurveOptimizer, cpuSensors?: boolean): AuditFinding {
   const base: Base = { id: 'cpu-thermal', title: 'CPU thermal headroom', costText: 'Throttling: the CPU drops its clocks when it reaches its temperature limit.', fixWhere: 'hardware' };
-  const steady = cpuSteady(run);
-  if (!steady) return finding(base, CPU_RUN_MISSING);
+  const why = cpuRunOrWhy(run, cpuSensors);
+  if (why) return finding(base, why);
+  const steady = cpuSteady(run)!;
   const temps = finite(steady.map(x => x.tctlC));
   if (temps.length === 0) return finding(base, unknown('The CPU temperature sensor was not readable during the load run.'));
   const sustained = Math.round(mean(temps));
@@ -607,10 +684,11 @@ function checkCpuThermal(s: StaticSnapshot, run: LoadRun | null, co: CurveOptimi
   return finding(base, ok(`Held ${sustained} °C under the all-core load (peak ${peak} °C), ${tjmax - sustained} °C below the ${tjmax} °C limit.`));
 }
 
-function checkCpuAllCoreClock(s: StaticSnapshot, run: LoadRun | null): AuditFinding {
+function checkCpuAllCoreClock(s: StaticSnapshot, run: LoadRun | null, cpuSensors?: boolean): AuditFinding {
   const base: Base = { id: 'cpu-allcore-clock', title: 'All-core clock under load', costText: 'What the CPU really runs at when every core is busy.', fixWhere: 'none' };
-  const steady = cpuSteady(run);
-  if (!steady) return finding(base, CPU_RUN_MISSING);
+  const why = cpuRunOrWhy(run, cpuSensors);
+  if (why) return finding(base, why);
+  const steady = cpuSteady(run)!;
   const clocks = finite(steady.map(x => x.avgEffectiveMhz));
   if (clocks.length === 0) return finding(base, unknown('The effective clock sensor was not readable during the load run.'));
   const eff = Math.round(mean(clocks));
@@ -626,10 +704,11 @@ function checkCpuAllCoreClock(s: StaticSnapshot, run: LoadRun | null): AuditFind
   return finding(base, info(`All-core ${ghz(eff)} effective under load (spec base ${ghz(spec.baseMhz)}, single-core boost ${ghz(spec.boostMhz)}).`));
 }
 
-function checkCpuPackagePower(s: StaticSnapshot, run: LoadRun | null, cpuPptW: number | null): AuditFinding {
+function checkCpuPackagePower(s: StaticSnapshot, run: LoadRun | null, cpuPptW: number | null, cpuSensors?: boolean): AuditFinding {
   const base: Base = { id: 'cpu-package-power', title: 'CPU package power', costText: 'At the limit the CPU cannot boost further; games rarely reach it.', fixWhere: 'app' };
-  const steady = cpuSteady(run);
-  if (!steady) return finding(base, CPU_RUN_MISSING);
+  const why = cpuRunOrWhy(run, cpuSensors);
+  if (why) return finding(base, why);
+  const steady = cpuSteady(run)!;
   const power = finite(steady.map(x => x.packageW));
   if (power.length === 0) return finding(base, unknown('The package power sensor was not readable during the load run.'));
   const measured = Math.round(mean(power));
@@ -681,8 +760,9 @@ function checkCpuSmt(s: StaticSnapshot): AuditFinding {
 }
 
 /** The first sample of the CPU run is taken before the worker starts (LoadRunner), so it is the idle reference. */
-function checkCpuIdleClock(run: LoadRun | null): AuditFinding {
+function checkCpuIdleClock(run: LoadRun | null, cpuSensors?: boolean): AuditFinding {
   const base: Base = { id: 'cpu-idle-clock', title: 'Idle clock', costText: 'Nothing at stake: how the CPU rests between frames.', fixWhere: 'none' };
+  if (cpuSensors === false) return finding(base, CPU_SENSORS_MISSING);
   const idle = run && run.kind === 'cpu' && run.state === 'done' ? run.cpuSamples[0] : undefined;
   if (!idle) return finding(base, CPU_RUN_MISSING);
   if (idle.avgEffectiveMhz === null || idle.maxCoreMhz === null) return finding(base, unknown('The clock sensors were not readable before the load run.'));
@@ -711,10 +791,10 @@ export function needsFillRateCrossCheck(s: StaticSnapshot): boolean {
   return !!gpu && lookupGpu(gpu.name, gpu.vram.totalMiB) !== null && (gpu.units?.rops ?? null) === null;
 }
 
-function checkGpuUnits(s: StaticSnapshot, fillRate: LoadRun | null | undefined): AuditFinding {
+function checkGpuUnits(s: StaticSnapshot, fillRate: LoadRun | null | undefined): AuditFinding | null {
   const base: Base = { id: 'gpu-units', title: 'GPU unit counts (missing ROPs)', costText: 'About 4 %: a card with a raster unit disabled renders that much slower in every game.', fixWhere: 'hardware' };
   const gpu = s.gpus[0];
-  if (!gpu) return finding(base, unknown('No NVIDIA GPU was found.'));
+  if (!gpu) return null;
   const spec = lookupGpu(gpu.name, gpu.vram.totalMiB);
   if (!spec) return finding(base, unknown(`${gpu.name} is not in the reference table (src/data/gpus.json), so there is nothing to compare its unit counts with.`));
   const partner = boardPartnerOf(gpu.pciSubsystem?.vendorId) ?? 'the card\'s vendor';
@@ -844,6 +924,7 @@ export function runAudit(inputs: AuditInputs): AuditFinding[] {
   const findings = [
     checkExpo(s),
     checkChannels(s),
+    checkGpuCoverage(s),
     checkPcie(s, inputs.pcieUnderLoad),
     checkRebar(s),
     checkPowerPlan(s),
@@ -856,11 +937,11 @@ export function runAudit(inputs: AuditInputs): AuditFinding[] {
     checkPowerLimit(s),
     checkGpuOffsets(s, inputs.thermalRamp),
     checkGpuUnits(s, inputs.fillRate),
-    checkCpuThermal(s, inputs.cpuLoad, inputs.curveOptimizer),
-    checkCpuAllCoreClock(s, inputs.cpuLoad),
-    checkCpuPackagePower(s, inputs.cpuLoad, inputs.cpuPptW),
+    checkCpuThermal(s, inputs.cpuLoad, inputs.curveOptimizer, inputs.cpuSensors),
+    checkCpuAllCoreClock(s, inputs.cpuLoad, inputs.cpuSensors),
+    checkCpuPackagePower(s, inputs.cpuLoad, inputs.cpuPptW, inputs.cpuSensors),
     checkCpuSmt(s),
-    checkCpuIdleClock(inputs.cpuLoad),
+    checkCpuIdleClock(inputs.cpuLoad, inputs.cpuSensors),
     checkAiModel(s),
     checkTimerResolution(inputs.timers ?? null, s)
   ];

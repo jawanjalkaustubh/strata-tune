@@ -259,12 +259,24 @@ describe('PCIe link under load', () => {
     expect(audit(devbox(), { pcieUnderLoad: run })['pcie-link'].state).toBe('ok');
   });
 
-  it('is unknown without a finished run or without a GPU', () => {
+  it('is unknown without a finished run; without an NVIDIA card the six GPU rules are omitted and one card says what is not checked (plan 17d)', () => {
     const running = { ...x8Link, state: 'running' as const, qpcEnd: null };
     expect(audit(devbox(), { pcieUnderLoad: running })['pcie-link'].state).toBe('unknown');
     const s = devbox();
     s.gpus = [];
-    expect(audit(s, { pcieUnderLoad: x8Link })['pcie-link'].state).toBe('unknown');
+    s.adapters = [
+      { name: 'AMD Radeon RX 6700S', vendor: 'amd', dedicatedMiB: 8176, driverVersion: '31.0.12024.2005', driverDate: '2022-09-06', integrated: false },
+      { name: 'AMD Radeon(TM) Graphics', vendor: 'amd', dedicatedMiB: 512, driverVersion: '31.0.12024.2005', driverDate: '2022-09-06', integrated: true }
+    ];
+    const f = audit(s, { pcieUnderLoad: x8Link });
+    for (const id of ['pcie-link', 'rebar', 'thermal-headroom', 'gpu-power-limit', 'gpu-oc-offsets', 'gpu-units']) expect(f[id]).toBeUndefined();
+    expect(f['gpu-coverage'].state).toBe('info');
+    expect(f['gpu-coverage'].detail).toContain("This PC's card is AMD Radeon RX 6700S · 8 GB, with AMD Radeon(TM) Graphics beside it for the desktop.");
+    expect(f['gpu-coverage'].detail).toContain('not run on an AMD card in this version');
+    expect(f['gpu-coverage'].detail).not.toMatch(/No NVIDIA GPU was found/);
+    // With only the processor's graphics, the same card says so in plain words.
+    s.adapters = [s.adapters[1]];
+    expect(audit(s)['gpu-coverage'].detail).toContain("This PC has no discrete graphics card: AMD Radeon(TM) Graphics is the processor's own.");
   });
 });
 
@@ -947,10 +959,10 @@ describe('missing inputs never flag', () => {
       ollama: null
     };
     const findings = runAudit(inputs(empty));
-    // Every rule but the Ollama row, which does not exist when Ollama is not running.
-    expect(findings).toHaveLength(ALL_IDS.length - 1);
+    // Every rule but the Ollama row (no Ollama running) and the six NVIDIA rules (no card), which the one gpu-coverage card stands in for.
+    expect(findings).toHaveLength(ALL_IDS.length - 1 - 6 + 1);
     for (const f of findings) {
-      expect(['ok', 'unknown']).toContain(f.state);
+      expect(['ok', 'unknown', 'info']).toContain(f.state);
       expect(f.severity).toBe(0);
       expect(f.costEstimate).toBe(0);
     }
@@ -961,6 +973,77 @@ describe('missing inputs never flag', () => {
     s.chassis = { isLaptop: true, chassisTypes: [10] };
     s.powerPlan = { guid: '', name: '', overlayGuid: null };
     expect(audit(s)['power-plan'].state).toBe('unknown');
+  });
+});
+
+describe('the first laptop (an ASUS GA402RJ: Ryzen 9 6900HS, RX 6700S, no PawnIO, 2026-09-19)', () => {
+  const laptop = () => {
+    const s = devbox();
+    s.chassis = { isLaptop: true, chassisTypes: [10] };
+    s.cpu = { name: 'AMD Ryzen 9 6900HS with Radeon Graphics', family: 25, model: 68, cores: 8, logical: 16, maxClockMhz: 3301 };
+    s.gpus = [];
+    s.adapters = [{ name: 'AMD Radeon RX 6700S', vendor: 'amd', dedicatedMiB: 8176, driverVersion: '31.0.12024.2005', driverDate: '2022-09-06', integrated: false }];
+    s.ram = {
+      totalMiB: 16384,
+      modules: [
+        { slot: 'DIMM 0', partNumber: 'M425R1GB4BB0-CQK0D', manufacturer: 'Samsung', capacityMiB: 8192, configuredMts: 4800, reportedMts: 4800 },
+        { slot: 'DIMM 0', partNumber: 'M425R1GB4BB0-CQK0L', manufacturer: 'Samsung', capacityMiB: 8192, configuredMts: 4800, reportedMts: 4800 }
+      ]
+    };
+    return s;
+  };
+
+  it('its Samsung DDR5-4800 SO-DIMMs are a JEDEC kit in the table, running at their rating', () => {
+    const f = audit(laptop()).expo;
+    expect(f.state).toBe('ok');
+    expect(f.detail).toBe('Running at 4800 MT/s, rated 4800 MT/s (Samsung).');
+  });
+
+  it('an unknown module on a laptop is a plain sentence, not a question: there is no profile to enable', () => {
+    const s = laptop();
+    s.ram.modules[0].partNumber = 'HMCG66MEBSA092N';
+    const f = audit(s).expo;
+    expect(f.state).toBe('info');
+    expect(f.detail).toContain('Laptop memory runs at the speed the platform sets (4800 MT/s here); there is no EXPO/XMP profile to enable.');
+    expect(f.detail).toContain('HMCG66MEBSA092N is not in the module table');
+  });
+
+  it('on battery an efficiency power mode is the machine being unplugged, not a setting to fix', () => {
+    const s = laptop();
+    s.powerPlan = { guid: 'c6ea4b49-fda5-424e-8669-6907fcaaed7c', name: 'ASUS Recommended', overlayGuid: '961cc777-2547-4f9d-8174-7d86181b8a7a' };
+    s.battery = { present: true, onAc: false, percent: 63 };
+    const f = audit(s)['power-plan'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe('On battery (63 %, Best power efficiency): Windows holds the CPU and GPU back to save charge, which is what it should do unplugged.');
+    expect(f.fix).toContain('Plug in before gaming');
+    // Plugged in, the same mode is the finding it always was.
+    s.battery = { present: true, onAc: true, percent: 63 };
+    expect(audit(s)['power-plan'].state).toBe('bad');
+  });
+
+  it("plugged in on the laptop maker's plan with the slider at Balanced, the finding names the vendor app instead of calling the plan a fault", () => {
+    const s = laptop();
+    s.motherboard = { manufacturer: 'ASUSTeK COMPUTER INC.', product: 'GA402RJ', biosVersion: 'GA402RJ.318', biosDate: '2023-03-09' };
+    s.powerPlan = { guid: 'c6ea4b49-fda5-424e-8669-6907fcaaed7c', name: 'ASUS Recommended', overlayGuid: null };
+    s.battery = { present: true, onAc: true, percent: 87 };
+    const f = audit(s)['power-plan'];
+    expect(f.state).toBe('info');
+    expect(f.detail).toBe("ASUS Recommended is the laptop maker's plan with Windows' Power mode at Balanced; the performance modes on this laptop live in Armoury Crate.");
+    expect(f.fix).toContain('pick the performance mode in Armoury Crate');
+    // A maker without a known app keeps the plain warning.
+    s.motherboard.manufacturer = 'Some OEM';
+    expect(audit(s)['power-plan'].state).toBe('warn');
+  });
+
+  it('without PawnIO the four CPU rules say so once each, in the same words, instead of "not readable during the load run"', () => {
+    const f = audit(laptop(), { cpuSensors: false, cpuLoad: cpuRun(20) });
+    for (const id of ['cpu-thermal', 'cpu-allcore-clock', 'cpu-package-power', 'cpu-idle-clock']) {
+      expect(f[id].state).toBe('unknown');
+      expect(f[id].detail).toBe('The CPU sensors need the PawnIO driver, which is not installed on this PC.');
+      expect(f[id].fix).toContain('pawnio.eu');
+    }
+    // SMT reads WMI, not the library, so it still answers.
+    expect(f['cpu-smt'].state).toBe('ok');
   });
 });
 
