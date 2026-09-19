@@ -43,10 +43,15 @@ Fifth member of the Strata family (Code, Photo, Video, Snap/Remote).
    code-signed: *More info* → *Run anyway*.
 
 **Requirements.** Windows 10 or 11 x64. Any CPU (sensor rules exist for AMD Ryzen and Intel
-Core). A GPU is optional; the GPU audit, the card panel, the AI Models measurements and the
-Headroom hunt need an NVIDIA GeForce card with a current driver. Capture runs without elevation
-when your account is in the *Performance Log Users* group. Install [Ollama](https://ollama.com)
-to measure real tokens/s on the AI Models page.
+Core). A GPU is optional. An NVIDIA GeForce card with a current driver gets everything: the six
+GPU audit checks, the full card panel, this card's own figures on the AI Models page and the
+Headroom hunt. An AMD or Intel card gets what its driver reports through the sensor library
+(clocks, load, VRAM, power, temperatures, fan) on the Monitor page, sizes the AI models against
+its VRAM and runs the bench and the Measure sweep; the GPU audit checks and the Headroom hunt
+say in one sentence that they need an NVIDIA card. Capture needs your account in the
+*Performance Log Users* group; when it is not, the Capture page says so and offers to add it
+(one UAC prompt, then sign out and back in). Install [Ollama](https://ollama.com) to measure
+real tokens/s on the AI Models page.
 
 **Where things go.** Sessions, logs and settings live in `%LOCALAPPDATA%\Strata Tune`; delete
 the folder and the app is back to first launch.

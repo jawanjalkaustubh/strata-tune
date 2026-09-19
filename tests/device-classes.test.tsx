@@ -11,6 +11,7 @@ import { CpuPanel } from '../src/components/monitor/CpuPanel';
 import { GpuPanel } from '../src/components/monitor/GpuPanel';
 import { BoardPanel } from '../src/components/monitor/BoardPanel';
 import { SystemPower, batteryLine } from '../src/components/monitor/SystemPower';
+import { BatteryPanel } from '../src/components/monitor/BatteryPanel';
 import { MonitorMenu } from '../src/components/monitor/MonitorMenu';
 import { igpuLayout } from '../src/components/monitor/gpuLayout';
 import { factsFromSnapshot } from '../src/components/advisor/hardware';
@@ -208,5 +209,86 @@ describe('plan 17d row 2, a gaming laptop: the Monitor page and AI Models', () =
     expect(html).toContain('laptop makers set 35–115 W');
     expect(html).toContain('>TGP');
     for (const gone of ['gpus.json', 'could not determine', 'no reference row']) expect(html).not.toContain(gone);
+  });
+});
+
+describe('the first real laptop (2026-09-19): an AMD/AMD hybrid gaming laptop, the RX 6700S beside the 6900HS, no PawnIO', () => {
+  const m = machine('gaming-laptop-amd');
+  const page = monitor(m);
+
+  it('the capability object: no NVML, a discrete AMD card, an iGPU beside it, a battery, a laptop, no CPU node', () => {
+    expect(page.caps).toMatchObject({ nvml: false, nvapi: false, pins: false, igpu: true, battery: true, laptop: true, dynamicBoost: false });
+    expect(page.caps.dgpu?.name).toBe('AMD Radeon RX 6700S');
+    expect(page.caps.dgpu?.dedicatedMiB).toBe(8176);
+    expect(page.caps.igpuAdapter?.name).toBe('AMD Radeon(TM) Graphics');
+    expect(deviceClass(m.snapshot)).toBe('gaming-laptop');
+  });
+
+  it("the GPU panel is the card's, never 'integrated · no discrete card': its VRAM, memory clock, hot spot and the iGPU beside it named", () => {
+    expect(page.gpu).toContain('AMD Radeon RX 6700S');
+    expect(page.gpu).toContain('8 GB · driver 31.0.12024.2005');
+    expect(page.gpu).not.toContain('integrated · no discrete card');
+    expect(page.gpu).toContain('>VRAM<');
+    expect(page.gpu).toContain('of 8.0 GiB');
+    expect(page.gpu).toContain('Memory clock');
+    expect(page.gpu).toContain('Hot spot');
+    expect(page.gpu).toContain('AMD Radeon(TM) Graphics drives the desktop');
+    for (const gone of ['Shared memory', 'no NVML GPU', '12V-2x6', 'Perf limit', 'Board power']) expect(page.gpu).not.toContain(gone);
+    expect(page.gpu).not.toMatch(/undefined|NaN|—/);
+  });
+
+  it('the CPU panel with no PawnIO says so and points at pawnio.eu instead of drawing empty bars', () => {
+    expect(page.cpu).toContain('No CPU sensors: the PawnIO driver is not installed');
+    expect(page.cpu).toContain('pawnio.eu');
+    expect(page.cpu).not.toContain('chip-figure');
+    expect(page.cpu).not.toContain('Tctl');
+  });
+
+  it("the battery panel reads the pack's real rows: charge, the watts flowing in, the voltage and the wear against the design figure", () => {
+    const index = new SensorIndex(m.meta);
+    const ring = new Ring();
+    ring.push(m.tick);
+    const html = renderToStaticMarkup(<BatteryPanel index={index} tick={m.tick} ring={ring} snapshot={m.snapshot} />);
+    expect(html).toContain('ASUS');
+    expect(html).toContain('plugged in');
+    expect(html).toContain('87 %');
+    expect(html).toContain('charging 8.9 W');
+    expect(html).toContain('15.93 V');
+    expect(html).toContain('>Wear<');
+    expect(html).toContain('20 %');
+    expect(html).toContain('61.0 of 76.0 Wh as new');
+    expect(html).not.toMatch(/undefined|NaN|—/);
+    expect(page.battery).toBe('87 % charged · charging at 8.9 W');
+  });
+
+  it('the system-power row exists from the card\'s library power alone, with the battery line where the PSU question would be', () => {
+    expect(page.power).toContain('>Battery<');
+    expect(page.power).toContain('87 % charged');
+    expect(page.power).not.toContain('>PSU<');
+  });
+
+  it("AI Models sizes against the card's 8 GB, not RAM: not integrated, the bench for this card applies, the reference row is found", () => {
+    const facts = factsFromSnapshot(m.snapshot, null, null, { usedMiB: 4, totalMiB: 8176 });
+    expect(facts.integrated).toBe(false);
+    expect(facts.gpuName).toBe('AMD Radeon RX 6700S');
+    expect(facts.vramBytes).toBe(8176 * 1024 ** 2);
+    expect(facts.vramFreeBytes).toBe(8172 * 1024 ** 2);
+    expect(facts.gpu).toBeNull();
+    expect(facts.driver).toBe('31.0.12024.2005');
+    const spec = gpuSpecOf(facts.gpuName, facts.vramBytes / 1024 ** 2);
+    expect(spec?.name).toBe('Radeon RX 6700S');
+    expect(spec?.bandwidthGBs).toBe(224);
+    const rows = adviseRows({ facts, bandwidthGBs: 197, contextTokens: 8192, factor: DEFAULT_FACTOR });
+    expect(rows.every((r) => !r.cpuOnly)).toBe(true);
+    // A 4B q4 model fits the 8 GB card outright; a 14B q4 spills into RAM; a 70B does not run.
+    expect(rows.find((r) => /qwen3:4b/.test(r.pullTag) && /q4/i.test(r.quantLabel))?.bucket).toBe('fast');
+    expect(rows.find((r) => /qwen2\.5-coder:14b$/.test(r.pullTag))?.bucket).toBe('slow');
+    expect(rows.find((r) => /70b/.test(r.pullTag))?.bucket).toBe('no');
+    const html = renderToStaticMarkup(
+      <StatsCard gpuName={facts.gpuName} gpuColour="#ED1C24" spec={spec} card={null} latest={null} npuTops={null} bench={null} applies={false} measuring={false} canMeasure={false} error="" onMeasure={() => {}} />
+    );
+    expect(html).toContain('Navi 23');
+    expect(html).toContain('8 GB GDDR6');
+    for (const gone of ['No discrete GPU', 'no discrete GPU', 'not this GPU', 'gpus.json']) expect(html).not.toContain(gone);
   });
 });

@@ -1,0 +1,1064 @@
+{
+ "class": "gaming-laptop-amd",
+ "note": "Read from the first laptop through the app bridge on 2026-09-19: an ASUS ROG Zephyrus G14 (GA402RJ), Ryzen 9 6900HS with its Radeon iGPU, Radeon RX 6700S, 16 GB DDR5-4800, one NVMe, no PawnIO installed (so no CPU node), no NVIDIA driver. Serial numbers never reach the wire.",
+ "snapshot": {
+  "capturedAt": "2026-09-19T22:16:11.6892415+00:00",
+  "os": {
+   "caption": "Microsoft Windows 11 Home",
+   "build": "22631.6199"
+  },
+  "chassis": {
+   "isLaptop": true,
+   "chassisTypes": [
+    10
+   ]
+  },
+  "cpu": {
+   "name": "AMD Ryzen 9 6900HS with Radeon Graphics",
+   "family": 25,
+   "model": 68,
+   "cores": 8,
+   "logical": 16,
+   "maxClockMhz": 3301
+  },
+  "motherboard": {
+   "manufacturer": "ASUSTeK COMPUTER INC.",
+   "product": "GA402RJ",
+   "biosVersion": "GA402RJ.318",
+   "biosDate": "2023-03-09"
+  },
+  "ram": {
+   "totalMiB": 16384,
+   "modules": [
+    {
+     "slot": "DIMM 0",
+     "partNumber": "M425R1GB4BB0-CQKOD",
+     "manufacturer": "Samsung",
+     "capacityMiB": 8192,
+     "configuredMts": 4800,
+     "reportedMts": 4800
+    },
+    {
+     "slot": "DIMM 0",
+     "partNumber": "M425R1GB4BB0-CQKOL",
+     "manufacturer": "Samsung",
+     "capacityMiB": 8192,
+     "configuredMts": 4800,
+     "reportedMts": 4800
+    }
+   ]
+  },
+  "gpus": [],
+  "gpuDriver": {
+   "version": "31.0.12024.2005",
+   "date": "2022-09-06"
+  },
+  "powerPlan": {
+   "guid": "c6ea4b49-fda5-424e-8669-6907fcaaed7c",
+   "name": "ASUS Recommended",
+   "overlayGuid": null
+  },
+  "disks": [
+   {
+    "deviceId": "0",
+    "friendlyName": "Micron_2450_MTFDKBA1T0TFK",
+    "mediaType": "SSD",
+    "busType": "NVMe",
+    "sizeBytes": 1024209543168
+   }
+  ],
+  "volumes": [
+   {
+    "letter": "C",
+    "label": "OS",
+    "fileSystem": "NTFS",
+    "sizeBytes": 579070136320,
+    "freeBytes": 468786814976,
+    "isBoot": true,
+    "diskDeviceId": "0"
+   },
+   {
+    "letter": "D",
+    "label": "New Volume",
+    "fileSystem": "NTFS",
+    "sizeBytes": 419429347328,
+    "freeBytes": 361311510528,
+    "isBoot": false,
+    "diskDeviceId": "0"
+   }
+  ],
+  "ollama": null,
+  "adapters": [
+   {
+    "name": "AMD Radeon RX 6700S",
+    "vendor": "amd",
+    "dedicatedMiB": 8176,
+    "driverVersion": "31.0.12024.2005",
+    "driverDate": "2022-09-06",
+    "integrated": false
+   },
+   {
+    "name": "AMD Radeon(TM) Graphics",
+    "vendor": "amd",
+    "dedicatedMiB": 512,
+    "driverVersion": "31.0.12024.2005",
+    "driverDate": "2022-09-06",
+    "integrated": true
+   }
+  ],
+  "battery": {
+   "present": true,
+   "onAc": true,
+   "percent": 87
+  }
+ },
+ "meta": [
+  {
+   "id": "/gpu-amd/5/smalldata/2",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Memory Total",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/factor/0",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "Fullscreen FPS",
+   "sensorType": "Factor",
+   "unit": ""
+  },
+  {
+   "id": "/gpu-amd/5/smalldata/5",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Dedicated Memory Total",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/smalldata/4",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Dedicated Memory Free",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/smalldata/3",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Dedicated Memory Used",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/smalldata/6",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Shared Memory Used",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/smalldata/7",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Shared Memory Free",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/smalldata/8",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Shared Memory Total",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/load/2",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D 3D",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/8",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D High Priority 3D",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/9",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D High Priority Compute",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/12",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D True Audio 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/13",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D True Audio 1",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/5",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Compute 3",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/3",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Compute 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/4",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Compute 1",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/15",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Video Decode 1",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/16",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Video Encode 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/14",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Video Codec 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/6",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Copy",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/7",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Copy",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/11",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Timer 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/10",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Security 1",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/smalldata/0",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Memory Used",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/smalldata/1",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Memory Free",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/5/clock/0",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Core",
+   "sensorType": "Clock",
+   "unit": "MHz"
+  },
+  {
+   "id": "/gpu-amd/5/clock/2",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Memory",
+   "sensorType": "Clock",
+   "unit": "MHz"
+  },
+  {
+   "id": "/gpu-amd/5/temperature/0",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Core",
+   "sensorType": "Temperature",
+   "unit": "°C"
+  },
+  {
+   "id": "/gpu-amd/5/temperature/7",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Hot Spot",
+   "sensorType": "Temperature",
+   "unit": "°C"
+  },
+  {
+   "id": "/gpu-amd/5/fan/0",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Fan",
+   "sensorType": "Fan",
+   "unit": "RPM"
+  },
+  {
+   "id": "/gpu-amd/5/control/0",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Fan",
+   "sensorType": "Control",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/voltage/0",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Core",
+   "sensorType": "Voltage",
+   "unit": "V"
+  },
+  {
+   "id": "/gpu-amd/5/load/0",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Core",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/load/1",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Memory",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/5/power/3",
+   "hardware": "/gpu-amd/5",
+   "hardwareName": "AMD Radeon RX 6700S",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Package",
+   "sensorType": "Power",
+   "unit": "W"
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/2",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Memory Total",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/0/factor/0",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "Fullscreen FPS",
+   "sensorType": "Factor",
+   "unit": ""
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/5",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Dedicated Memory Total",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/4",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Dedicated Memory Free",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/3",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Dedicated Memory Used",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/6",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Shared Memory Used",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/7",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Shared Memory Free",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/8",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Shared Memory Total",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/0/load/2",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D 3D",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/7",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D High Priority 3D",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/8",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D High Priority Compute",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/11",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D True Audio 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/12",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D True Audio 1",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/5",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Compute 3",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/3",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Compute 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/4",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Compute 1",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/14",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Video Decode 1",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/15",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Video Encode 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/13",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Video Codec 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/6",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Copy",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/10",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Timer 0",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/load/9",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "D3D Security 1",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/0",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Memory Used",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/gpu-amd/0/smalldata/1",
+   "hardware": "/gpu-amd/0",
+   "hardwareName": "AMD Radeon(TM) Graphics",
+   "hardwareType": "GpuAmd",
+   "name": "GPU Memory Free",
+   "sensorType": "SmallData",
+   "unit": "MB"
+  },
+  {
+   "id": "/vram/data/2",
+   "hardware": "/vram",
+   "hardwareName": "Virtual Memory",
+   "hardwareType": "Memory",
+   "name": "Memory Used",
+   "sensorType": "Data",
+   "unit": "GB"
+  },
+  {
+   "id": "/vram/data/3",
+   "hardware": "/vram",
+   "hardwareName": "Virtual Memory",
+   "hardwareType": "Memory",
+   "name": "Memory Available",
+   "sensorType": "Data",
+   "unit": "GB"
+  },
+  {
+   "id": "/vram/load/1",
+   "hardware": "/vram",
+   "hardwareName": "Virtual Memory",
+   "hardwareType": "Memory",
+   "name": "Memory",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/ram/data/0",
+   "hardware": "/ram",
+   "hardwareName": "Total Memory",
+   "hardwareType": "Memory",
+   "name": "Memory Used",
+   "sensorType": "Data",
+   "unit": "GB"
+  },
+  {
+   "id": "/ram/data/1",
+   "hardware": "/ram",
+   "hardwareName": "Total Memory",
+   "hardwareType": "Memory",
+   "name": "Memory Available",
+   "sensorType": "Data",
+   "unit": "GB"
+  },
+  {
+   "id": "/ram/load/0",
+   "hardware": "/ram",
+   "hardwareName": "Total Memory",
+   "hardwareType": "Memory",
+   "name": "Memory",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/battery/ASUS-Battery_28/energy/0",
+   "hardware": "/battery/ASUS-Battery_28",
+   "hardwareName": "ASUS Battery",
+   "hardwareType": "Battery",
+   "name": "Designed Capacity",
+   "sensorType": "Energy",
+   "unit": "mWh"
+  },
+  {
+   "id": "/battery/ASUS-Battery_28/energy/1",
+   "hardware": "/battery/ASUS-Battery_28",
+   "hardwareName": "ASUS Battery",
+   "hardwareType": "Battery",
+   "name": "Fully-Charged Capacity",
+   "sensorType": "Energy",
+   "unit": "mWh"
+  },
+  {
+   "id": "/battery/ASUS-Battery_28/level/1",
+   "hardware": "/battery/ASUS-Battery_28",
+   "hardwareName": "ASUS Battery",
+   "hardwareType": "Battery",
+   "name": "Degradation Level",
+   "sensorType": "Level",
+   "unit": "%"
+  },
+  {
+   "id": "/battery/ASUS-Battery_28/energy/2",
+   "hardware": "/battery/ASUS-Battery_28",
+   "hardwareName": "ASUS Battery",
+   "hardwareType": "Battery",
+   "name": "Remaining Capacity",
+   "sensorType": "Energy",
+   "unit": "mWh"
+  },
+  {
+   "id": "/battery/ASUS-Battery_28/level/0",
+   "hardware": "/battery/ASUS-Battery_28",
+   "hardwareName": "ASUS Battery",
+   "hardwareType": "Battery",
+   "name": "Charge Level",
+   "sensorType": "Level",
+   "unit": "%"
+  },
+  {
+   "id": "/battery/ASUS-Battery_28/voltage/0",
+   "hardware": "/battery/ASUS-Battery_28",
+   "hardwareName": "ASUS Battery",
+   "hardwareType": "Battery",
+   "name": "Voltage",
+   "sensorType": "Voltage",
+   "unit": "V"
+  },
+  {
+   "id": "/battery/ASUS-Battery_28/current/0",
+   "hardware": "/battery/ASUS-Battery_28",
+   "hardwareName": "ASUS Battery",
+   "hardwareType": "Battery",
+   "name": "Charge Current",
+   "sensorType": "Current",
+   "unit": "A"
+  },
+  {
+   "id": "/battery/ASUS-Battery_28/power/0",
+   "hardware": "/battery/ASUS-Battery_28",
+   "hardwareName": "ASUS Battery",
+   "hardwareType": "Battery",
+   "name": "Charge Rate",
+   "sensorType": "Power",
+   "unit": "W"
+  },
+  {
+   "id": "/nvme/0/temperature/0",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Composite Temperature",
+   "sensorType": "Temperature",
+   "unit": "°C"
+  },
+  {
+   "id": "/nvme/0/temperature/1",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Temperature #1",
+   "sensorType": "Temperature",
+   "unit": "°C"
+  },
+  {
+   "id": "/nvme/0/temperature/10",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Warning Temperature",
+   "sensorType": "Temperature",
+   "unit": "°C"
+  },
+  {
+   "id": "/nvme/0/temperature/11",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Critical Temperature",
+   "sensorType": "Temperature",
+   "unit": "°C"
+  },
+  {
+   "id": "/nvme/0/level/20",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Life",
+   "sensorType": "Level",
+   "unit": "%"
+  },
+  {
+   "id": "/nvme/0/data/21",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Data Read",
+   "sensorType": "Data",
+   "unit": "GB"
+  },
+  {
+   "id": "/nvme/0/data/22",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Data Written",
+   "sensorType": "Data",
+   "unit": "GB"
+  },
+  {
+   "id": "/nvme/0/factor/23",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Power On Count",
+   "sensorType": "Factor",
+   "unit": ""
+  },
+  {
+   "id": "/nvme/0/factor/24",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Power On Hours",
+   "sensorType": "Factor",
+   "unit": ""
+  },
+  {
+   "id": "/nvme/0/load/30",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Used Space",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/nvme/0/data/31",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Free Space",
+   "sensorType": "Data",
+   "unit": "GB"
+  },
+  {
+   "id": "/nvme/0/data/32",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Total Space",
+   "sensorType": "Data",
+   "unit": "GB"
+  },
+  {
+   "id": "/nvme/0/load/51",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Read Activity",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/nvme/0/load/52",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Write Activity",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/nvme/0/load/53",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Total Activity",
+   "sensorType": "Load",
+   "unit": "%"
+  },
+  {
+   "id": "/nvme/0/throughput/54",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Read Rate",
+   "sensorType": "Throughput",
+   "unit": "B/s"
+  },
+  {
+   "id": "/nvme/0/throughput/55",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Write Rate",
+   "sensorType": "Throughput",
+   "unit": "B/s"
+  },
+  {
+   "id": "/nvme/0/level/100",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Available Spare",
+   "sensorType": "Level",
+   "unit": "%"
+  },
+  {
+   "id": "/nvme/0/level/101",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Available Spare Threshold",
+   "sensorType": "Level",
+   "unit": "%"
+  },
+  {
+   "id": "/nvme/0/level/102",
+   "hardware": "/nvme/0",
+   "hardwareName": "Micron_2450_MTFDKBA1T0TFK",
+   "hardwareType": "Storage",
+   "name": "Percentage Used",
+   "sensorType": "Level",
+   "unit": "%"
+  },
+  {
+   "id": "/pdh/physicaldisk/0/queue",
+   "hardware": "/pdh/physicaldisk/0",
+   "hardwareName": "0 C: D:",
+   "hardwareType": "Storage",
+   "name": "Disk queue length",
+   "sensorType": "Factor",
+   "unit": ""
+  }
+ ],
+ "tick": {
+  "qpc": 208247717034080,
+  "sensors": {
+   "/gpu-amd/5/smalldata/2": 8176,
+   "/gpu-amd/5/factor/0": -1,
+   "/gpu-amd/5/smalldata/5": 8146.7734,
+   "/gpu-amd/5/smalldata/4": 8142.707,
+   "/gpu-amd/5/smalldata/3": 4.0664062,
+   "/gpu-amd/5/smalldata/6": 0.58203125,
+   "/gpu-amd/5/smalldata/7": 7797.6426,
+   "/gpu-amd/5/smalldata/8": 7798.2246,
+   "/gpu-amd/5/load/2": 0,
+   "/gpu-amd/5/load/8": 0,
+   "/gpu-amd/5/load/9": 0,
+   "/gpu-amd/5/load/12": 0,
+   "/gpu-amd/5/load/13": 0,
+   "/gpu-amd/5/load/5": 0,
+   "/gpu-amd/5/load/3": 0,
+   "/gpu-amd/5/load/4": 0,
+   "/gpu-amd/5/load/15": 0,
+   "/gpu-amd/5/load/16": 0,
+   "/gpu-amd/5/load/14": 0,
+   "/gpu-amd/5/load/6": 0,
+   "/gpu-amd/5/load/7": 0,
+   "/gpu-amd/5/load/11": 0,
+   "/gpu-amd/5/load/10": 0,
+   "/gpu-amd/5/smalldata/0": 4,
+   "/gpu-amd/5/smalldata/1": 8172,
+   "/gpu-amd/5/clock/0": 0,
+   "/gpu-amd/5/clock/2": 2,
+   "/gpu-amd/5/temperature/0": 56,
+   "/gpu-amd/5/temperature/7": 56,
+   "/gpu-amd/5/fan/0": 0,
+   "/gpu-amd/5/control/0": 0,
+   "/gpu-amd/5/voltage/0": 0,
+   "/gpu-amd/5/load/0": 0,
+   "/gpu-amd/5/load/1": 0,
+   "/gpu-amd/5/power/3": 3,
+   "/gpu-amd/0/smalldata/2": 512,
+   "/gpu-amd/0/factor/0": -1,
+   "/gpu-amd/0/smalldata/5": 485.77734,
+   "/gpu-amd/0/smalldata/4": 254.3789,
+   "/gpu-amd/0/smalldata/3": 231.39844,
+   "/gpu-amd/0/smalldata/6": 158.60547,
+   "/gpu-amd/0/smalldata/7": 7639.619,
+   "/gpu-amd/0/smalldata/8": 7798.2246,
+   "/gpu-amd/0/load/2": 0,
+   "/gpu-amd/0/load/7": 0,
+   "/gpu-amd/0/load/8": 0,
+   "/gpu-amd/0/load/11": 0,
+   "/gpu-amd/0/load/12": 0,
+   "/gpu-amd/0/load/5": 0,
+   "/gpu-amd/0/load/3": 0,
+   "/gpu-amd/0/load/4": 0,
+   "/gpu-amd/0/load/14": 0,
+   "/gpu-amd/0/load/15": 0,
+   "/gpu-amd/0/load/13": 0,
+   "/gpu-amd/0/load/6": 0,
+   "/gpu-amd/0/load/10": 0,
+   "/gpu-amd/0/load/9": 0,
+   "/gpu-amd/0/smalldata/0": 231,
+   "/gpu-amd/0/smalldata/1": 281,
+   "/vram/data/2": 10.212082,
+   "/vram/data/3": 7.2688255,
+   "/vram/load/1": 58.418488,
+   "/ram/data/0": 8.604584,
+   "/ram/data/1": 6.6263237,
+   "/ram/load/0": 56.49423,
+   "/battery/ASUS-Battery_28/energy/0": 76000,
+   "/battery/ASUS-Battery_28/energy/1": 61023,
+   "/battery/ASUS-Battery_28/level/1": 19.706581,
+   "/battery/ASUS-Battery_28/energy/2": 53152,
+   "/battery/ASUS-Battery_28/level/0": 87.101585,
+   "/battery/ASUS-Battery_28/voltage/0": 15.933,
+   "/battery/ASUS-Battery_28/current/0": 0.5599699,
+   "/battery/ASUS-Battery_28/power/0": 8.922,
+   "/nvme/0/temperature/0": 46,
+   "/nvme/0/temperature/1": 45.850006,
+   "/nvme/0/temperature/10": 82,
+   "/nvme/0/temperature/11": 84,
+   "/nvme/0/level/20": 99,
+   "/nvme/0/data/21": 14277,
+   "/nvme/0/data/22": 8148,
+   "/nvme/0/factor/23": 2957,
+   "/nvme/0/factor/24": 2522,
+   "/nvme/0/load/30": 17.631386,
+   "/nvme/0/data/31": 843.62726,
+   "/nvme/0/data/32": 1024.2096,
+   "/nvme/0/load/51": 0.48649502,
+   "/nvme/0/load/52": 0.52683854,
+   "/nvme/0/load/53": 0.93384296,
+   "/nvme/0/level/100": 100,
+   "/nvme/0/level/101": 5,
+   "/nvme/0/level/102": 1,
+   "/nvme/0/throughput/54": 835989.06,
+   "/nvme/0/throughput/55": 6173458,
+   "/pdh/physicaldisk/0/queue": 0
+  },
+  "gpu": [],
+  "warming": false
+ }
+}
