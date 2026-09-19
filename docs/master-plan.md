@@ -432,6 +432,19 @@ set from that, not guessed.
 Later: Strata Code's setup wizard (which currently picks a model by VRAM alone) could read
 this advisor's output. Not in scope now.
 
+**Compared with Odysseus' Cookbook (2026-09-19).** PewDiePie's Odysseus (AGPL, ideas only,
+never code) recommends models from guesses: fit = VRAM ≥ 1.5× / 1.2× the file, CPU-offload
+at a flat 55 GB/s with a 0.55 efficiency fudge, catalogue from Hugging Face collections. This
+page measures instead (stream copy, DDR-config RAM bandwidth, calibration runs, the harmonic
+spill formula above), and keeps that edge. Two of its ideas are worth taking later, both as
+re-implementations: (1) **serving profiles** per model — Quality / Balanced / Speed presets
+that pick context length and KV-cache quantisation (`OLLAMA_KV_CACHE_TYPE q8_0` / `q4_0`,
+`num_ctx`) from the measured headroom, never above the model's trained context, shown as
+the values to set rather than applied; (2) **live discovery** of new models from the Ollama
+library alongside the bundled `models.json`, cached a day, so a shipped build does not go
+stale. Its blind A/B model comparison is not worth the page space: speed is measured here,
+quality is the user's call.
+
 ## 11. Frame capture and stutter classifier (Phases 4–5, the real lift)
 
 **Capture.** Start/stop by button, by the Game Mode process list lifted from Strata Video

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using StrataTune.Shared;
 
@@ -11,12 +13,49 @@ internal static class HandshakeFile
 {
     public const string CollectorProcessName = "strata-tune-collector";
 
-    public static void Write(Handshake handshake)
+    public static void Write(Handshake handshake, Action<string> log)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.Handshake)!);
+        var dir = Path.GetDirectoryName(AppPaths.Handshake)!;
+        // Refuse a redirected write (see AppPaths.ReparsePointIn) rather than follow it.
+        if (AppPaths.ReparsePointIn(dir) is { } reparse)
+        {
+            log($"handshake: refusing to write under {dir}: {reparse} is a reparse point");
+            return;
+        }
+        Directory.CreateDirectory(dir);
         var temp = $"{AppPaths.Handshake}.{Environment.ProcessId}.tmp";
         File.WriteAllBytes(temp, JsonSerializer.SerializeToUtf8Bytes(handshake, WireJson.Default.Handshake));
         File.Move(temp, AppPaths.Handshake, overwrite: true);
+        SecureFile(AppPaths.Handshake, log);
+    }
+
+    /// <summary>Threat: the token this file carries. The DACL goes on the file, not on the
+    /// folder: %LOCALAPPDATA%\Strata Tune is shared with the unelevated UI, which writes the
+    /// disclaimer acceptance and its own logs there, so a Users-read-only folder would break
+    /// the app. On the file: inheritance cut, administrators and SYSTEM full control, and the
+    /// collector's own SID read — the elevated process runs as the same account the unelevated
+    /// Electron UI does, so the UI can still poll the file while no other principal is named.
+    /// The peer-process check in <see cref="Auth"/> is the real guard against a same-user
+    /// process that reads the token anyway; this narrows who can.</summary>
+    private static void SecureFile(string file, Action<string> log)
+    {
+        try
+        {
+            var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.SetOwner(administrators);
+            security.AddAccessRule(new FileSystemAccessRule(administrators, FileSystemRights.FullControl, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                FileSystemRights.FullControl, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
+            if (WindowsIdentity.GetCurrent().User is { } self)
+                security.AddAccessRule(new FileSystemAccessRule(self, FileSystemRights.Read, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
+            new FileInfo(file).SetAccessControl(security);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            log($"handshake: could not restrict the ACL of collector.json: {e.Message}");
+        }
     }
 
     /// <summary>The pid in the existing file when it names another running collector: a live

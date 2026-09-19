@@ -20,4 +20,20 @@ internal static class AppPaths
         if (!string.IsNullOrWhiteSpace(log))
             Log = Path.GetFullPath(log);
     }
+
+    /// <summary>Threat: a same-user process that plants a reparse point (a mount point or a
+    /// symlink) at the handshake or log directory, or at one of its parents, before this
+    /// elevated process creates the real one, can redirect a write we make — with an
+    /// administrator's rights — to a path of the attacker's choosing. Walks every path
+    /// component that already exists (one that does not exist yet cannot be a reparse point)
+    /// and returns the first offender, or null when the chain is clean.</summary>
+    public static string? ReparsePointIn(string path)
+    {
+        for (var dir = new DirectoryInfo(path); dir is not null; dir = dir.Parent)
+        {
+            if (dir.Exists && dir.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                return dir.FullName;
+        }
+        return null;
+    }
 }

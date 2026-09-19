@@ -32,6 +32,9 @@ internal static class Serve
         int? parentPid = null;
         long? parentStartMs = null;
         string? worker = null, handshake = null, logPath = null;
+        // Development only, never the default: skips PeerProcess's same-user peer check
+        // (item 1) and trusts any loopback caller that already has the token.
+        var trustLocalPeers = false;
         for (var i = 1; i < args.Length; i++)
         {
             var value = i + 1 < args.Length ? args[i + 1] : null;
@@ -57,6 +60,9 @@ internal static class Serve
                 case "--log" when value is not null:
                     logPath = value;
                     i++;
+                    break;
+                case "--trust-local-peers":
+                    trustLocalPeers = true;
                     break;
                 default:
                     Console.Error.WriteLine($"--serve: bad or missing value for {args[i]}");
@@ -109,7 +115,7 @@ internal static class Serve
         var log = new Log(AppPaths.Log);
         try
         {
-            return RunAsync(parentPid.Value, workerPath, benchPath, log).GetAwaiter().GetResult();
+            return RunAsync(parentPid.Value, workerPath, benchPath, trustLocalPeers, log).GetAwaiter().GetResult();
         }
         catch (Exception e)
         {
@@ -127,7 +133,7 @@ internal static class Serve
         return path.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase) ? path : null;
     }
 
-    private static async Task<int> RunAsync(int parentPid, string workerPath, string benchPath, Log log)
+    private static async Task<int> RunAsync(int parentPid, string workerPath, string benchPath, bool trustLocalPeers, Log log)
     {
         var version = typeof(Serve).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0";
         var startedAt = DateTimeOffset.UtcNow.ToString("O");
@@ -136,6 +142,17 @@ internal static class Serve
         // budget is 1.5 s from the UAC click to the first tick, and the log is the measure).
         string T() => $"t+{Stopwatch.GetElapsedTime(startedQpc).TotalMilliseconds:0} ms";
         log.Write($"{T()} start pid {Environment.ProcessId} version {version} parent {parentPid}");
+
+        // The launcher's identity, recorded once (item 1): --parent-pid is already the
+        // ParentWatch-verified UI pid (checked above against process start time, so a
+        // recycled pid cannot pass as it), not this process's OS parent — UAC elevation
+        // makes the real OS parent the AppInfo service, never electron.exe (see
+        // ParentWatch.cs), so walking the process tree here would name the wrong process.
+        var launcherImagePath = PeerProcess.ImagePathOf(parentPid);
+        var trust = new PeerTrust(Environment.ProcessId, parentPid, launcherImagePath, AppContext.BaseDirectory, trustLocalPeers);
+        log.Write(trustLocalPeers
+            ? $"{T()} --trust-local-peers is set: the peer-process check is OFF, any same-user loopback caller with the token is accepted (development only)"
+            : $"{T()} peer trust: launcher pid {parentPid}, image {launcherImagePath ?? "unresolved"}");
 
         var pawnIo = PawnIoDevice.Check();
         if (!pawnIo.Usable)
@@ -178,7 +195,7 @@ internal static class Serve
         AppDomain.CurrentDomain.ProcessExit += (_, _) => state.Tune.Abort();
         AppDomain.CurrentDomain.UnhandledException += (_, _) => state.Tune.Abort();
         var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(TokenBytes));
-        app.UseBearerToken(token);
+        app.UseBearerToken(token, trust, log.Write);
         Endpoints.Map(app, state);
         // Graceful stop from the UI's before-quit (lifecycle audit item 32); the parent
         // watch below is what ends this process on every other exit path.
@@ -190,7 +207,7 @@ internal static class Serve
 
         await app.StartAsync();
         var port = new Uri(app.Urls.First()).Port;
-        HandshakeFile.Write(new Handshake(port, token, Environment.ProcessId, startedAt));
+        HandshakeFile.Write(new Handshake(port, token, Environment.ProcessId, startedAt), log.Write);
         log.Write($"{T()} listening on 127.0.0.1:{port}, handshake written");
 
         // The sources open after the handshake, so the UI connects while they warm and
