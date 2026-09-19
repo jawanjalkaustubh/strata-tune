@@ -65,7 +65,7 @@ $ignore = @(
     '^/installer', '^/release', '^/resources', '^/public', '^/\.git', '^/\.claude', '^/\.vite',
     '^/index\.html$', '^/report\.html$', '^/[^/]+\.md$', '^/[^/]+\.ps1$', '^/[^/]+\.py$',
     '^/tsconfig[^/]*\.json$', '^/vite[^/]*\.config\.ts$', '^/vitest[^/]*\.config\.ts$', '^/tailwind\.config\.js$',
-    '^/postcss\.config\.js$', '^/package-lock\.json$', '^/global\.json$', '^/\.gitignore$', '^/[^/]+\.log$', '^/LICENSE$'
+    '^/postcss\.config\.js$', '^/run-strata-tune\.(bat|vbs)$', '^/Install-Shortcuts\.ps1$', '^/package-lock\.json$', '^/global\.json$', '^/\.gitignore$', '^/[^/]+\.log$', '^/LICENSE$'
 )
 $ignoreArgs = $ignore | ForEach-Object { "--ignore=$_" }
 & npx @electron/packager . "Strata Tune" --platform=win32 --arch=x64 --out=$pkgOut --overwrite `
