@@ -24,6 +24,13 @@ export interface GpuBench {
   matmulTflopsFp32: number;
   /** The worker's matmulTflopsFp16storage: half storage with float arithmetic, not tensor-core FP16. */
   matmulTflopsFp16: number | null;
+  /**
+   * macOS only (collector/mac): the GPU's matrix path through Metal 4 tensor ops at int8 with int32
+   * accumulate, the precision a PC's "AI TOPS" quotes, and fp16 through the same path. Absent in
+   * bench.json files from before it and null where the OS has no Metal 4.
+   */
+  matmulTopsInt8?: number | null;
+  matmulTflopsFp16tensor?: number | null;
   elapsedMs: number | null;
   /** The GPU driver the caller knew at measure time (from the collector snapshot); null standalone. */
   driver: string | null;
@@ -143,6 +150,8 @@ function parseBenchLine(stdout: string, driver: string | null): GpuBench | null 
         matmulN: num(j.matmulN),
         matmulTflopsFp32: fp32,
         matmulTflopsFp16: num(j.matmulTflopsFp16storage),
+        matmulTopsInt8: num(j.matmulTopsInt8),
+        matmulTflopsFp16tensor: num(j.matmulTflopsFp16tensor),
         elapsedMs: num(j.elapsedMs),
         driver,
         measuredAt: new Date().toISOString()

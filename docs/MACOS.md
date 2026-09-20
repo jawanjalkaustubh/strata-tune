@@ -9,7 +9,7 @@ same loopback HTTP + SSE contract (`src/collector-types.ts`), so the pages are u
 |---|---|
 | **Tune** | The audit runs: the snapshot, the idle sample, the GPU loads and the all-core load come from the Mac worker and macmon. The Headroom hunt is not shown: it drives NVIDIA clock offsets and Apple GPUs have no user clock control. |
 | **Monitor** | Live: the CPU chip diagram with Apple's own cluster names (super and performance cores on the M5 Pro/Max), the GPU's SoC diagram (one cell per GPU core, the Neural Engine, the unified memory the GPU works from), core clocks and load, package power and temperature, GPU clock, load, power, temperature and memory in use, fans, system / memory / Neural Engine power, unified memory, the battery. No board rails, no 12V-2x6 pins, no PCIe link: those sensors do not exist here and the panels collapse as they do on a laptop. |
-| **AI Models** | Everything: the Apple GPU is the card (its Metal working set is the memory a model is judged against), the spec tiles come from `src/data/apple-gpus.json` (Apple's core counts and bandwidth, the per-core unit counts, the machine's own clock), **Measure** runs the Metal worker (stream-copy bandwidth, fp32 and fp16 matmul TFLOPS) and leads the card with the measured fp16 figure because Apple advertises no TOPS, Ollama timings and pulls work as on Windows. |
+| **AI Models** | Everything: the Apple GPU is the card (its Metal working set is the memory a model is judged against), the spec tiles come from `src/data/apple-gpus.json` (Apple's core counts and bandwidth, the per-core unit counts, the machine's own clock), **Measure** runs the Metal worker (stream-copy bandwidth, fp32 and fp16 matmul TFLOPS, and on macOS 26 the GPU's matrix path through Metal 4 tensor ops at int8 and fp16) and leads the card with the measured int8 TOPS because Apple advertises no TOPS figure, Ollama timings and pulls work as on Windows. |
 | **Capture** | Not shown. Frame capture needs PresentMon's ETW session, which has no macOS counterpart. |
 
 ## Install
@@ -50,8 +50,11 @@ first file on 26 and the app then fails with "Electron failed to install correct
   adapter with vendor `apple` and, as its "dedicated" memory, Metal's recommended working set
   (about three quarters of unified memory): what the GPU may hold, the figure a model's fit is judged by.
 - **The worker** (`collector/mac`, Swift, Metal + MPS): `--bench --json` prints the same line
-  as the Windows worker (stream-copy GB/s, fp32 and fp16-storage matmul TFLOPS); `--load
-  light|heavy|cpu|fillrate` are the audit's kernels; `--info` the device facts.
+  as the Windows worker (stream-copy GB/s, fp32 and fp16-storage matmul TFLOPS) plus, on macOS 26,
+  `matmulTopsInt8` and `matmulTflopsFp16tensor` from Metal 4 tensor ops (MetalPerformancePrimitives
+  `matmul2d`, 64 x 64 tiles, int8 with int32 accumulate: the precision a PC's "AI TOPS" quotes,
+  measured dense rather than a vendor's sparse peak); `--load light|heavy|cpu|fillrate` are the
+  audit's kernels; `--info` the device facts. On the M5 Max 40-core: 549 GB/s, 15 / 65 TFLOPS, 107 int8 TOPS.
 - **Time base**: microseconds from the Mach monotonic clock (`Health.qpcFrequency` = 1e6).
 - **Tune routes**: `/tune/state` answers `nvapi.available: false` with the reason; every
   `/tune/*` write is 403. `/timers` answers nulls: macOS has no timer-resolution setting.

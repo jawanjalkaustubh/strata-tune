@@ -250,11 +250,19 @@ export const StatsCard: React.FC<Props> = (p) => {
                 {scale && <span className="text-[10px] text-studio-subtle">at {scale.mhz} MHz held under load</span>}
                 {!lead.advertised && <span className="text-[10px] text-studio-subtle">no advertised AI TOPS; largest published figure</span>}
               </>
+            ) : measured?.matmulTopsInt8 != null ? (
+              <>
+                <span className="figure text-2xl leading-7 text-studio-text">{tops(measured.matmulTopsInt8)}</span>
+                <span className="text-mini text-studio-muted">AI TOPS</span>
+                <span className="label">int8 · dense · measured on this GPU</span>
+                <Tag kind="measured" title={`The GPU's matrix path (Metal 4 tensor ops) at int8 with int32 accumulate, a ${measured.matmulN ?? 4096}² matmul on this machine, ${when(measured)}. ${p.spec.vendor} advertises no TOPS figure; a PC's headline is its vendor's peak, often at fp4 with sparsity, so compare precision for precision.`} />
+                <span className="text-[10px] text-studio-subtle">no vendor figure; measured, dense int8</span>
+              </>
             ) : measured?.matmulTflopsFp16 != null ? (
               <>
                 <span className="figure text-2xl leading-7 text-studio-text">{tops(measured.matmulTflopsFp16)}</span>
-                <span className="text-mini text-studio-muted">TFLOPS</span>
-                <span className="label">fp16 matmul · measured on this GPU</span>
+                <span className="text-mini text-studio-muted">AI TOPS</span>
+                <span className="label">fp16 · dense · measured on this GPU</span>
                 <Tag kind="measured" title={`The worker's ${measured.matmulN ?? 4096}² half-precision matmul on this machine, ${when(measured)}; ${p.spec.vendor} publishes no tensor or TOPS figure`} />
                 <span className="text-[10px] text-studio-subtle">no vendor figure; a measurement stands in</span>
               </>
@@ -408,6 +416,8 @@ export const StatsCard: React.FC<Props> = (p) => {
             <div className="space-y-2">
               <p className="text-mini text-studio-muted">Apple publishes no tensor or TOPS figure for its GPUs or the Neural Engine; the measured matmul is what there is.</p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <Stat label="int8" value={measured?.matmulTopsInt8 != null ? tops(measured.matmulTopsInt8) : 'press Measure'} unit={measured?.matmulTopsInt8 != null ? 'TOPS' : undefined} kind={measured?.matmulTopsInt8 != null ? 'measured' : undefined} muted={measured?.matmulTopsInt8 == null} note="dense, int32 accumulate · Metal 4 tensor ops" />
+                <Stat label="fp16 tensor" value={measured?.matmulTflopsFp16tensor != null ? tops(measured.matmulTflopsFp16tensor) : 'press Measure'} unit={measured?.matmulTflopsFp16tensor != null ? 'TFLOPS' : undefined} kind={measured?.matmulTflopsFp16tensor != null ? 'measured' : undefined} muted={measured?.matmulTflopsFp16tensor == null} note="dense, fp32 accumulate · Metal 4 tensor ops" />
                 <Stat label="fp16 matmul" value={measured?.matmulTflopsFp16 != null ? tops(measured.matmulTflopsFp16) : 'press Measure'} unit={measured?.matmulTflopsFp16 != null ? 'TFLOPS' : undefined} kind={measured?.matmulTflopsFp16 != null ? 'measured' : undefined} muted={measured?.matmulTflopsFp16 == null} note="half-precision storage, this GPU" />
                 <Stat label="fp32 matmul" value={measured ? tops(measured.matmulTflopsFp32) : 'press Measure'} unit={measured ? 'TFLOPS' : undefined} kind={measured ? 'measured' : undefined} muted={!measured} note="single precision, this GPU" />
                 {p.spec.fp32Tflops > 0 && <Stat label="FP32 shader" value={tops(p.spec.fp32Tflops)} unit="TFLOPS" kind="derived" note={`${grouped(t!.shadingUnits)} ALUs × 2 × ${t!.boostMhz} MHz · not a tensor figure`} />}

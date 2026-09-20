@@ -109,6 +109,64 @@ func matmulTflops(n: Int, half: Bool, passes: Int) -> Double {
     return best
 }
 
+/// Metal 4 tensor ops (MetalPerformancePrimitives, macOS 26): the GPU's matrix path at int8 with int32
+/// accumulate, the precision a PC's "AI TOPS" quotes, and fp16 through the same path. 64 x 64 tiles, four
+/// SIMD-groups per threadgroup, the op looping over K itself. Nil where the shading language or the
+/// primitives are older than Metal 4 (the source then fails to compile and the bench line omits the figures).
+let tensorKernels = """
+#include <metal_stdlib>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace metal;
+using namespace mpp;
+using namespace mpp::tensor_ops;
+template <typename TA, typename TC>
+static inline void mm_tile(device TA* a, device TA* b, device TC* c, uint n, uint2 tgid) {
+  auto A = tensor<device TA, dextents<int32_t, 2>, tensor_inline>(a, dextents<int32_t, 2>(int(n), int(n)));
+  auto B = tensor<device TA, dextents<int32_t, 2>, tensor_inline>(b, dextents<int32_t, 2>(int(n), int(n)));
+  auto C = tensor<device TC, dextents<int32_t, 2>, tensor_inline>(c, dextents<int32_t, 2>(int(n), int(n)));
+  constexpr auto d = matmul2d_descriptor(64, 64, static_cast<int>(dynamic_extent));
+  matmul2d<d, execution_simdgroups<4>> op;
+  auto tA = A.slice(0, int(tgid.y * 64));
+  auto tB = B.slice(int(tgid.x * 64), 0);
+  auto tC = C.slice(int(tgid.x * 64), int(tgid.y * 64));
+  op.run(tA, tB, tC);
+}
+kernel void mm_i8(device int8_t* a [[buffer(0)]], device int8_t* b [[buffer(1)]], device int32_t* c [[buffer(2)]], constant uint& n [[buffer(3)]], uint2 tgid [[threadgroup_position_in_grid]]) { mm_tile<int8_t, int32_t>(a, b, c, n, tgid); }
+kernel void mm_f16(device half* a [[buffer(0)]], device half* b [[buffer(1)]], device float* c [[buffer(2)]], constant uint& n [[buffer(3)]], uint2 tgid [[threadgroup_position_in_grid]]) { mm_tile<half, float>(a, b, c, n, tgid); }
+"""
+
+func tensorOps(n: Int, passes: Int) -> (int8Tops: Double, fp16Tflops: Double)? {
+    guard #available(macOS 26.0, *) else { return nil }
+    let opts = MTLCompileOptions()
+    opts.languageVersion = .version4_0
+    guard let lib = try? device.makeLibrary(source: tensorKernels, options: opts) else { return nil }
+    func run(_ name: String, elemA: Int, elemC: Int) -> Double? {
+        guard let fn = lib.makeFunction(name: name), let pso = try? device.makeComputePipelineState(function: fn) else { return nil }
+        guard let a = device.makeBuffer(length: n * n * elemA, options: .storageModePrivate), let b = device.makeBuffer(length: n * n * elemA, options: .storageModePrivate), let c = device.makeBuffer(length: n * n * elemC, options: .storageModePrivate) else { return nil }
+        var nn = UInt32(n)
+        var best = 0.0
+        for _ in 0..<passes {
+            let cb = queue.makeCommandBuffer()!
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(pso)
+            enc.setBuffer(a, offset: 0, index: 0)
+            enc.setBuffer(b, offset: 0, index: 1)
+            enc.setBuffer(c, offset: 0, index: 2)
+            enc.setBytes(&nn, length: 4, index: 3)
+            enc.dispatchThreadgroups(MTLSize(width: n / 64, height: n / 64, depth: 1), threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+            enc.endEncoding()
+            cb.commit()
+            cb.waitUntilCompleted()
+            if cb.status == .error { return nil }
+            let s = cb.gpuEndTime - cb.gpuStartTime
+            if s > 0 { best = max(best, 2.0 * Double(n) * Double(n) * Double(n) / s / 1e12) }
+        }
+        return best > 0 ? best : nil
+    }
+    guard let i8 = run("mm_i8", elemA: 1, elemC: 4), let f16 = run("mm_f16", elemA: 2, elemC: 4) else { return nil }
+    return (i8, f16)
+}
+
 func bench() {
     let started = Date()
     print("device: \(device.name) (unified memory \(device.hasUnifiedMemory), working set \(device.recommendedMaxWorkingSetSize / (1 << 20)) MiB)")
@@ -117,7 +175,8 @@ func bench() {
     let n = 4096
     let fp32 = matmulTflops(n: n, half: false, passes: 5)
     let fp16 = matmulTflops(n: n, half: true, passes: 5)
-    jsonLine([
+    let tensor = tensorOps(n: n, passes: 8)
+    var line: [String: Any] = [
         "device": device.name,
         "luid": String(format: "%016llx", device.registryID),
         "bandwidthGBs": bw.best,
@@ -127,7 +186,12 @@ func bench() {
         "matmulTflopsFp32": fp32,
         "matmulTflopsFp16storage": fp16,
         "elapsedMs": Date().timeIntervalSince(started) * 1000
-    ])
+    ]
+    if let t = tensor {
+        line["matmulTopsInt8"] = t.int8Tops
+        line["matmulTflopsFp16tensor"] = t.fp16Tflops
+    }
+    jsonLine(line)
 }
 
 // MARK: - loads

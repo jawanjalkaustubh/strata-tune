@@ -358,6 +358,8 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
   app
     .whenReady()
     .then(async () => {
+      // macOS in development runs inside the stock Electron bundle: the Dock icon is set here so it never shows Electron's (the packaged .app carries its own icns).
+      if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'strata-tune-st.png'));
       if (SELFTEST) {
         // Never hang CI: a stuck test reports itself and exits 1.
         selfTestDeadline = setTimeout(() => finishSelfTest({ ok: false, reason: 'self-test timed out' }, 1), 15000);
