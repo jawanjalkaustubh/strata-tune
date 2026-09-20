@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Crosshair, Play, Square } from 'lucide-react';
+import { Crosshair, Play, Square, UserPlus } from 'lucide-react';
 import { api, ipcErrorMessage, type CaptureState, type CaptureStatus } from '../../api';
 import { Pill, type Tone } from '../monitor/Pill';
 import { BENCH_PICK, ProcessPicker, type Pick } from './ProcessPicker';
@@ -37,7 +37,11 @@ export const CaptureBar: React.FC<{ state: CaptureState }> = ({ state }) => {
   const [pick, setPick] = useState<Pick>(BENCH_PICK);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  /** What adding the account answered (electron/presentmon.ts grantTraceAccess); shown until the next start. */
+  const [granted, setGranted] = useState('');
   const installed = state.presentMon.installed;
+  // The account is not in Performance Log Users (the first laptop, 2026-09-19): said before Start, with the fix, instead of PresentMon's exit 6 after the bench has begun.
+  const traceRefused = state.trace !== null && !state.trace.allowed;
   const busy = state.status === 'capturing' || state.status === 'saving';
 
   const call = (p: Promise<unknown>) => {
@@ -45,16 +49,20 @@ export const CaptureBar: React.FC<{ state: CaptureState }> = ({ state }) => {
     setPending(true);
     p.catch((e) => setError(ipcErrorMessage(e))).finally(() => setPending(false));
   };
-  const start = () => api && call(pick.kind === 'bench' ? api.capture.startBench() : api.capture.start(pick.pid));
+  const start = () => {
+    setGranted('');
+    if (api) call(pick.kind === 'bench' ? api.capture.startBench() : api.capture.start(pick.pid));
+  };
   const stop = () => api && call(api.capture.stop());
   const arm = () => api && call(api.capture.arm(!state.armed));
+  const grant = () => api && call(api.capture.grantTrace().then((r) => setGranted(r.message)));
   const choose = (p: Pick) => {
     setPick(p);
     remember(p);
   };
 
-  const notice = error || (!installed ? state.presentMon.message : state.message);
-  const noticeTone = error || !installed || state.status === 'error' ? 'text-rose-300' : 'text-studio-muted';
+  const notice = error || (!installed ? state.presentMon.message : granted || (traceRefused ? state.trace!.reason : state.message));
+  const noticeTone = error || !installed || state.status === 'error' ? 'text-rose-300' : traceRefused && !granted ? 'text-amber-200' : 'text-studio-muted';
 
   return (
     <section className="rounded-md border border-studio-border bg-studio-panel px-3 py-2 space-y-1.5 min-w-0">
@@ -85,8 +93,13 @@ export const CaptureBar: React.FC<{ state: CaptureState }> = ({ state }) => {
         )}
       </div>
       {notice && (
-        <div className={`text-mini ${noticeTone} break-words min-w-0`}>
-          {notice}
+        <div className={`text-mini ${noticeTone} break-words min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1`}>
+          <span className="min-w-0">{notice}</span>
+          {traceRefused && !granted && installed && (
+            <button className="btn" onClick={grant} disabled={!api || pending || busy} title="Runs: net localgroup &quot;Performance Log Users&quot; <your account> /add, as administrator (one UAC prompt). Nothing else changes.">
+              <UserPlus size={13} /> Add my account
+            </button>
+          )}
         </div>
       )}
     </section>

@@ -199,6 +199,33 @@ export interface StaticSnapshot {
   volumes: Volume[];
   /** Models Ollama currently holds in memory (http://127.0.0.1:11434/api/ps), or null if Ollama is not running. */
   ollama: OllamaModel[] | null;
+  /**
+   * Every display adapter Windows knows, NVIDIA or not: `gpus[]` is NVML's list, so an AMD
+   * or Intel card exists only here (the first laptop, an ASUS GA402RJ, carries an RX 6700S
+   * with 8176 MiB beside the 6900HS's Radeon Graphics with 512). Discrete cards first, by
+   * dedicated memory. Optional because snapshots saved before 2026-09-19 have no such key.
+   */
+  adapters?: DisplayAdapter[];
+  /** Wall or battery at capture time; optional for the same reason. */
+  battery?: BatteryInfo;
+}
+
+export interface DisplayAdapter {
+  name: string;
+  vendor: 'nvidia' | 'amd' | 'intel' | 'other';
+  /** From the driver's own registry figure (Win32_VideoController.AdapterRAM is 32-bit and reads 4 GB on any bigger card); 0 when unknown. */
+  dedicatedMiB: number;
+  driverVersion: string;
+  driverDate: string | null;
+  /** Under 1 GiB of dedicated memory, or the name a processor's own graphics carry. */
+  integrated: boolean;
+}
+
+export interface BatteryInfo {
+  present: boolean;
+  onAc: boolean;
+  /** 0–100, null when Windows does not know. */
+  percent: number | null;
 }
 
 /** Per-process idle sample for the "background hogs" check. */

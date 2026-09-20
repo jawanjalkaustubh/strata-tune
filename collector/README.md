@@ -98,7 +98,8 @@ Plan section 5, made concrete:
   `warming: true` meanwhile and every tick carries the same flag. The sources then open on a
   background task, NVML first (it is quick and the GPU panel reads from it alone), then the
   LibreHardwareMonitor driver with its hardware groups enabled live in stages, CPU, board,
-  GPU, memory, storage (SMART over every drive is the slow one), then PDH. `/sensors/meta`
+  GPU, memory, battery (a laptop's pack: charge, the watts in or out, wear; a desktop has no
+  node), storage (SMART over every drive is the slow one), then PDH. `/sensors/meta`
   grows as they arrive; a client re-reads it once `warming` turns false. The log stamps each
   step `t+X ms` from process start, which is the measurement for the 1.5 s budget.
 - **One bad source is a gap, not a failure.** NVML, LibreHardwareMonitor and PDH each open
@@ -143,7 +144,7 @@ Plan section 5, made concrete:
 | Endpoint | Returns |
 |---|---|
 | `GET /health` | `Health`: pid, version, PawnIO usable (the device opened, not the registry entry), NVML driver, whether the LibreHardwareMonitor and PDH sources opened (`lhm.available`, `pdh.available`), `qpcFrequency`, uptime |
-| `GET /snapshot` | `StaticSnapshot`: OS, chassis and laptop flag (SMBIOS chassis type; a battery only decides when the type is missing or "Other", because a USB UPS is a battery too), CPU (CPUID family/model from the WMI caption), board and BIOS date, DIMMs, `gpus[]` as read at capture time, GPU driver version and install date, active power plan plus the Windows power-mode overlay (`overlayGuid`, the Settings slider the active-scheme API never reports), physical disks (media and bus type), fixed volumes with the physical disk each lives on, Ollama's loaded models or `null`. Each block is read on its own; one failed WMI class empties that block only. Takes 1–3 s (WMI). |
+| `GET /snapshot` | `StaticSnapshot`: OS, chassis and laptop flag (SMBIOS chassis type; a battery only decides when the type is missing or "Other", because a USB UPS is a battery too), CPU (CPUID family/model from the WMI caption), board and BIOS date, DIMMs, `gpus[]` as read at capture time (NVML's list), `adapters[]` (every display adapter Windows lists, NVIDIA or not, with the dedicated memory the driver writes to its display-class registry key — Win32_VideoController.AdapterRAM is 32-bit — and an `integrated` flag: under 1 GiB or a processor-graphics name; discrete cards first; added 2026-09-19 for the first AMD laptop, whose RX 6700S NVML cannot see), `battery` (GetSystemPowerStatus: present, on AC, percent), GPU driver version and install date, active power plan plus the Windows power-mode overlay (`overlayGuid`, the Settings slider the active-scheme API never reports), physical disks (media and bus type), fixed volumes with the physical disk each lives on, Ollama's loaded models or `null`. Each block is read on its own; one failed WMI class empties that block only. Takes 1–3 s (WMI). |
 | `GET /sensors/meta` | `SensorMeta[]` |
 | `GET /sensors/latest` | one `SensorRow`: the newest value of every id |
 | `GET /sensors/window?seconds=N` | `SensorWindow`: full-rate `rows` for N ≤ 600, `summaries` beyond, the other list empty; thinned per source until the JSON fits in about 2.5 MB |

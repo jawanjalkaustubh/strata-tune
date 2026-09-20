@@ -20,11 +20,14 @@ to fix it. Free, no accounts, no telemetry, no cloud calls. Everything runs on y
 
 - Windows 10 or 11, 64-bit.
 - Any CPU. Sensors and audit rules exist for AMD Ryzen and Intel Core.
-- A GPU is optional. The GPU audit, the Monitor's card panel and the AI Models measurements
-  need an NVIDIA GeForce card with a current driver; the Headroom hunt needs one too. AMD and
-  Intel cards show what their drivers report.
-- **Capture** (frame times with PresentMon) works without elevation when your account is in
-  the *Performance Log Users* group; otherwise Windows asks to elevate for the capture.
+- A GPU is optional. An NVIDIA GeForce card with a current driver gets everything: the GPU
+  audit checks, the full card panel, this card's own figures on the AI Models page and the
+  Headroom hunt. An AMD or Intel card shows what its driver reports (clocks, load, VRAM, power,
+  temperatures, fan), sizes the AI models against its VRAM and runs the bench; the GPU audit
+  checks and the Headroom hunt say in one sentence that they need an NVIDIA card.
+- **Capture** (frame times with PresentMon) needs your account in the *Performance Log Users*
+  group. When it is not, the Capture page says so and offers to add it: one UAC prompt, then
+  sign out and back in.
 - **AI Models**: install Ollama (<https://ollama.com>) to measure real tokens/s on your models.
   Without it the page still estimates from your hardware.
 

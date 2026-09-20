@@ -14,6 +14,8 @@ interface Props {
 }
 
 const NOT_IN_APP = 'available inside the app';
+/** The main window's open handler routes https out of the app. */
+const PAWNIO_URL = 'https://pawnio.eu';
 
 const Row: React.FC<{ label: string; children: React.ReactNode; title?: string }> = ({ label, children, title }) => (
   <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 py-1 border-b border-studio-border/60 last:border-b-0" title={title}>
@@ -65,7 +67,26 @@ export const Facts: React.FC<Props> = ({ version, system, directx, collector, on
           {statusLabel(collector)}
           {h ? ` · ${h.version} · pid ${h.pid} · up ${uptime(h.uptime)}${h.warming ? ' · warming' : ''}` : ''}
         </Row>
-        <Row label="PawnIO">{h ? (h.pawnIo.installed ? `driver open${h.pawnIo.version ? ` · ${h.pawnIo.version}` : ''}` : 'not usable: CPU and board sensors are off') : inElectron ? 'known once the collector answers' : NOT_IN_APP}</Row>
+        <Row label="PawnIO">
+          {h ? (
+            h.pawnIo.installed ? (
+              `driver open${h.pawnIo.version ? ` · ${h.pawnIo.version}` : ''}`
+            ) : (
+              // The first laptop had no PawnIO and the row said only that the sensors were off; the fix belongs beside the fact.
+              <>
+                not installed: CPU and board sensors are off. Get it from{' '}
+                <button className="text-studio-accent hover:underline" onClick={() => window.open(PAWNIO_URL, '_blank', 'noopener')} title={PAWNIO_URL}>
+                  pawnio.eu
+                </button>
+                , then restart Strata Tune.
+              </>
+            )
+          ) : inElectron ? (
+            'known once the collector answers'
+          ) : (
+            NOT_IN_APP
+          )}
+        </Row>
         <Row label="HWiNFO bridge">{system ? `${system.hwinfoRunning ? 'HWiNFO64 is running' : 'HWiNFO64 not running'} · bridge not in this build` : inElectron ? 'reading…' : NOT_IN_APP}</Row>
       </div>
     </div>

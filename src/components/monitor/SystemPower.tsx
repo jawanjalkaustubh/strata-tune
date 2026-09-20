@@ -11,6 +11,8 @@ import { COMFORTABLE, PSU_TRANSIENT_NOTE, psuVerdict, wallWatts } from '../../an
 import { useSettings } from '../useSettings';
 import { PsuForm, psuBadge, psuOf } from '../advisor/PsuForm';
 import { NO_CAPS, type Caps } from './caps';
+import { igpuLayout } from './gpuLayout';
+import { batteryFlowW, batteryLayout } from './BatteryPanel';
 
 interface Props {
   index: SensorIndex;
@@ -24,15 +26,16 @@ interface Props {
 
 /** The battery as the library reads it (plan 17d: 'Monitor leads with CPU, battery and the board'): charge, the rate in or out, the estimated time left. */
 export function batteryLine(index: SensorIndex, tick: Tick): string | null {
-  const hw = index.hardware(/^Battery$/i);
-  if (!hw.length) return null;
+  const layout = batteryLayout(index);
+  if (!layout) return null;
   const v = (type: 'Level' | 'Power' | 'TimeSpan', name: RegExp) => {
-    const id = index.find(hw, type, name)?.id;
+    const id = index.find([layout.hardware], type, name)?.id;
     const x = id ? tick.sensors[id] : undefined;
     return typeof x === 'number' && Number.isFinite(x) ? x : undefined;
   };
   const charge = v('Level', /^Charge Level$/i);
-  const rate = v('Power', /^Charge\/Discharge Rate$/i);
+  // The library lists "Charge Rate" or "Discharge Rate" for the direction in force (the first laptop), not one signed row.
+  const rate = batteryFlowW(layout, tick.sensors);
   const left = v('TimeSpan', /^Remaining Time/i);
   const parts: string[] = [];
   if (charge !== undefined) parts.push(`${charge.toFixed(0)} % charged`);
@@ -51,22 +54,25 @@ export function batteryLine(index: SensorIndex, tick: Tick): string | null {
 export const SystemPower: React.FC<Props> = ({ index, tick, ring, snapshot, panel, caps = NO_CAPS }) => {
   const psu = psuOf(useSettings());
   const battery = caps.battery ? batteryLine(index, tick) : null;
+  const dgpuName = caps.dgpu?.name;
   const ids = useMemo(() => {
     const cpu = index.hardware(/^cpu$/i);
     const io = index.hardware(/^(SuperIO|EmbeddedController)$/i);
     const gpuFans = index.findAll(index.hardware(/^Gpu/i), 'Fan', /./).map((f) => f.meta.id);
     return {
       packageW: index.find(cpu, 'Power', /^(?:CPU )?Package$/)?.id,
+      // An AMD or Intel card's package power comes from the library, there being no NVML row for it (the first laptop's RX 6700S).
+      libraryGpuW: igpuLayout(index, undefined, dgpuName)?.power,
       fans: [...index.findAll(io, 'Fan', /./).map((f) => f.meta.id), ...gpuFans],
       queues: index.findAll(undefined, 'Factor', /^Disk queue length$/).map((f) => f.meta.id)
     };
-  }, [index]);
+  }, [index, dgpuName]);
   const dimmCount = snapshot?.ram.modules.length ?? 0;
 
   const estimate = (t: Tick): Estimate =>
     systemPower({
       cpuPackageW: ids.packageW === undefined ? undefined : t.sensors[ids.packageW],
-      gpuBoardW: t.gpu[0] ? t.gpu[0].powerMw / 1000 : undefined,
+      gpuBoardW: t.gpu[0] ? t.gpu[0].powerMw / 1000 : ids.libraryGpuW === undefined ? undefined : t.sensors[ids.libraryGpuW],
       dimmCount,
       diskQueues: ids.queues.map((id) => t.sensors[id] ?? 0),
       spinningFans: ids.fans.filter((id) => (t.sensors[id] ?? 0) > 0).length

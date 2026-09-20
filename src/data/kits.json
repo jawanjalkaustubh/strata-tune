@@ -68,5 +68,20 @@
     "speedFrom": "capture",
     "profile": "jedec",
     "note": "AD5U480016G-B (ADATA Premier): the same layout as XPG, but a JEDEC module with no profile."
+  },
+  {
+    "vendor": "Samsung",
+    "pattern": "^M[34]\\d{2}R\\w+-C([A-Z]{2})",
+    "speedFrom": "code",
+    "codes": { "QK": 4800, "WM": 5600 },
+    "profile": "jedec",
+    "note": "M425R1GB4BB0-CQK0D (the first laptop, an ASUS GA402RJ: two DDR5-4800 SO-DIMMs): M425 is a DDR5 SO-DIMM (M323 UDIMM, M321 RDIMM), R the DDR5 generation, 1GB4 the density, BB0 the die revision, then -C and the speed grade: QK is 4800B, WM is 5600B. JEDEC modules with no profile; a grade not listed here is unknown, never guessed."
+  },
+  {
+    "vendor": "Micron",
+    "pattern": "^MTC\\d+C\\d+S\\d[SU]C(\\d{2})",
+    "speedFrom": "captureX100",
+    "profile": "jedec",
+    "note": "MTC8C1084S1SC48BA1: MTC is a DDR5 module, then the organisation, S1 single rank, S = SO-DIMM (U = UDIMM), C48 = 4800 MT/s (C56 = 5600). Laptop and OEM desktop JEDEC modules with no profile."
   }
 ]

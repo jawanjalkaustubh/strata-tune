@@ -12,8 +12,10 @@ export type KitProfile = 'xmp' | 'jedec';
 interface KitRule {
   vendor: string;
   pattern: string;
-  /** 'capture' when the group is the MT/s, 'captureX100' when it is the MT/s divided by 100 (KF560 → 6000). */
-  speedFrom: 'capture' | 'captureX100';
+  /** 'capture' when the group is the MT/s, 'captureX100' when it is the MT/s divided by 100 (KF560 → 6000), 'code' when it is a vendor's speed code looked up in `codes`. */
+  speedFrom: 'capture' | 'captureX100' | 'code';
+  /** For 'code': the speed grade letters as the part number carries them → MT/s (Samsung's QK → 4800). */
+  codes?: Record<string, number>;
   /** 'xmp' kits carry an XMP/EXPO profile to enable; 'jedec' parts run at whatever the platform allows. */
   profile: KitProfile;
   note: string;
@@ -47,7 +49,7 @@ export function ratedSpeedFor(partNumber: string): RatedKit | null {
   for (const rule of RULES) {
     const m = rule.regex.exec(part);
     if (!m) continue;
-    const mts = Number(m[1]) * (rule.speedFrom === 'captureX100' ? 100 : 1);
+    const mts = rule.speedFrom === 'code' ? (rule.codes?.[m[1].toUpperCase()] ?? 0) : Number(m[1]) * (rule.speedFrom === 'captureX100' ? 100 : 1);
     if (mts >= MIN_MTS && mts <= MAX_MTS) return { vendor: rule.vendor, ratedMts: mts, profile: rule.profile };
   }
   return null;

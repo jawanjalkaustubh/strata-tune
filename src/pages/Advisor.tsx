@@ -12,7 +12,8 @@ import { BestFor } from '../components/advisor/BestFor';
 import { ModelList } from '../components/advisor/ModelList';
 import { Tag } from '../components/advisor/Tag';
 import { gib, tokens } from '../components/advisor/format';
-import { factsFromPicker, factsFromSnapshot, freeRamBytes, sameGpu, type HardwareFacts, type PickerChoice } from '../components/advisor/hardware';
+import { factsFromPicker, factsFromSnapshot, freeRamBytes, libraryVram, sameGpu, type HardwareFacts, type PickerChoice } from '../components/advisor/hardware';
+import { discreteAdapter } from '../analysis/adapters';
 import { ALL_TAGS, DEFAULT_FACTOR, GPU_NAMES, MAX_CONTEXT, adviseRows, bestRows, derivedFactor, gpuSpecOf, npuTopsOf, streamedBandwidth } from '../components/advisor/rows';
 import { thisCard } from '../components/advisor/thisCard';
 import { useHeldClocks } from '../components/advisor/useHeldClocks';
@@ -85,15 +86,18 @@ export const Advisor: React.FC = () => {
     let live = true;
     (async () => {
       const snapshot = await c.snapshot();
-      // Free RAM is a sensor, not a snapshot field; without it the total stands in.
+      // Free RAM is a sensor, not a snapshot field; without it the total stands in. So is an AMD or Intel card's VRAM in use.
       let freeRam: number | null = null;
+      let vram: { usedMiB: number; totalMiB: number } | null = null;
       try {
         const [meta, latest] = await Promise.all([c.sensorsMeta(), c.sensorsLatest()]);
         freeRam = freeRamBytes(meta, latest);
+        const card = discreteAdapter(snapshot);
+        if (card && snapshot.gpus.length === 0) vram = libraryVram(meta, latest, card.name);
       } catch {
         /* the stream may not be up yet */
       }
-      if (live) setSnapshotFacts(factsFromSnapshot(snapshot, freeRam, modelsDir));
+      if (live) setSnapshotFacts(factsFromSnapshot(snapshot, freeRam, modelsDir, vram));
     })().catch((e) => live && setSnapshotError(ipcErrorMessage(e)));
     return () => {
       live = false;
@@ -200,6 +204,21 @@ export const Advisor: React.FC = () => {
   const summaryKind = facts.source === 'collector' ? 'measured' : 'spec';
   const diskLabel = facts.diskLetter ? `${facts.diskLetter}:` : 'the model drive';
 
+  // Connected but the snapshot (1–3 s of WMI) not in yet: nothing is drawn from the picker's
+  // default, which is the dev box's card and would show another PC's numbers for a second
+  // (seen on the first laptop, 2026-09-19: "VRAM 32 GiB · RAM 32 GiB" before "RAM 16 GiB").
+  if (connected && !snapshotFacts && !snapshotError) {
+    return (
+      <div className="p-4 max-w-6xl w-full mx-auto space-y-4">
+        <header className="flex flex-wrap items-center gap-3">
+          <h1 className="text-base font-semibold text-studio-text">AI Models</h1>
+          <CollectorStatusPill state={status} />
+        </header>
+        <p className="text-mini text-studio-muted">Reading this machine…</p>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 max-w-6xl w-full mx-auto space-y-4">
       <header className="flex flex-wrap items-center gap-3">
@@ -231,6 +250,7 @@ export const Advisor: React.FC = () => {
         spec={spec}
         card={card}
         integrated={facts.integrated}
+        laptop={facts.laptop}
         ramBandwidthGBs={facts.ramBandwidthGBs}
         latest={latest}
         npuTops={npuTopsOf(facts.cpuName)}

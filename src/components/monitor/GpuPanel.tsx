@@ -7,7 +7,7 @@ import { Bar, toneByLimit, toneByThresholds } from './Bar';
 import { Pill, type Tone } from './Pill';
 import { PinHeader } from './PinHeader';
 import { CardSchematic } from './CardSchematic';
-import { gpuLayout, igpuLayout } from './gpuLayout';
+import { gpuLayout, igpuLayout, otherGpuNodes } from './gpuLayout';
 import { NO_CAPS, type Caps } from './caps';
 import { decodeReasons } from './reasons';
 import { GPU_IDLE, hasAny, hasBit, IDLE_HINT, SLOWDOWN, SW_POWER_CAP, THERMAL_OR_BRAKE } from '../../analysis/nvmlBits';
@@ -33,13 +33,18 @@ const percent = (x: number) => `${x.toFixed(0)} %`;
 const watts = (x: number) => `${x.toFixed(1)} W`;
 
 /**
- * The integrated GPU's panel (plan 17d row 1, 17c 'No NVIDIA'): the library's own sensors
- * for the AMD or Intel node, headed by its name: core clock, load, the engine loads that are
- * busy, shared and dedicated memory, power and temperature. Rows the node does not carry
- * collapse; nothing NVML-shaped is drawn for a card that is not there.
+ * The panel for a GPU read through the library alone (plan 17d row 1 and the mid-range row's
+ * AMD case, 17c 'No NVIDIA'): an integrated GPU, or a discrete AMD or Intel card the app has
+ * no driver API for. Headed by the node's name: core and memory clocks, load, the engine
+ * loads that are busy, the card's own VRAM when its driver reports it (else the D3D shared
+ * and dedicated figures an iGPU draws from RAM), power, temperature, hot spot and fan. Rows
+ * the node does not carry collapse; nothing NVML-shaped is drawn for a card that is not there.
+ * On a hybrid laptop the card sleeps while the iGPU drives the desktop, so 0 MHz at idle is
+ * the card asleep, not a dead sensor, and the aside names the iGPU beside it.
  */
-const IgpuPanel: React.FC<Props> = ({ index, tick, ring, panel }) => {
-  const layout = useMemo(() => igpuLayout(index, undefined), [index]);
+const LibraryGpuPanel: React.FC<Props> = ({ index, tick, ring, panel, caps = NO_CAPS }) => {
+  const dgpuName = caps.dgpu?.name;
+  const layout = useMemo(() => igpuLayout(index, undefined, dgpuName), [index, dgpuName]);
   if (!layout) {
     return (
       <Panel kind="GPU" title="GPU" {...panel}>
@@ -50,22 +55,50 @@ const IgpuPanel: React.FC<Props> = ({ index, tick, ring, panel }) => {
   const v = (id?: string) => (id === undefined ? undefined : tick.sensors[id]);
   const hist = (id?: string) => (id === undefined ? undefined : ring.series((t) => t.sensors[id]));
   const vendor = vendorOf(layout.name);
+  // The panel shows a discrete card when the snapshot says this node is one; a card with its own VRAM figure and no adapter list (an older snapshot) counts too.
+  const discrete = caps.dgpu ? caps.dgpu.name === layout.name : !!layout.vramTotal && (v(layout.vramTotal) ?? 0) >= 1024;
+  const others = otherGpuNodes(index, layout.hardware, undefined);
+  const load = v(layout.load) ?? 0;
+  const asleep = discrete && (v(layout.clock) ?? 0) === 0 && load < 1;
+  const aside = discrete
+    ? `${caps.dgpu?.dedicatedMiB ? `${Math.round(caps.dgpu.dedicatedMiB / 1024)} GB · ` : ''}${caps.dgpu?.driverVersion ? `driver ${caps.dgpu.driverVersion}` : 'discrete card'}`
+    : 'integrated · no discrete card';
   const clockHigh = Math.max(ring.high((t) => (layout.clock ? t.sensors[layout.clock] : undefined)), v(layout.clock) ?? 0, 1000);
+  const memHigh = Math.max(ring.high((t) => (layout.memClock ? t.sensors[layout.memClock] : undefined)), v(layout.memClock) ?? 0, 1000);
   const powerHigh = Math.max(ring.high((t) => (layout.power ? t.sensors[layout.power] : undefined)), v(layout.power) ?? 0, 15);
+  const fanHigh = Math.max(ring.high((t) => (layout.fan ? t.sensors[layout.fan] : undefined)), v(layout.fan) ?? 0, 2000);
   const sharedTotal = v(layout.sharedTotal);
+  const vramTotal = v(layout.vramTotal);
   const engines = layout.engines.map((e) => ({ name: e.name, load: Math.max(0, ...e.ids.map((id) => tick.sensors[id] ?? 0)) })).filter((e) => e.load > 0);
+  const fanRpm = v(layout.fan);
+  const fan = fanState(fanRpm, v(layout.fanDuty));
   return (
-    <Panel kind="GPU" title={layout.name} nameKey={layout.hardware} vendor={vendor} aside={<span className="figure text-[12px] text-studio-muted">integrated · no discrete card</span>} {...panel}>
+    <Panel kind="GPU" title={layout.name} nameKey={layout.hardware} vendor={vendor} aside={<span className="figure text-[12px] text-studio-muted truncate">{aside}</span>} {...panel}>
+      {discrete && others.length > 0 && (
+        <p className="text-mini text-studio-subtle pb-1.5">
+          {asleep ? `The card is asleep; ${others[0]} drives the desktop until a game needs it.` : `${others[0]} sits beside it and drives the desktop.`}
+        </p>
+      )}
       <div className="bars space-y-1.5 min-w-0">
-        <Bar label="Core clock" value={v(layout.clock)} format={mhz} max={clockHigh * 1.05} mark={clockHigh} markLabel={`Highest this session ${clockHigh.toFixed(0)} MHz`} tone={(v(layout.load) ?? 0) < 5 ? 'idle' : 'ok'} history={hist(layout.clock)} />
-        <Bar label="GPU load" value={v(layout.load)} format={percent} max={100} tone={(v(layout.load) ?? 0) < 5 ? 'idle' : 'ok'} history={hist(layout.load)} />
+        <Bar label="Core clock" value={v(layout.clock)} format={mhz} max={clockHigh * 1.05} mark={clockHigh} markLabel={`Highest this session ${clockHigh.toFixed(0)} MHz`} tone={load < 5 ? 'idle' : 'ok'} history={hist(layout.clock)} />
+        {layout.memClock && <Bar label="Memory clock" value={v(layout.memClock)} format={mhz} max={memHigh * 1.05} tone={load < 5 ? 'idle' : 'ok'} history={hist(layout.memClock)} />}
+        <Bar label="GPU load" value={v(layout.load)} format={percent} max={100} tone={load < 5 ? 'idle' : 'ok'} history={hist(layout.load)} />
         {engines.map((e) => (
           <Bar key={e.name} label={e.name} value={e.load} format={percent} max={100} tone="ok" />
         ))}
-        <Bar label="Shared memory" value={v(layout.sharedUsed)} format={(x) => gib(x)} max={sharedTotal || Math.max(v(layout.sharedUsed) ?? 0, 1024)} sub={sharedTotal ? `of ${gib(sharedTotal)} of RAM` : 'from RAM'} tone={toneByLimit(v(layout.sharedUsed) ?? 0, sharedTotal || undefined, 0.9)} history={hist(layout.sharedUsed)} />
-        <Bar label="Dedicated" value={v(layout.dedicatedUsed)} format={(x) => `${x.toFixed(0)} MB`} max={Math.max(v(layout.dedicatedUsed) ?? 0, 512)} tone="ok" history={hist(layout.dedicatedUsed)} />
+        {discrete && vramTotal ? (
+          <Bar label="VRAM" value={v(layout.vramUsed)} format={(x) => gib(x)} max={vramTotal} sub={`of ${gib(vramTotal)}`} tone={toneByLimit(v(layout.vramUsed) ?? 0, vramTotal, 0.9)} history={hist(layout.vramUsed)} />
+        ) : (
+          <>
+            <Bar label="Shared memory" value={v(layout.sharedUsed)} format={(x) => gib(x)} max={sharedTotal || Math.max(v(layout.sharedUsed) ?? 0, 1024)} sub={sharedTotal ? `of ${gib(sharedTotal)} of RAM` : 'from RAM'} tone={toneByLimit(v(layout.sharedUsed) ?? 0, sharedTotal || undefined, 0.9)} history={hist(layout.sharedUsed)} />
+            <Bar label="Dedicated" value={v(layout.dedicatedUsed)} format={(x) => `${x.toFixed(0)} MB`} max={Math.max(v(layout.dedicatedUsed) ?? 0, 512)} tone="ok" history={hist(layout.dedicatedUsed)} />
+          </>
+        )}
         <Bar label="Power" value={v(layout.power)} format={watts} max={powerHigh * 1.1} tone="ok" history={hist(layout.power)} />
         <Bar label="Temperature" value={v(layout.temperature)} format={degrees} max={100} tone={toneByThresholds(v(layout.temperature) ?? 0, 80, 90)} history={hist(layout.temperature)} />
+        {layout.hotSpot && <Bar label="Hot spot" value={v(layout.hotSpot)} format={degrees} max={110} tone={toneByThresholds(v(layout.hotSpot) ?? 0, 90, 100)} history={hist(layout.hotSpot)} />}
+        {layout.fan && !fan.unused && <Bar label="Fan" value={fanRpm} format={(x) => `${x.toFixed(0)} rpm`} max={fanHigh * 1.1} sub={fan.note || v(layout.fanDuty) === undefined ? undefined : `${v(layout.fanDuty)!.toFixed(0)} %`} note={fan.note} tone={fan.tone} history={hist(layout.fan)} />}
+        {layout.fan && fan.unused && <p className="label text-studio-subtle pl-0.5">fan stopped</p>}
       </div>
     </Panel>
   );
@@ -86,8 +119,8 @@ export const GpuPanel: React.FC<Props> = (props) => {
   const layout = useMemo(() => gpuLayout(index, gpuName), [index, gpuName]);
   const vendor = useMemo(() => vendorOf(gpuName), [gpuName]);
 
-  // No NVML card: the integrated GPU's own sensors, or one sentence and a short panel.
-  if (!gpu) return <IgpuPanel {...props} />;
+  // No NVML card: the library's own sensors for the AMD or Intel card or the iGPU, or one sentence and a short panel.
+  if (!gpu) return <LibraryGpuPanel {...props} />;
 
   const v = (id?: string) => (id === undefined ? undefined : tick.sensors[id]);
   const hist = (id?: string) => (id === undefined ? undefined : ring.series((t) => t.sensors[id]));

@@ -143,8 +143,9 @@ export const ModelList: React.FC<Props> = (p) => {
                   <span>
                     {r.cpuOnly ? (r.bucket === 'no' ? 'more than RAM can hold' : 'from RAM') : r.headroomBytes >= 0 ? `${gib(r.headroomBytes)} free` : `${gib(-r.headroomBytes)} over`}
                     {p.liveVram && r.bucket !== 'no' && !r.fitsNow && (
-                      <span className="ml-1.5 text-amber-400/80" title="Another app holds video memory right now; the verdict judges the card's total">
-                        · VRAM busy now
+                      // A CPU-only row loads from RAM, so what is busy is RAM (the first laptop read "VRAM busy now" on every row with no card in the sizing).
+                      <span className="ml-1.5 text-amber-400/80" title={r.cpuOnly ? 'Other programs hold that much RAM right now; the verdict judges the total' : 'Another app holds video memory right now; the verdict judges the card\'s total'}>
+                        · {r.cpuOnly ? 'RAM' : 'VRAM'} busy now
                       </span>
                     )}
                   </span>

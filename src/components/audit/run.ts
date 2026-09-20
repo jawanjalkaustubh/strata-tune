@@ -7,6 +7,7 @@ import { gpuTitle } from '../monitor/vendors';
 import { panelName } from '../monitor/Panel';
 import { gpuKey } from '../monitor/GpuPanel';
 import { BOARD_KEY, boardName } from '../monitor/BoardPanel';
+import { gpuSummary } from '../../analysis/adapters';
 
 /** One audit result, as the page shows and stores it. */
 export interface AuditResult {
@@ -38,6 +39,18 @@ export const STEPS: Step[] = [
  */
 export const FILL_RATE_STEP: Step = { label: 'Fill-rate cross-check (the driver gave no ROP count)', seconds: 8 };
 const FILL_RATE_SECONDS = 6;
+/** The steps whose readings come from NVML (left out without an NVIDIA card) and the one whose rules read the library's CPU node (left out without it). */
+const GPU_LOAD_STEPS = new Set([STEPS[2].label, STEPS[3].label]);
+const CPU_LOAD_STEP = STEPS[4].label;
+
+/** Whether the sensor tree has a hardware node of this type; a list that cannot be read counts as present, so a step is never dropped on a hiccup. */
+async function sensorsPresent(c: CollectorApi, type: RegExp): Promise<boolean> {
+  try {
+    return (await c.sensorsMeta()).some((s) => type.test(s.hardwareType));
+  } catch {
+    return true;
+  }
+}
 /** The timer probe's trace (audit rule timer-resolution): instant unless a process holds the timer raised, then powercfg names it in about this many seconds plus its analysis. */
 const TIMER_TRACE_SECONDS = 5;
 
@@ -105,23 +118,31 @@ export function auditRun(c: CollectorApi, onStep: (steps: Step[], step: number) 
     if (first === null) return { at: nowIso, machine: '', findings: [], skipped: [], interrupted: interruption() };
     if ('e' in first) throw first.e;
     const snapshot = first.v;
+    // Which sensors the load steps would read (plan 17d): the GPU loads are sampled through
+    // NVML alone, so without an NVIDIA card they ran for 23 s and recorded nothing on the first
+    // laptop; the CPU load's rules read the library's CPU node, which needs PawnIO. A step
+    // whose readings cannot exist is left out of the list, not run for nothing.
+    const cpuSensors = await sensorsPresent(c, /^cpu$/i);
+    const gpuLoads = snapshot.gpus.length > 0;
+    steps = STEPS.filter((s) => (GPU_LOAD_STEPS.has(s.label) ? gpuLoads : CPU_LOAD_STEP === s.label ? cpuSensors : true));
     // The snapshot decides whether the fill-rate step is worth its seconds, so the list is per run.
-    if (needsFillRateCrossCheck(snapshot)) steps = [...STEPS, FILL_RATE_STEP];
+    if (needsFillRateCrossCheck(snapshot)) steps = [...steps, FILL_RATE_STEP];
+    const at = (label: string) => steps.findIndex((s) => s.label === label);
     // The timer probe runs beside the idle sample (both are the machine at rest); a failed read is 'unknown', never a skipped step.
     const timersRead = api ? api.about.timers(TIMER_TRACE_SECONDS).catch(() => null) : Promise.resolve(null);
     const hogs = await optional(1, () => c.hogs(5));
     const timers = stoppedAt === null ? await Promise.race([timersRead, stopSignal]) : null;
-    const pcieUnderLoad = await load(2, 'light', 3);
-    const thermalRamp = await load(3, 'heavy', 20);
-    const cpuLoad = await load(4, 'cpu', 20);
-    const fillRate = steps.length > STEPS.length ? await load(STEPS.length, 'fillrate', FILL_RATE_SECONDS) : null;
+    const pcieUnderLoad = gpuLoads ? await load(at(STEPS[2].label), 'light', 3) : null;
+    const thermalRamp = gpuLoads ? await load(at(STEPS[3].label), 'heavy', 20) : null;
+    const cpuLoad = cpuSensors ? await load(at(STEPS[4].label), 'cpu', 20) : null;
+    const fillRate = at(FILL_RATE_STEP.label) >= 0 ? await load(at(FILL_RATE_STEP.label), 'fillrate', FILL_RATE_SECONDS) : null;
     const settings = loadSettings();
-    const findings = runAudit({ snapshot, hogs, pcieUnderLoad, thermalRamp, cpuLoad, cpuPptW: settings.cpuPptW, curveOptimizer: settings, fillRate, nowIso, timers });
+    const findings = runAudit({ snapshot, hogs, pcieUnderLoad, thermalRamp, cpuLoad, cpuPptW: settings.cpuPptW, curveOptimizer: settings, fillRate, nowIso, timers, cpuSensors });
     // The names the Monitor shows (the user's own where set); " / " because a GPU title carries " · " of its own.
     const gpu = snapshot.gpus[0];
     return {
       at: nowIso,
-      machine: [snapshot.cpu.name, gpu ? panelName(settings.panelNames, gpuKey(gpu), gpuTitle(gpu)) : 'no NVML GPU', panelName(settings.panelNames, BOARD_KEY, boardName(snapshot))].join(' / '),
+      machine: [snapshot.cpu.name, gpu ? panelName(settings.panelNames, gpuKey(gpu), gpuTitle(gpu)) : gpuSummary(snapshot), panelName(settings.panelNames, BOARD_KEY, boardName(snapshot))].join(' / '),
       findings,
       skipped,
       interrupted: interruption()
