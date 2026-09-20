@@ -110,7 +110,7 @@ func matmulTflops(n: Int, half: Bool, passes: Int) -> Double {
 }
 
 /// Metal 4 tensor ops (MetalPerformancePrimitives, macOS 26): the GPU's matrix path at int8 with int32
-/// accumulate, the precision a PC's "AI TOPS" quotes, and fp16 through the same path. 64 x 64 tiles, four
+/// accumulate, the precision a PC's "AI TOPS" quotes, and fp16 through the same path. 128 x 64 tiles, four
 /// SIMD-groups per threadgroup, the op looping over K itself. Nil where the shading language or the
 /// primitives are older than Metal 4 (the source then fails to compile and the bench line omits the figures).
 let tensorKernels = """
@@ -124,11 +124,14 @@ static inline void mm_tile(device TA* a, device TA* b, device TC* c, uint n, uin
   auto A = tensor<device TA, dextents<int32_t, 2>, tensor_inline>(a, dextents<int32_t, 2>(int(n), int(n)));
   auto B = tensor<device TA, dextents<int32_t, 2>, tensor_inline>(b, dextents<int32_t, 2>(int(n), int(n)));
   auto C = tensor<device TC, dextents<int32_t, 2>, tensor_inline>(c, dextents<int32_t, 2>(int(n), int(n)));
-  constexpr auto d = matmul2d_descriptor(64, 64, static_cast<int>(dynamic_extent));
+  // 128 x 64 tiles over four SIMD-groups, the op looping over the whole K itself: the best of the
+  // shapes tried on the M5 Max (122 int8 TOPS against 97 for 64 x 64; a fixed k tile without an
+  // outer loop only multiplies a slice and must not be used for a throughput figure).
+  constexpr auto d = matmul2d_descriptor(128, 64, static_cast<int>(dynamic_extent));
   matmul2d<d, execution_simdgroups<4>> op;
-  auto tA = A.slice(0, int(tgid.y * 64));
+  auto tA = A.slice(0, int(tgid.y * 128));
   auto tB = B.slice(int(tgid.x * 64), 0);
-  auto tC = C.slice(int(tgid.x * 64), int(tgid.y * 64));
+  auto tC = C.slice(int(tgid.x * 64), int(tgid.y * 128));
   op.run(tA, tB, tC);
 }
 kernel void mm_i8(device int8_t* a [[buffer(0)]], device int8_t* b [[buffer(1)]], device int32_t* c [[buffer(2)]], constant uint& n [[buffer(3)]], uint2 tgid [[threadgroup_position_in_grid]]) { mm_tile<int8_t, int32_t>(a, b, c, n, tgid); }
@@ -153,7 +156,7 @@ func tensorOps(n: Int, passes: Int) -> (int8Tops: Double, fp16Tflops: Double)? {
             enc.setBuffer(b, offset: 0, index: 1)
             enc.setBuffer(c, offset: 0, index: 2)
             enc.setBytes(&nn, length: 4, index: 3)
-            enc.dispatchThreadgroups(MTLSize(width: n / 64, height: n / 64, depth: 1), threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+            enc.dispatchThreadgroups(MTLSize(width: n / 64, height: n / 128, depth: 1), threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             enc.endEncoding()
             cb.commit()
             cb.waitUntilCompleted()

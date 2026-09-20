@@ -52,9 +52,9 @@ first file on 26 and the app then fails with "Electron failed to install correct
 - **The worker** (`collector/mac`, Swift, Metal + MPS): `--bench --json` prints the same line
   as the Windows worker (stream-copy GB/s, fp32 and fp16-storage matmul TFLOPS) plus, on macOS 26,
   `matmulTopsInt8` and `matmulTflopsFp16tensor` from Metal 4 tensor ops (MetalPerformancePrimitives
-  `matmul2d`, 64 x 64 tiles, int8 with int32 accumulate: the precision a PC's "AI TOPS" quotes,
+  `matmul2d`, 128 x 64 tiles, int8 with int32 accumulate: the precision a PC's "AI TOPS" quotes,
   measured dense rather than a vendor's sparse peak); `--load light|heavy|cpu|fillrate` are the
-  audit's kernels; `--info` the device facts. On the M5 Max 40-core: 549 GB/s, 15 / 65 TFLOPS, 107 int8 TOPS.
+  audit's kernels; `--info` the device facts. On the M5 Max 40-core: 549 GB/s, 15 / 65 TFLOPS, 122 int8 TOPS.
 - **Time base**: microseconds from the Mach monotonic clock (`Health.qpcFrequency` = 1e6).
 - **Tune routes**: `/tune/state` answers `nvapi.available: false` with the reason; every
   `/tune/*` write is 403. `/timers` answers nulls: macOS has no timer-resolution setting.
