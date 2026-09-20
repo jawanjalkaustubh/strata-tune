@@ -24,6 +24,7 @@ npm ci
 npm run build          # also builds the single-file report bundle
 npm start              # or double-click run-strata-tune.command
 npm test               # vitest
+scripts/mac/install-shortcuts.sh   # Strata Tune.app in ~/Applications + a Desktop alias
 ```
 
 ## What changed for the port
