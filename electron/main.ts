@@ -66,7 +66,8 @@ function createWindow() {
     center: true,
     frame: false,
     title: 'Strata Tune',
-    icon: path.join(app.getAppPath(), 'assets', 'strata-tune-st.ico'),
+    // .ico is Windows-only; macOS takes a PNG here in dev (the .app bundle's icns when packaged).
+    icon: path.join(app.getAppPath(), 'assets', process.platform === 'win32' ? 'strata-tune-st.ico' : 'strata-tune-st.png'),
     show: true,
     backgroundColor: '#0c0e14',
     webPreferences: {

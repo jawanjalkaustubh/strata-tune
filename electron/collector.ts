@@ -15,6 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { app } from 'electron';
 import type { CollectorState, CollectorStatus } from '../src/api';
+import { tuneDataDir } from './presence';
 import type { GpuFacts, Handshake, Health, HogsResult, LoadKind, LoadRun, LoadRunRequest, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, Tick } from '../src/collector-types';
 
 /** Every route in one place, so a rename on the server side is a one-line change. */
@@ -51,7 +52,7 @@ const COLLECTOR_IMAGE = 'strata-tune-collector.exe';
 /** Win32 ERROR_CANCELLED: the UAC prompt was declined, in any language. */
 const ERROR_CANCELLED = 1223;
 
-const dataDir = () => path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune');
+const dataDir = () => tuneDataDir();
 const handshakePath = () => path.join(dataDir(), 'collector.json');
 const logPath = () => path.join(dataDir(), 'logs', 'collector.log');
 const orphanLogPath = () => path.join(dataDir(), 'orphan.log');
@@ -70,6 +71,7 @@ function pidAlive(pid: number): boolean {
 
 /** The image name behind a pid, from tasklist (it lists elevated processes without elevation); null when the pid is gone. */
 function imageName(pid: number): Promise<string | null> {
+  if (process.platform !== 'win32') return Promise.resolve(null);
   return new Promise((resolve) => {
     execFile('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 5000 }, (err, stdout) => {
       if (err) return resolve(null);
@@ -179,6 +181,13 @@ export class CollectorClient extends EventEmitter {
   }
 
   private async doStart(): Promise<CollectorState> {
+    if (process.platform !== 'win32') {
+      // The collector is a .NET service on LibreHardwareMonitor, NVML, NVAPI, WMI and PresentMon: Windows
+      // sensor stacks with no macOS counterpart (docs/MACOS.md). The shell runs; the pages that need
+      // sensors show this instead of a UAC prompt that never comes.
+      this.set('error', 'The sensor collector is Windows-only (LibreHardwareMonitor / NVML / NVAPI). On macOS Strata Tune runs without live sensors: the AI Models page and saved reports work; Tune, Monitor and Capture need a Windows PC.');
+      return this.state;
+    }
     this.reportOrphans();
     this.set('starting', 'Looking for a running collector…');
     const existing = readHandshake();

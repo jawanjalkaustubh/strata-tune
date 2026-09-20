@@ -13,6 +13,7 @@ import * as path from 'path';
 import type { CollectorClient } from './collector';
 import type { CollectorState } from '../src/api';
 import type { Health, Timers } from '../src/collector-types';
+import { tuneDataDir } from './presence';
 
 // ------------------------------------------------------------------ legal
 
@@ -234,7 +235,7 @@ async function hwinfoRunning(): Promise<boolean> {
 // ----------------------------------------------------------------- system
 
 /** Where the collector writes (mirrors electron/collector.ts): the logs folder the hub opens. */
-const dataDir = () => path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune');
+const dataDir = () => tuneDataDir();
 const logsDir = () => path.join(dataDir(), 'logs');
 
 export interface AboutSystem {

@@ -1,6 +1,6 @@
 // Sibling presence for the shared Ollama daemon (lifecycle audit 2026-09-15,
 // section 2.2). One file per running Strata app under
-// %LOCALAPPDATA%\Strata\presence\<app>.json:
+// <strata data dir>/presence/<app>.json (strataDataDir(): %LOCALAPPDATA%\Strata, ~/Library/Application Support/Strata):
 //
 //   { "pid": 1234, "app": "tune", "models": ["qwen3.8:27b"], "since": "<ISO>" }
 //
@@ -34,11 +34,27 @@ export const KEEP_ALIVE = '15m';
 
 export const OLLAMA_URL = 'http://127.0.0.1:11434';
 
-export const PRESENCE_DIR = path.join(
-  process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
-  'Strata',
-  'presence'
-);
+/**
+ * The per-user folder shared by every Strata app: %LOCALAPPDATA%\Strata on Windows, ~/Library/Application
+ * Support/Strata on macOS, $XDG_DATA_HOME/Strata (~/.local/share/Strata) on Linux; STRATA_DATA_DIR overrides it.
+ * The same function lives in Strata Code and Photo so the presence files land in one place.
+ */
+export function strataDataDir(): string {
+  if (process.env.STRATA_DATA_DIR) return process.env.STRATA_DATA_DIR;
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata');
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'Strata');
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'Strata');
+}
+
+/** Strata Tune's own per-user data: %LOCALAPPDATA%\Strata Tune on Windows, ~/Library/Application Support/Strata Tune on macOS. */
+export function tuneDataDir(): string {
+  if (process.env.STRATA_TUNE_DATA) return process.env.STRATA_TUNE_DATA;
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune');
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'Strata Tune');
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'Strata Tune');
+}
+
+export const PRESENCE_DIR = path.join(strataDataDir(), 'presence');
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
