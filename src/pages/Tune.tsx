@@ -7,7 +7,7 @@ import { api } from '../api';
 /**
  * Tune, the home page (plan section 17, user 2026-09-16: "what's the point of Audit as a
  * separate window? it should be in the Tune section"): the audit on top — score, ranked
- * findings, what to change in BIOS or Windows — and beneath it, behind the settings switch
+ * findings, what to change in BIOS or Windows (System Settings on a Mac, audit-mac.ts) — and beneath it, behind the settings switch
  * and the warning, the Headroom hunt that hands over OC values for the vendor tool. The
  * app never changes a setting or leaves a clock on the card; everything here is "here is
  * what we found, here is what to type where". An 'audit' intent lands on the top half.
