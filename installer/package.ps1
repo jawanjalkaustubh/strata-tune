@@ -7,16 +7,23 @@
    resources\presentmon\                      PresentMon 2.5.1 (vendored by scripts\setup-tools.ps1)
    resources\LICENSE, DISCLAIMER.md, THIRD-PARTY-NOTICES.md   (what About -> Legal renders)
    README.md, DISCLAIMER.md, LICENSE, THIRD-PARTY-NOTICES.md  at the zip root, VERSION.txt
+ Also produces release\Strata-Tune-Setup-x64.exe (installer\strata-tune.iss, Inno Setup 6) from the
+ same staged folder: the app under Program Files, a Start Menu entry, a desktop shortcut behind a
+ checkbox, the PawnIO driver fetched from its official release with a pinned hash, the account
+ into Performance Log Users, "Launch Strata Tune" on the last page. Skipped with a warning when
+ ISCC.exe is not installed (winget install JRSoftware.InnoSetup).
  Usage (from the strata-tune folder):  powershell -ExecutionPolicy Bypass -File installer\package.ps1
    -SkipBuild     reuse dist/, dist-electron/ and dist-report/
-   -NoZip         stop after assembling release\Strata-Tune-Windows-x64\
+   -NoZip         stop after assembling release\Strata-Tune-Windows-x64\ (no zip, no setup)
+   -NoInstaller   zip only
  The collector bundle is NOT rebuilt here: run scripts\build-collector.ps1 first (it needs the
  app closed, because the running collector is the published exe).
 =============================================================================
 #>
 param(
     [switch]$SkipBuild,
-    [switch]$NoZip
+    [switch]$NoZip,
+    [switch]$NoInstaller
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -135,3 +142,26 @@ Write-Host ""
 Write-Host "RELEASE: $Zip" -ForegroundColor Green
 Write-Host "size:    $zipMB MB $(if ($zipMB -gt 2000) { '(!! over the 2 GB GitHub release asset limit)' } else { '(under the 2 GB GitHub limit)' })" -ForegroundColor $(if ($zipMB -gt 2000) { 'Red' } else { 'Green' })
 Write-Host "sha256:  $sha"
+
+if ($NoInstaller) { exit 0 }
+
+Step "6. Setup (Inno Setup)"
+# Inno installs per user by default (LOCALAPPDATA) or per machine; both are looked in, then PATH.
+$iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
+if (-not $iscc) {
+    Write-Host "Inno Setup 6 not found (winget install JRSoftware.InnoSetup): the zip is the only artefact this time." -ForegroundColor Yellow
+    exit 0
+}
+$SetupName = "Strata-Tune-Setup-x64"
+$SetupExe  = Join-Path $Release "$SetupName.exe"
+if (Test-Path $SetupExe) { Remove-Item $SetupExe -Force }
+& $iscc /Q "/DAppVersion=$version" "/DStageDir=$Stage" "/DRepoRoot=$Root" "/DOutputDir=$Release" (Join-Path $Root "installer\strata-tune.iss")
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $SetupExe)) { throw "Inno Setup failed" }
+$setupMB = [math]::Round((Get-Item $SetupExe).Length / 1MB, 0)
+$setupSha = (Get-FileHash $SetupExe -Algorithm SHA256).Hash
+Set-Content -Path "$SetupExe.sha256" -Value "$setupSha  $SetupName.exe" -Encoding ASCII
+Write-Host ""
+Write-Host "SETUP:   $SetupExe" -ForegroundColor Green
+Write-Host "size:    $setupMB MB"
+Write-Host "sha256:  $setupSha"

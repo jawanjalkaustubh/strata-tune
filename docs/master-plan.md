@@ -1074,6 +1074,12 @@ strata-tune/
     StrataTune.Shared/       row types, wire types
   tools/
     presentmon/              vendored PresentMon.exe (gitignored binary, script fetches)
+  installer/
+    package.ps1              the release zip, then the setup below
+    strata-tune.iss          Inno Setup 6: Program Files (the collector's install rule), Start Menu, a desktop shortcut behind a checkbox,
+                             PawnIO fetched from its official release with a pinned SHA-256 and run silently (still not redistributed),
+                             the account into Performance Log Users, "Launch Strata Tune" at the end (user direction 2026-09-19)
+    README.md                the zip's own README
   scripts/
     setup-tools.ps1          downloads + hash-checks PresentMon, reports PawnIO/.NET/group state (PawnIO is not ours to redistribute; it links to pawnio.eu)
     build-collector.ps1      dotnet publish self-contained → resources/collector/
