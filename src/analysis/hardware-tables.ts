@@ -1,5 +1,6 @@
 import gpus from '../data/gpus.json';
 import cpus from '../data/cpus.json';
+import appleGpus from '../data/apple-gpus.json';
 
 /**
  * Spec-sheet rows for the advisor (master plan section 10): NVML gives VRAM but
@@ -20,7 +21,7 @@ export interface AdvertisedTops {
 
 export interface GpuSpec {
   name: string;
-  vendor: 'NVIDIA' | 'AMD' | 'Intel';
+  vendor: 'NVIDIA' | 'AMD' | 'Intel' | 'Apple';
   /** Case-insensitive, tested against GpuFacts.name; variants that share a name (4060 Ti 16/8 GB) are told apart by VRAM. */
   pattern: string;
   vramGiB: number;
@@ -57,6 +58,72 @@ export interface GpuSpec {
   tpuUrl: string;
   notes: string;
   source: string;
+  /**
+   * An Apple Silicon GPU (apple-gpus.json): one memory pool, so vramGiB, boostMhz and
+   * fp32Tflops are 0 here and filled from the machine (the Metal working set, the top of the
+   * GPU's clock table) by rows.ts gpuSpecOf; tdpW is 0 because Apple publishes none.
+   */
+  unified?: boolean;
+  neuralEngineCores?: number;
+}
+
+/**
+ * Apple Silicon rows (src/data/apple-gpus.json). Apple publishes GPU and Neural Engine core
+ * counts and the memory bandwidth, never clocks, power or tensor figures; the unit counts
+ * follow the per-core rule the review sites list (128 ALUs, 8 TMUs, 4 ROPs per core), cited
+ * per row. The name carries the core count because two M5 Max parts share a chip name.
+ */
+export interface AppleGpuSpec {
+  name: string;
+  pattern: string;
+  die: string;
+  gpuCores: number;
+  shadingUnits: number;
+  tmus: number;
+  rops: number;
+  bandwidthGBs: number;
+  memoryGbps: number;
+  busBits: number;
+  vramType: string;
+  neuralEngineCores: number;
+  source: string;
+  unitsSource: string;
+  notes: string;
+}
+
+export const APPLE_GPU_SPECS: AppleGpuSpec[] = appleGpus as AppleGpuSpec[];
+
+const APPLE_ROWS = APPLE_GPU_SPECS.map((spec) => ({ spec, regex: new RegExp(spec.pattern, 'i') }));
+
+function appleSpec(a: AppleGpuSpec): GpuSpec {
+  return {
+    name: a.name,
+    vendor: 'Apple',
+    pattern: a.pattern,
+    vramGiB: 0,
+    bandwidthGBs: a.bandwidthGBs,
+    boostMhz: 0,
+    tdpW: 0,
+    tops: { sparse: {} },
+    denseDerived: false,
+    advertisedAiTops: null,
+    baseMhz: null,
+    fp32Tflops: 0,
+    suggestedPsuW: null,
+    die: a.die,
+    shadingUnits: a.shadingUnits,
+    tmus: a.tmus,
+    rops: a.rops,
+    vramType: a.vramType,
+    busBits: a.busBits,
+    memoryGbps: a.memoryGbps,
+    memoryClockMhz: null,
+    tpuUrl: a.unitsSource,
+    notes: a.notes,
+    source: a.source,
+    unified: true,
+    neuralEngineCores: a.neuralEngineCores
+  };
 }
 
 export interface CpuSpec {
@@ -103,6 +170,9 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export function lookupGpu(name: string, vramMiB?: number): GpuSpec | null {
   const exact = GPU_SPECS.find((g) => g.name.toLowerCase() === name.trim().toLowerCase());
   if (exact) return exact;
+  // Apple rows match on chip name and core count; the VRAM rule below is for cards, not a shared pool.
+  const apple = APPLE_ROWS.find((r) => r.regex.test(name));
+  if (apple) return appleSpec(apple.spec);
   const mobile = MOBILE.test(name);
   const hits = GPU_ROWS.filter((r) => MOBILE.test(r.spec.name) === mobile && r.regex.test(name)).map((r) => r.spec);
   if (hits.length === 0) return null;

@@ -220,6 +220,9 @@ export interface DisplayAdapter {
   driverDate: string | null;
   /** Under 1 GiB of dedicated memory, or the name a processor's own graphics carry. */
   integrated: boolean;
+  /** Apple Silicon only (the macOS collector): GPU core count and the top of the GPU's clock table, which Apple does not publish. */
+  cores?: number;
+  maxClockMhz?: number;
 }
 
 export interface BatteryInfo {

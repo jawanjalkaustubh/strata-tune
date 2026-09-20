@@ -72,8 +72,12 @@ const HelpMenu: React.FC<TitleBarProps> = ({ support, onOpenAbout }) => {
   );
 };
 
+/** macOS draws its own traffic lights at the left of the frameless window (electron/main.ts): the bar leaves them room and draws no controls of its own. */
+const MAC = api?.platform === 'darwin';
+const TRAFFIC_LIGHTS_PX = 78;
+
 const TitleBarInner: React.FC<TitleBarProps> = (p) => (
-  <div className="custom-titlebar h-10 flex items-center bg-studio-surface border-b border-studio-border px-2 gap-1 shrink-0">
+  <div className="custom-titlebar h-10 flex items-center bg-studio-surface border-b border-studio-border px-2 gap-1 shrink-0" style={MAC ? { paddingLeft: TRAFFIC_LIGHTS_PX } : undefined}>
     {/* Wordmark only; the author credit lives in About (and the Help menu footer), not here. */}
     <div className="no-drag flex items-center gap-2 pr-3 mr-1 border-r border-studio-border cursor-pointer hover:opacity-90" onClick={p.onOpenAbout} title="About Strata Tune">
       <Monogram size={20} />
@@ -90,17 +94,19 @@ const TitleBarInner: React.FC<TitleBarProps> = (p) => (
 
     <div className="flex-1" />
 
-    <div className="no-drag flex items-center gap-1">
-      <button className="btn-icon" onClick={() => api?.minimize()} title="Minimize">
-        <Minus size={14} />
-      </button>
-      <button className="btn-icon" onClick={() => api?.maximize()} title="Maximize / restore">
-        <Square size={12} />
-      </button>
-      <button className="btn-icon hover:bg-state-danger-600 hover:text-white" onClick={() => api?.close()} title="Close">
-        <X size={14} />
-      </button>
-    </div>
+    {!MAC && (
+      <div className="no-drag flex items-center gap-1">
+        <button className="btn-icon" onClick={() => api?.minimize()} title="Minimize">
+          <Minus size={14} />
+        </button>
+        <button className="btn-icon" onClick={() => api?.maximize()} title="Maximize / restore">
+          <Square size={12} />
+        </button>
+        <button className="btn-icon hover:bg-state-danger-600 hover:text-white" onClick={() => api?.close()} title="Close">
+          <X size={14} />
+        </button>
+      </div>
+    )}
   </div>
 );
 

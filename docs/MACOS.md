@@ -8,8 +8,8 @@ same loopback HTTP + SSE contract (`src/collector-types.ts`), so the pages are u
 | Page | On macOS |
 |---|---|
 | **Tune** | The audit runs: the snapshot, the idle sample, the GPU loads and the all-core load come from the Mac worker and macmon. The Headroom hunt is not shown: it drives NVIDIA clock offsets and Apple GPUs have no user clock control. |
-| **Monitor** | Live: P- and E-core clocks and load, package power and temperature, GPU clock, load, power, temperature and memory in use, fans, system / memory / Neural Engine power, unified memory, the battery. No board rails, no 12V-2x6 pins, no PCIe link: those sensors do not exist here and the panels collapse as they do on a laptop. |
-| **AI Models** | Everything: the Apple GPU is the card (its Metal working set is the memory a model is judged against), **Measure** runs the Metal worker (stream-copy bandwidth, fp32 and fp16 matmul TFLOPS), Ollama timings and pulls work as on Windows. |
+| **Monitor** | Live: the CPU chip diagram with Apple's own cluster names (super and performance cores on the M5 Pro/Max), the GPU's SoC diagram (one cell per GPU core, the Neural Engine, the unified memory the GPU works from), core clocks and load, package power and temperature, GPU clock, load, power, temperature and memory in use, fans, system / memory / Neural Engine power, unified memory, the battery. No board rails, no 12V-2x6 pins, no PCIe link: those sensors do not exist here and the panels collapse as they do on a laptop. |
+| **AI Models** | Everything: the Apple GPU is the card (its Metal working set is the memory a model is judged against), the spec tiles come from `src/data/apple-gpus.json` (Apple's core counts and bandwidth, the per-core unit counts, the machine's own clock), **Measure** runs the Metal worker (stream-copy bandwidth, fp32 and fp16 matmul TFLOPS) and leads the card with the measured fp16 figure because Apple advertises no TOPS, Ollama timings and pulls work as on Windows. |
 | **Capture** | Not shown. Frame capture needs PresentMon's ETW session, which has no macOS counterpart. |
 
 ## Install
@@ -58,6 +58,17 @@ first file on 26 and the app then fails with "Electron failed to install correct
 
 Data: `~/Library/Application Support/Strata Tune/` (collector.json, bench.json, sessions);
 presence files shared with Strata Code and Photo: `~/Library/Application Support/Strata/presence/`.
+
+## The Apple spec table
+
+`src/data/apple-gpus.json` holds what Apple publishes (GPU and Neural Engine core counts,
+memory bandwidth) with the unit counts the review sites list by the per-core rule (128
+ALUs, 8 TMUs, 4 ROPs per core), each row cited. Apple prints no clock, power or tensor
+figure, so the clock tile is the top of the GPU's clock table as macOS reports it, the FP32
+figure follows the table's own convention (ALUs x 2 x clock), the TDP tile says "not
+published", and the headline is the measured fp16 matmul once Measure has run. The rows
+are separate from `gpus.json` because that table's invariants (a TDP, a TechPowerUp page)
+do not hold for Apple parts.
 
 ## Comparing with a PC
 

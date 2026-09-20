@@ -19,9 +19,11 @@ brand_electron() {
   local app="node_modules/electron/dist/Electron.app" plist png="assets/strata-tune-st.png"
   plist="$app/Contents/Info.plist"
   [ -f "$plist" ] || return 0
-  [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' "$plist" 2>/dev/null)" = "Strata Tune" ] && return 0
+  # One bundle id per app: LaunchServices caches the display name by identifier, and the three
+  # Strata apps all shipped as com.github.Electron, so the Dock kept calling them "Electron".
+  [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' "$plist" 2>/dev/null)" = "Strata Tune" ] && [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$plist" 2>/dev/null)" = "com.kaustubhjawanjal.stratatune" ] && return 0
   echo "[*] Naming the Electron bundle Strata Tune..."
-  /usr/libexec/PlistBuddy -c 'Set :CFBundleName Strata Tune' -c 'Set :CFBundleDisplayName Strata Tune' "$plist" || return 0
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleName Strata Tune' -c 'Set :CFBundleDisplayName Strata Tune' -c 'Set :CFBundleIdentifier com.kaustubhjawanjal.stratatune' "$plist" || return 0
   if [ -f "$png" ] && command -v sips >/dev/null && command -v iconutil >/dev/null; then
     local set; set="$(mktemp -d)/icon.iconset"; mkdir -p "$set"
     for s in 16 32 128 256 512; do
@@ -32,6 +34,7 @@ brand_electron() {
     rm -rf "$(dirname "$set")"
   fi
   codesign --force --sign - "$app" >/dev/null 2>&1 || echo "[!] could not re-sign the Electron bundle; the name may show as Electron"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" >/dev/null 2>&1 || true
 }
 brand_electron
 

@@ -65,6 +65,8 @@ function createWindow() {
     minHeight: 600,
     center: true,
     frame: false,
+    // macOS keeps the frameless window's traffic lights; the custom title bar leaves them room and draws no controls of its own (src/components/TitleBar.tsx).
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 12 } } : {}),
     title: 'Strata Tune',
     // .ico is Windows-only; macOS takes a PNG here in dev (the .app bundle's icns when packaged).
     icon: path.join(app.getAppPath(), 'assets', process.platform === 'win32' ? 'strata-tune-st.ico' : 'strata-tune-st.png'),

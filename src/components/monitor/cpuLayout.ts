@@ -1,12 +1,13 @@
 import type { SensorMeta } from '../../collector-types';
 import type { SensorIndex } from './sensors';
 
-export type CoreType = 'P' | 'E';
+/** P and E on an Intel hybrid; S ("super") beside P on Apple's M5 Pro and Max, whose macOS collector names the clusters as Apple does. */
+export type CoreType = 'P' | 'E' | 'S';
 
 export interface CoreIds {
   /** 1-based, as LibreHardwareMonitor numbers them. */
   n: number;
-  /** Set on Intel hybrid parts, where the library names cores "P-Core #n" / "E-Core #n". */
+  /** Set on Intel hybrid parts, where the library names cores "P-Core #n" / "E-Core #n", and on Apple's super/performance clusters ("S-Core #n"). */
   type?: CoreType;
   nominal?: string;
   effective?: string;
@@ -39,7 +40,7 @@ interface CoreName {
 
 // "Core #7", "CPU Core #7", "P-Core #7", "E-Core #17": the library's spelling depends on
 // the vendor and, on Intel hybrids, on the core type. `suffix` is what may follow.
-const CORE = /^(?:CPU )?(?:([PE])-)?Core #(\d+)/i;
+const CORE = /^(?:CPU )?(?:([PES])-)?Core #(\d+)/i;
 function cored(name: string, suffix: RegExp): CoreName | null {
   const m = CORE.exec(name);
   if (!m || !suffix.test(name.slice(m[0].length))) return null;
@@ -130,11 +131,14 @@ export function groupCores(layout: CpuLayout, ccdCount?: number): CoreGroupIds[]
   const { cores, ccds } = layout;
   if (layout.hybrid) {
     const groups: CoreGroupIds[] = [];
+    const s = cores.filter((c) => c.type === 'S');
     const p = cores.filter((c) => c.type === 'P');
     const e = cores.filter((c) => c.type === 'E');
     const rest = cores.filter((c) => c.type === undefined);
-    if (p.length) groups.push({ label: 'P-cores', cores: p });
-    if (e.length) groups.push({ label: 'E-cores', cores: e });
+    // Apple's M5 Pro/Max: "super" and "performance" cores, Apple's own words; Intel's P/E keep their short labels.
+    if (s.length) groups.push({ label: 'Super cores', cores: s });
+    if (p.length) groups.push({ label: s.length ? 'Performance cores' : 'P-cores', cores: p });
+    if (e.length) groups.push({ label: s.length ? 'Efficiency cores' : 'E-cores', cores: e });
     if (rest.length) groups.push({ label: 'Cores', cores: rest });
     return groups;
   }

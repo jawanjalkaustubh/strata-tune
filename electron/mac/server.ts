@@ -40,6 +40,10 @@ export interface MacCollectorOptions {
 interface SocInfo {
   chip: string;
   maxClockMhz: number;
+  gpuCores: number | null;
+  gpuMaxClockMhz: number | null;
+  /** macmon's cluster labels ("S"/"P" on the M5 Pro/Max, "P"/"E" before). */
+  coreLabels: { high: string; low: string } | null;
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
@@ -64,16 +68,23 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
 
 /** `macmon pipe --soc-info -s 1`: the chip name and its clock table, once at start. */
 function socInfo(macmon: string | null): Promise<SocInfo> {
-  const fallback: SocInfo = { chip: os.cpus()[0]?.model || 'Apple Silicon', maxClockMhz: 0 };
+  const fallback: SocInfo = { chip: os.cpus()[0]?.model || 'Apple Silicon', maxClockMhz: 0, gpuCores: null, gpuMaxClockMhz: null, coreLabels: null };
   if (!macmon) return Promise.resolve(fallback);
   return new Promise((resolve) => {
     execFile(macmon, ['pipe', '--soc-info', '-s', '1', '-i', '200'], { timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (err, out) => {
       if (err) return resolve(fallback);
       try {
         const line = String(out).split('\n').find((l) => l.trim().startsWith('{')) ?? '{}';
-        const j = JSON.parse(line) as { soc?: { chip_name?: string; pcpu_freqs?: number[]; ecpu_freqs?: number[] } };
+        const j = JSON.parse(line) as { soc?: { chip_name?: string; pcpu_freqs?: number[]; ecpu_freqs?: number[]; gpu_freqs?: number[]; gpu_cores?: number; pcpu_label?: string; ecpu_label?: string } };
         const freqs = [...(j.soc?.pcpu_freqs ?? []), ...(j.soc?.ecpu_freqs ?? [])];
-        resolve({ chip: j.soc?.chip_name || fallback.chip, maxClockMhz: freqs.length ? Math.max(...freqs) : 0 });
+        const gpuFreqs = j.soc?.gpu_freqs ?? [];
+        resolve({
+          chip: j.soc?.chip_name || fallback.chip,
+          maxClockMhz: freqs.length ? Math.max(...freqs) : 0,
+          gpuCores: typeof j.soc?.gpu_cores === 'number' && j.soc.gpu_cores > 0 ? j.soc.gpu_cores : null,
+          gpuMaxClockMhz: gpuFreqs.length ? Math.max(...gpuFreqs) : null,
+          coreLabels: j.soc?.pcpu_label && j.soc?.ecpu_label ? { high: j.soc.pcpu_label, low: j.soc.ecpu_label } : null
+        });
       } catch {
         resolve(fallback);
       }
@@ -97,6 +108,16 @@ function workerInfo(worker: string): Promise<WorkerInfo | null> {
   });
 }
 
+/** IORegistry's gpu-core-count on the AGX accelerator, the fallback when macmon is absent. */
+function gpuCoresFromIoreg(): Promise<number | null> {
+  return new Promise((resolve) =>
+    execFile('ioreg', ['-rc', 'AGXAccelerator', '-d', '1'], { timeout: 4000, maxBuffer: 4 * 1024 * 1024 }, (err, out) => {
+      const m = err ? null : /"gpu-core-count" = (\d+)/.exec(String(out));
+      resolve(m ? Number(m[1]) : null);
+    })
+  );
+}
+
 function batteryNow(): Promise<BatteryReading | null> {
   return new Promise((resolve) => execFile('ioreg', ['-r', '-c', 'AppleSmartBattery', '-d', '1'], { timeout: 4000 }, (err, out) => resolve(err ? null : parseBattery(String(out)))));
 }
@@ -109,7 +130,7 @@ export class MacCollector {
   private clients = new Set<http.ServerResponse>();
   private keepAlive: NodeJS.Timeout | null = null;
   private readonly startedAt = new Date();
-  private soc: SocInfo = { chip: 'Apple Silicon', maxClockMhz: 0 };
+  private soc: SocInfo = { chip: 'Apple Silicon', maxClockMhz: 0, gpuCores: null, gpuMaxClockMhz: null, coreLabels: null };
   private info: WorkerInfo | null = null;
   private snapshotCache: { at: number; value: Promise<StaticSnapshot> } | null = null;
 
@@ -126,10 +147,17 @@ export class MacCollector {
 
   async start(): Promise<Handshake> {
     if (this.handshake) return this.handshake;
-    const [soc, info] = await Promise.all([socInfo(this.opts.macmonPath), workerInfo(this.opts.workerPath)]);
-    this.soc = soc;
+    const [soc, info, ioregCores] = await Promise.all([socInfo(this.opts.macmonPath), workerInfo(this.opts.workerPath), gpuCoresFromIoreg()]);
+    this.soc = { ...soc, gpuCores: soc.gpuCores ?? ioregCores };
     this.info = info;
-    this.sensors = this.opts.sensors ?? new MacSensors({ macmon: this.opts.macmonPath, chip: info?.device ?? soc.chip, gpuTotalMiB: info ? info.recommendedMaxWorkingSetBytes / 1024 ** 2 : null });
+    this.sensors =
+      this.opts.sensors ??
+      new MacSensors({
+        macmon: this.opts.macmonPath,
+        chip: info?.device ?? soc.chip,
+        facts: { gpuName: this.gpuName(), coreLabels: this.soc.coreLabels ?? undefined, gpuCores: this.soc.gpuCores },
+        gpuTotalMiB: info ? info.recommendedMaxWorkingSetBytes / 1024 ** 2 : null
+      });
     this.loads = new LoadRunner(this.opts.workerPath, this.sensors);
     this.sensors.on('tick', (row: { qpc: number; values: Record<string, number> }) => this.broadcast(row));
     this.sensors.start();
@@ -162,6 +190,12 @@ export class MacCollector {
       /* already gone */
     }
     this.handshake = null;
+  }
+
+  /** "Apple M5 Max (40-core GPU)": the adapter name in the snapshot and the GPU node's name in the sensor rows; two M5 Max parts share a chip name. */
+  private gpuName(): string {
+    const chip = this.info?.device ?? this.soc.chip;
+    return this.soc.gpuCores ? `${chip} (${this.soc.gpuCores}-core GPU)` : chip;
   }
 
   /** Tests feed macmon samples straight in. */
@@ -231,7 +265,7 @@ export class MacCollector {
     if (this.opts.snapshot) return this.opts.snapshot();
     const now = Date.now();
     if (this.snapshotCache && now - this.snapshotCache.at < SNAPSHOT_CACHE_MS) return this.snapshotCache.value;
-    const value = macSnapshot({ workerInfo: () => Promise.resolve(this.info), battery: batteryNow, maxClockMhz: () => this.soc.maxClockMhz });
+    const value = macSnapshot({ workerInfo: () => Promise.resolve(this.info), battery: batteryNow, maxClockMhz: () => this.soc.maxClockMhz, gpu: () => ({ name: this.gpuName(), cores: this.soc.gpuCores, maxClockMhz: this.soc.gpuMaxClockMhz }) });
     this.snapshotCache = { at: now, value };
     value.catch(() => (this.snapshotCache = null));
     return value;

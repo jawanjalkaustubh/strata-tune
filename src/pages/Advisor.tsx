@@ -105,7 +105,7 @@ export const Advisor: React.FC = () => {
   }, [connected, modelsDir]);
 
   const facts: HardwareFacts = snapshotFacts ?? factsFromPicker(picker, gpuSpecOf(picker.gpuName)?.vramGiB ?? 0);
-  const spec = gpuSpecOf(facts.gpuName, snapshotFacts ? snapshotFacts.vramBytes / 1024 ** 2 : undefined);
+  const spec = gpuSpecOf(facts.gpuName, snapshotFacts ? snapshotFacts.vramBytes / 1024 ** 2 : undefined, { maxClockMhz: facts.gpuMaxClockMhz ?? null });
   // This card against the reference row (plan section 10): the driver's limits and the clocks it holds when the page loads it.
   const { held, latest, watch } = useHeldClocks(facts);
   const card = facts.gpu ? thisCard(facts.gpu, spec?.tiles.busBits ?? null, held) : null;

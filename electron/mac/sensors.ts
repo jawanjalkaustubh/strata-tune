@@ -16,6 +16,7 @@ export const qpcNow = (): number => Number(process.hrtime.bigint() / 1000n);
 
 export const CPU_HW = '/apple/cpu/0';
 export const GPU_HW = '/apple/gpu/0';
+export const ANE_HW = '/apple/ane/0';
 export const SMC_HW = '/apple/smc/0';
 export const MEM_HW = '/apple/memory';
 export const BAT_HW = '/apple/battery/0';
@@ -32,6 +33,10 @@ export const IDS = {
   gpuLoad: `${GPU_HW}/load/core`,
   gpuMemUsedMiB: `${GPU_HW}/smalldata/memory-used`,
   gpuMemTotalMiB: `${GPU_HW}/smalldata/memory-total`,
+  gpuCores: `${GPU_HW}/factor/cores`,
+  anePowerW: `${ANE_HW}/power/ane`,
+  aneCores: `${ANE_HW}/factor/cores`,
+  memoryPowerW: `${SMC_HW}/power/memory`,
   memAvailableGiB: `${MEM_HW}/data/available`,
   systemW: `${SMC_HW}/power/system`
 };
@@ -84,6 +89,29 @@ interface Built {
   values: Record<string, number>;
 }
 
+/** The chip's facts the rows carry beside the readings. */
+export interface ChipFacts {
+  /** The CPU node's name (the chip). */
+  chip: string;
+  /** The GPU node's name: the snapshot's adapter name, so the Monitor and the advisor find the same node. */
+  gpuName: string;
+  /** macmon's cluster labels: "P"/"E" on M1-M4, "S"/"P" (super, performance) on the M5 Pro/Max. */
+  coreLabels: { high: string; low: string };
+  gpuCores: number | null;
+  neuralEngineCores: number | null;
+}
+
+/** Every M-series chip so far carries a 16-core Neural Engine (Apple's tech specs, M1 through M5). */
+export const NEURAL_ENGINE_CORES = 16;
+
+const CLUSTER = /^[PES]$/;
+
+export function chipFacts(chip: string, over: Partial<ChipFacts> = {}): ChipFacts {
+  const labels = over.coreLabels && CLUSTER.test(over.coreLabels.high) && CLUSTER.test(over.coreLabels.low) && over.coreLabels.high !== over.coreLabels.low ? over.coreLabels : { high: 'P', low: 'E' };
+  // null means "leave the row out" (a test, a chip without one); undefined takes the M-series count.
+  return { chip, gpuName: over.gpuName ?? chip, coreLabels: labels, gpuCores: over.gpuCores ?? null, neuralEngineCores: over.neuralEngineCores === undefined ? NEURAL_ENGINE_CORES : over.neuralEngineCores };
+}
+
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
 
@@ -94,7 +122,9 @@ const MIB = 1024 ** 2;
  * and the "GPU Memory Used/Total" rows; fans on an EmbeddedController node; the battery rows
  * BatteryPanel.tsx lists). A source that has not answered yet contributes nothing rather than zeros.
  */
-export function sensorsOf(chip: string, s: MacmonSample | null, gpuMem: GpuMemory | null, battery: BatteryReading | null): Built {
+export function sensorsOf(facts: string | ChipFacts, s: MacmonSample | null, gpuMem: GpuMemory | null, battery: BatteryReading | null): Built {
+  const f = typeof facts === 'string' ? chipFacts(facts) : facts;
+  const chip = f.chip;
   const meta: SensorMeta[] = [];
   const values: Record<string, number> = {};
   const add = (hardware: string, hardwareName: string, hardwareType: string, sensorType: SensorType, name: string, unit: string, slug: string, value: number | null | undefined) => {
@@ -104,7 +134,8 @@ export function sensorsOf(chip: string, s: MacmonSample | null, gpuMem: GpuMemor
     values[id] = value;
   };
   const cpu = (type: SensorType, name: string, unit: string, slug: string, v: number | null | undefined) => add(CPU_HW, chip, 'Cpu', type, name, unit, slug, v);
-  const gpu = (type: SensorType, name: string, unit: string, slug: string, v: number | null | undefined) => add(GPU_HW, chip, 'GpuApple', type, name, unit, slug, v);
+  const gpu = (type: SensorType, name: string, unit: string, slug: string, v: number | null | undefined) => add(GPU_HW, f.gpuName, 'GpuApple', type, name, unit, slug, v);
+  const ane = (type: SensorType, name: string, unit: string, slug: string, v: number | null | undefined) => add(ANE_HW, 'Neural Engine', 'NeuralEngine', type, name, unit, slug, v);
   const smc = (type: SensorType, name: string, unit: string, slug: string, v: number | null | undefined) => add(SMC_HW, 'Apple SMC', 'EmbeddedController', type, name, unit, slug, v);
   const mem = (type: SensorType, name: string, unit: string, slug: string, v: number | null | undefined) => add(MEM_HW, 'Unified memory', 'Memory', type, name, unit, slug, v);
   const bat = (type: SensorType, name: string, unit: string, slug: string, v: number | null | undefined) => add(BAT_HW, 'Battery', 'Battery', type, name, unit, slug, v);
@@ -118,8 +149,10 @@ export function sensorsOf(chip: string, s: MacmonSample | null, gpuMem: GpuMemor
     // a core by its number alone.
     const pn = (i: number) => i + 1;
     const en = (i: number) => p.length + i + 1;
-    p.forEach((c, i) => cpu('Clock', `P-Core #${pn(i)}`, 'MHz', `p${pn(i)}`, c.freq_mhz));
-    e.forEach((c, i) => cpu('Clock', `E-Core #${en(i)}`, 'MHz', `e${en(i)}`, c.freq_mhz));
+    const hi = f.coreLabels.high;
+    const lo = f.coreLabels.low;
+    p.forEach((c, i) => cpu('Clock', `${hi}-Core #${pn(i)}`, 'MHz', `p${pn(i)}`, c.freq_mhz));
+    e.forEach((c, i) => cpu('Clock', `${lo}-Core #${en(i)}`, 'MHz', `e${en(i)}`, c.freq_mhz));
     const all = [...p, ...e];
     if (all.length) {
       const active = all.filter((c) => c.freq_mhz > 0);
@@ -127,8 +160,8 @@ export function sensorsOf(chip: string, s: MacmonSample | null, gpuMem: GpuMemor
       cpu('Clock', 'Cores (Average Effective)', 'MHz', 'average-effective', all.reduce((a, c) => a + c.freq_mhz * c.active_ratio, 0) / all.length);
       cpu('Clock', 'Cores (Max)', 'MHz', 'max', Math.max(...all.map((c) => c.freq_mhz)));
     }
-    p.forEach((c, i) => cpu('Load', `P-Core #${pn(i)}`, '%', `p${pn(i)}`, c.active_ratio * 100));
-    e.forEach((c, i) => cpu('Load', `E-Core #${en(i)}`, '%', `e${en(i)}`, c.active_ratio * 100));
+    p.forEach((c, i) => cpu('Load', `${hi}-Core #${pn(i)}`, '%', `p${pn(i)}`, c.active_ratio * 100));
+    e.forEach((c, i) => cpu('Load', `${lo}-Core #${en(i)}`, '%', `e${en(i)}`, c.active_ratio * 100));
     if (all.length) cpu('Load', 'CPU Total', '%', 'total', (all.reduce((a, c) => a + c.active_ratio, 0) / all.length) * 100);
     cpu('Power', 'Package', 'W', 'package', s.cpu_power);
     cpu('Temperature', 'CPU Package', '°C', 'package', s.temp?.cpu_temp_avg);
@@ -137,6 +170,7 @@ export function sensorsOf(chip: string, s: MacmonSample | null, gpuMem: GpuMemor
     gpu('Load', 'GPU Core', '%', 'core', s.gpu_active_ratio === undefined ? undefined : s.gpu_active_ratio * 100);
     gpu('Power', 'GPU Core', 'W', 'core', s.gpu_power);
     gpu('Temperature', 'GPU Core', '°C', 'core', s.temp?.gpu_temp_avg);
+    ane('Power', 'Neural Engine', 'W', 'ane', s.ane_power);
 
     (s.fans ?? []).forEach((f, i) => {
       smc('Fan', `Fan #${i + 1}`, 'RPM', `fan${i + 1}`, f.rpm);
@@ -144,7 +178,6 @@ export function sensorsOf(chip: string, s: MacmonSample | null, gpuMem: GpuMemor
     });
     smc('Power', 'System Total', 'W', 'system', s.sys_power);
     smc('Power', 'Memory', 'W', 'memory', s.ram_power);
-    smc('Power', 'Neural Engine', 'W', 'ane', s.ane_power);
 
     if (s.memory && s.memory.ram_total > 0) {
       mem('Data', 'Memory Used', 'GB', 'used', s.memory.ram_usage / GIB);
@@ -157,6 +190,9 @@ export function sensorsOf(chip: string, s: MacmonSample | null, gpuMem: GpuMemor
     gpu('SmallData', 'GPU Memory Used', 'MB', 'memory-used', gpuMem.usedMiB);
     gpu('SmallData', 'GPU Memory Total', 'MB', 'memory-total', gpuMem.totalMiB);
   }
+  // Counts, not readings: the SoC diagram draws one cell per core (SocDiagram.tsx).
+  gpu('Factor', 'GPU Cores', '', 'cores', f.gpuCores);
+  ane('Factor', 'Cores', '', 'cores', f.neuralEngineCores);
   if (battery?.present) {
     bat('Level', 'Charge Level', '%', 'charge', battery.percent);
     bat('Voltage', 'Voltage', 'V', 'voltage', battery.voltageV);
@@ -269,6 +305,8 @@ export interface MacSensorsOptions {
   /** Path to macmon, or null when it is not installed: the stream then carries only the IOKit rows. */
   macmon: string | null;
   chip: string;
+  /** The GPU node's name, the cluster labels and the core counts (chipFacts); the chip name alone otherwise. */
+  facts?: Partial<ChipFacts>;
   /** Metal's recommended working set, the "GPU Memory Total" row; null leaves the memory rows out. */
   gpuTotalMiB: number | null;
   /** Off in tests: no ioreg polling, no macmon; samples arrive through feed(). */
@@ -301,8 +339,11 @@ export class MacSensors extends EventEmitter {
   warming: boolean;
   lastError: string | null = null;
 
+  private readonly facts: ChipFacts;
+
   constructor(private readonly opts: MacSensorsOptions) {
     super();
+    this.facts = chipFacts(opts.chip, opts.facts);
     this.warming = opts.macmon !== null;
     if (opts.gpuTotalMiB !== null) this.gpuMem = { usedMiB: 0, totalMiB: opts.gpuTotalMiB };
   }
@@ -354,7 +395,7 @@ export class MacSensors extends EventEmitter {
   }
 
   private tick() {
-    this.built = sensorsOf(this.opts.chip, this.sample, this.gpuMem, this.battery);
+    this.built = sensorsOf(this.facts, this.sample, this.gpuMem, this.battery);
     this.latestRow = { qpc: qpcNow(), values: this.built.values };
     this.ring.push(this.latestRow);
     this.emit('tick', this.latestRow);

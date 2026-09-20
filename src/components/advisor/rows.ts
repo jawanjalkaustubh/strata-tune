@@ -75,6 +75,12 @@ export interface GpuSpecView {
   name: string;
   /** Who advertises the headline figure: "NVIDIA advertises 3,352". */
   vendor: string;
+  /** Apple Silicon: one memory pool; the VRAM figure is the GPU's working set and the clock the machine's own (hardware-tables.ts GpuSpec.unified). */
+  unified: boolean;
+  /** Apple's Neural Engine core count; null elsewhere. */
+  neuralEngineCores: number | null;
+  /** Where the unit counts were read (TechPowerUp for cards, the review listing for Apple rows). */
+  unitsUrl: string;
   vramGiB: number;
   /** null when nobody publishes a figure: the card says so and tok/s waits for a measurement. */
   bandwidthGBs: number | null;
@@ -106,22 +112,35 @@ export interface GpuSpecView {
 /** The plan's card order: the marketing formats first, the training formats after. */
 export const PRECISIONS: Precision[] = ['fp4', 'fp8', 'int8', 'int4', 'fp16', 'bf16', 'tf32'];
 
+/** What the machine knows that Apple's table does not print: the top of the GPU's clock table (electron/mac/snapshot.ts DisplayAdapter.maxClockMhz). */
+export interface MachineGpu {
+  maxClockMhz: number | null;
+}
+
 /** The VRAM total tells memory variants apart (4060 Ti 16/8 GB) when the name comes from NVML rather than the picker. */
-export function gpuSpecOf(name: string, vramMiB?: number): GpuSpecView | null {
+export function gpuSpecOf(name: string, vramMiB?: number, machine?: MachineGpu): GpuSpecView | null {
   const g = lookupGpu(name, vramMiB);
   if (!g) return null;
+  const unified = !!g.unified;
+  // Apple publishes no clock: the machine's own clock-table top stands in, and the FP32 figure follows the table's own convention (ALUs x 2 x clock).
+  const boostMhz = unified ? (machine?.maxClockMhz ?? 0) : g.boostMhz;
+  const fp32Tflops = unified ? (boostMhz > 0 ? (g.shadingUnits * 2 * boostMhz) / 1e6 : 0) : g.fp32Tflops;
+  const vramGiB = unified && vramMiB ? Math.round(vramMiB / 1024) : g.vramGiB;
   const pick = (from: Partial<Record<Precision, number>> | undefined) =>
     Object.fromEntries(PRECISIONS.flatMap((p) => (from?.[p] !== undefined ? [[p, from[p]]] : []))) as Partial<Record<Precision, number>>;
   return {
     name: g.name,
     vendor: g.vendor,
-    vramGiB: g.vramGiB,
+    unified,
+    neuralEngineCores: g.neuralEngineCores ?? null,
+    unitsUrl: g.tpuUrl,
+    vramGiB,
     bandwidthGBs: g.bandwidthGBs,
     tops: pick(g.tops),
     sparse: pick(g.tops.sparse),
     denseDerived: g.denseDerived,
     advertised: g.advertisedAiTops,
-    fp32Tflops: g.fp32Tflops,
+    fp32Tflops,
     tiles: {
       die: g.die,
       shadingUnits: g.shadingUnits,
@@ -132,7 +151,7 @@ export function gpuSpecOf(name: string, vramMiB?: number): GpuSpecView | null {
       memoryGbps: g.memoryGbps,
       memoryClockMhz: g.memoryClockMhz,
       baseMhz: g.baseMhz,
-      boostMhz: g.boostMhz,
+      boostMhz,
       tdpW: g.tdpW,
       tgpRangeW: g.tgpRangeW ?? null,
       suggestedPsuW: g.suggestedPsuW

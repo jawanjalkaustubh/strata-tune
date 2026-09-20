@@ -25,6 +25,8 @@ export interface SnapshotDeps {
   battery: () => Promise<BatteryReading | null>;
   /** The chip's top P-core clock (macmon's soc info), 0 when unknown. */
   maxClockMhz: () => number;
+  /** The GPU as the collector names it (with its core count), plus what Apple does not publish and macOS knows. */
+  gpu: () => { name: string; cores: number | null; maxClockMhz: number | null };
   ollamaUrl?: string;
 }
 
@@ -142,13 +144,16 @@ export async function macSnapshot(deps: SnapshotDeps): Promise<StaticSnapshot> {
   const totalMiB = Number(memsize) / MIB;
   // Without the worker, Apple's default GPU wired limit: about three quarters of unified memory on 36 GB+ machines, two thirds below.
   const workingSetMiB = worker ? worker.recommendedMaxWorkingSetBytes / MIB : Math.round(totalMiB * (totalMiB >= 36 * 1024 ? 0.75 : 0.667));
+  const gpu = deps.gpu();
   const adapter: DisplayAdapter = {
-    name: worker?.device ?? chip,
+    name: gpu.name,
     vendor: 'apple',
     dedicatedMiB: Math.round(workingSetMiB),
     driverVersion: `Metal (macOS ${osVersion})`,
     driverDate: null,
-    integrated: false
+    integrated: false,
+    ...(gpu.cores ? { cores: gpu.cores } : {}),
+    ...(gpu.maxClockMhz ? { maxClockMhz: gpu.maxClockMhz } : {})
   };
   const batteryInfo: BatteryInfo = battery ? { present: true, onAc: battery.onAc, percent: battery.percent } : { present: false, onAc: true, percent: null };
   return {

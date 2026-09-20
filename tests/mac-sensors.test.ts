@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
-import { IDS, Ring, parseBattery, parseGpuMemoryUsed, sensorsOf, type MacmonSample } from '../electron/mac/sensors';
+import { IDS, Ring, chipFacts, parseBattery, parseGpuMemoryUsed, sensorsOf, type MacmonSample } from '../electron/mac/sensors';
 import { excludedPids, hogsFrom, parseCpuTime, parsePs } from '../electron/mac/hogs';
 import { parseDf, parseDiskutil, powerModeOf } from '../electron/mac/snapshot';
 import { SensorIndex } from '../src/components/monitor/sensors';
@@ -83,8 +83,26 @@ describe('macOS sensor rows resolve through the Monitor layouts', () => {
     expect(built.values[b.degradation!]).toBeCloseTo((1 - 8546 / 8579) * 100, 3);
   });
 
+  it("Apple's own cluster names: macmon's S/P labels become super and performance cores, numbered across both, with the core counts as factors", () => {
+    const m5 = sensorsOf(chipFacts('Apple M5 Max', { gpuName: 'Apple M5 Max (40-core GPU)', coreLabels: { high: 'S', low: 'P' }, gpuCores: 40 }), sample, null, null);
+    const idx = new SensorIndex(m5.meta);
+    const layout = cpuLayout(idx, { cores: 18, logical: 18 });
+    expect(groupCores(layout).map((g) => [g.label, g.cores.length])).toEqual([
+      ['Super cores', sample.pcpu_cores!.length],
+      ['Performance cores', sample.ecpu_cores!.length]
+    ]);
+    expect(layout.cores.map((c) => c.n)).toEqual(Array.from({ length: 18 }, (_, i) => i + 1));
+    expect(idx.hardwareName(idx.hardware(/^GpuApple$/)[0])).toBe('Apple M5 Max (40-core GPU)');
+    expect(m5.values[IDS.gpuCores]).toBe(40);
+    expect(m5.values[IDS.aneCores]).toBe(16);
+    expect(m5.values[IDS.anePowerW]).toBeCloseTo(sample.ane_power ?? 0);
+    // Labels macmon does not use fall back to P/E.
+    const odd = sensorsOf(chipFacts('Apple', { coreLabels: { high: 'X', low: 'P' } }), sample, null, null);
+    expect(odd.meta.some((r) => r.name === 'P-Core #1')).toBe(true);
+  });
+
   it('nothing reads as zero for a source that has not answered: no macmon, no battery, no GPU memory', () => {
-    const empty = sensorsOf('Apple M5 Max', null, null, null);
+    const empty = sensorsOf(chipFacts('Apple M5 Max', { neuralEngineCores: null }), null, null, null);
     expect(empty.meta).toEqual([]);
     expect(Object.keys(empty.values)).toEqual([]);
   });
