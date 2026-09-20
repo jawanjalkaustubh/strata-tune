@@ -22,13 +22,17 @@ interface Props {
   memoryPowerW?: number;
 }
 
-const CELL = 12;
+const CELL = 18;
 const GAP = 3;
 const PAD = 10;
 const HEADER = 16;
+/** Two lines of figures under the core grid (clock and temperature, then power and load), so nothing shares the header with the label. */
+const FOOTER = 28;
 const COLS = 10;
 const NE_COLS = 8;
-const NE_CELL = 8;
+const NE_CELL = 10;
+/** Wide enough for "16 cores · 0.02 W" in the 10 px figure font. */
+const RIGHT_W = 128;
 const MEM_H = 30;
 const TEXT = '#f1f5f9';
 const MUTED = '#94a3b8';
@@ -54,15 +58,16 @@ export const SocDiagram: React.FC<Props> = ({ vendor, gpuCores, load, clockMhz, 
   const cols = Math.min(COLS, cores);
   const rows = Math.ceil(cores / cols);
   const gpuW = cols * (CELL + GAP) - GAP;
-  const gpuH = HEADER + rows * (CELL + GAP) - GAP;
+  const gridH = rows * (CELL + GAP) - GAP;
+  const gpuH = HEADER + gridH + FOOTER;
   const ne = neuralCores ?? 0;
   const neCols = Math.min(NE_COLS, Math.max(ne, 1));
   const neRows = ne > 0 ? Math.ceil(ne / neCols) : 0;
   const neW = ne > 0 ? neCols * (NE_CELL + GAP) - GAP : 0;
-  const neH = ne > 0 ? HEADER + neRows * (NE_CELL + GAP) - GAP : 0;
-  const rightW = Math.max(neW, 96);
+  const neH = ne > 0 ? HEADER + neRows * (NE_CELL + GAP) - GAP + 14 : 0;
+  const rightW = Math.max(neW, RIGHT_W);
   const width = PAD + gpuW + PAD + rightW + PAD;
-  const memY = PAD + Math.max(gpuH, neH) + PAD;
+  const memY = PAD + Math.max(gpuH, neH + 28) + PAD;
   const height = memY + HEADER + MEM_H + PAD;
   const tint = 0.06 + (LOAD_TINT * Math.min(load ?? 0, 100)) / 100;
   const tempTone = toneByThresholds(tempC ?? 0, 85, 95);
@@ -84,13 +89,15 @@ export const SocDiagram: React.FC<Props> = ({ vendor, gpuCores, load, clockMhz, 
           <text x={0} y={10} className="chip-label" fill={MUTED}>
             GPU · {gpuCores} CORES
           </text>
-          <text x={gpuW} y={10} textAnchor="end" className="chip-figure" fill={figureFill(tempTone)}>
-            {clockMhz === undefined ? '' : `${clockMhz.toFixed(0)} MHz`}
-            {tempC === undefined ? '' : ` · ${tempC.toFixed(0)} °C`}
-          </text>
           {Array.from({ length: cores }, (_, i) => (
             <rect key={i} x={(i % cols) * (CELL + GAP)} y={HEADER + Math.floor(i / cols) * (CELL + GAP)} width={CELL} height={CELL} rx={2} fill={vendor.colour} fillOpacity={tint} stroke={OUTLINE} />
           ))}
+          <text x={0} y={HEADER + gridH + 13} className="chip-figure" fill={figureFill(tempTone)}>
+            {[clockMhz === undefined ? null : `${clockMhz.toFixed(0)} MHz`, tempC === undefined ? null : `${tempC.toFixed(0)} °C`].filter(Boolean).join(' · ')}
+          </text>
+          <text x={0} y={HEADER + gridH + 25} className="chip-nominal" fill={MUTED}>
+            {[powerW === undefined ? null : `${powerW.toFixed(1)} W`, load === undefined ? null : `${load.toFixed(0)} % busy`].filter(Boolean).join(' · ')}
+          </text>
         </g>
         <g transform={`translate(${PAD + gpuW + PAD} ${PAD})`}>
           {ne > 0 && (
@@ -101,17 +108,11 @@ export const SocDiagram: React.FC<Props> = ({ vendor, gpuCores, load, clockMhz, 
               {Array.from({ length: ne }, (_, i) => (
                 <rect key={i} x={(i % neCols) * (NE_CELL + GAP)} y={HEADER + Math.floor(i / neCols) * (NE_CELL + GAP)} width={NE_CELL} height={NE_CELL} rx={1.5} fill={vendor.colour} fillOpacity={aneTint} stroke={OUTLINE} />
               ))}
-              <text x={0} y={neH + 12} className="chip-nominal" fill={MUTED}>
+              <text x={0} y={neH - 2} className="chip-nominal" fill={MUTED}>
                 {anePowerW === undefined ? `${ne} cores` : `${ne} cores · ${anePowerW.toFixed(2)} W`}
               </text>
             </g>
           )}
-          <text x={0} y={(ne > 0 ? neH + 26 : 10) + 0} className="chip-figure" fill={TEXT}>
-            {powerW === undefined ? '' : `${powerW.toFixed(1)} W GPU`}
-          </text>
-          <text x={0} y={(ne > 0 ? neH + 26 : 10) + 12} className="chip-nominal" fill={MUTED}>
-            {load === undefined ? '' : `${load.toFixed(0)} % busy`}
-          </text>
         </g>
         <g transform={`translate(${PAD} ${memY})`} {...bind(memTip)}>
           <text x={0} y={10} className="chip-label" fill={MUTED}>
