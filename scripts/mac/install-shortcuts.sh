@@ -44,11 +44,18 @@ if [ -f "$ICON_PNG" ] && command -v sips >/dev/null && command -v iconutil >/dev
   rm -rf "$(dirname "$ICONSET")"
 fi
 
-# The executable: opens the launcher in Terminal so first-run output (npm install, build) is visible,
-# exactly like the Windows launcher's console. LSUIElement keeps this stub itself out of the Dock;
-# the real Electron window appears with its own icon.
+# The executable. Once set up (dependencies, build present) it runs the launcher directly, with
+# no Terminal window, and keeps the launcher's output in ~/Library/Logs/StrataTune/launch.log. On a first
+# run, or when something is missing, it opens the launcher in Terminal instead so the install/build
+# output is visible, like the Windows launcher's console. LSUIElement keeps this stub itself out of
+# the Dock; the real Electron window appears with its own icon.
 cat > "$APP/Contents/MacOS/launch" <<SH
 #!/usr/bin/env bash
+REPO="$REPO"
+if [ -d "\$REPO/node_modules/electron/dist/Electron.app" ] && [ -f "\$REPO/dist-electron/main.js" ]; then
+  LOGDIR="\$HOME/Library/Logs/StrataTune"; mkdir -p "\$LOGDIR"
+  exec "$LAUNCHER" >>"\$LOGDIR/launch.log" 2>&1
+fi
 exec open -a Terminal "$LAUNCHER"
 SH
 chmod +x "$APP/Contents/MacOS/launch"
