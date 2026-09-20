@@ -124,6 +124,8 @@ export const Advisor: React.FC = () => {
   const bandwidth = streamedBandwidth(bench, benchApplies, card?.bandwidthGBs ?? spec?.bandwidthGBs ?? null);
   const bandwidthGBs = bandwidth?.gbs ?? null;
   const factor = settings.calibrationFactor ?? DEFAULT_FACTOR;
+  // Apple Silicon: the CPU and GPU share one pool, so the "RAM bus" a spilled model streams from is the pool's measured bandwidth, not a DIMM table.
+  const machine: HardwareFacts = facts.unified && benchApplies && bench ? { ...facts, ramBandwidthGBs: bench.bandwidthGBs, ramBandwidthDefault: false } : facts;
 
   // Only timings from this card and driver count; the rest stay stored for the card they belong to.
   const measurements = useMemo(
@@ -131,7 +133,7 @@ export const Advisor: React.FC = () => {
     [stored, facts.gpuName, facts.driver]
   );
 
-  const rows = useMemo(() => adviseRows({ facts, bandwidthGBs, contextTokens, factor }), [facts, bandwidthGBs, contextTokens, factor]);
+  const rows = useMemo(() => adviseRows({ facts: machine, bandwidthGBs, contextTokens, factor }), [machine, bandwidthGBs, contextTokens, factor]);
   const picks = useMemo(() => bestRows(rows), [rows]);
   const shown = filter ? rows.filter((r) => r.tags.includes(filter)) : rows;
 
@@ -226,11 +228,11 @@ export const Advisor: React.FC = () => {
         <CollectorStatusPill state={status} />
         <span className="flex-1" />
         <span className="flex items-center gap-1.5 text-mini text-studio-muted figure">
-          {facts.integrated ? 'no discrete GPU' : `VRAM ${gib(facts.vramBytes, 0)}`} · RAM {gib(facts.ramBytes, 0)}
+          {facts.integrated ? 'no discrete GPU' : facts.unified ? `GPU working set ${gib(facts.vramBytes, 0)} of unified` : `VRAM ${gib(facts.vramBytes, 0)}`} · RAM {gib(facts.ramBytes, 0)}
           {facts.freeDiskBytes !== null && ` · ${diskLabel} ${gib(facts.freeDiskBytes, 0)} free`}
-          <Tag kind={summaryKind} title={facts.source === 'collector' ? 'From the collector snapshot' : 'From gpus.json and the inputs beside the picker'} />
-          <span>· RAM bus {facts.ramBandwidthGBs.toFixed(0)} GB/s</span>
-          <Tag kind={facts.ramBandwidthDefault ? 'default' : 'spec'} title={facts.ramBandwidthDefault ? 'No module speed known: the analysis default' : 'From the configured DIMM speed and channel count'} />
+          <Tag kind={summaryKind} title={facts.source === 'collector' ? (facts.unified ? "From the macOS collector: the working set is what Metal lets the GPU hold of the shared memory" : 'From the collector snapshot') : 'From gpus.json and the inputs beside the picker'} />
+          <span>· {facts.unified ? 'memory' : 'RAM'} bus {machine.ramBandwidthGBs.toFixed(0)} GB/s</span>
+          <Tag kind={machine.ramBandwidthDefault ? 'default' : facts.unified ? 'measured' : 'spec'} title={machine.ramBandwidthDefault ? (facts.unified ? 'Press Measure: unified memory has no DIMM table, the figure is measured' : 'No module speed known: the analysis default') : facts.unified ? 'Measured by the Metal worker: one pool for the CPU and the GPU' : 'From the configured DIMM speed and channel count'} />
         </span>
       </header>
 
@@ -251,7 +253,7 @@ export const Advisor: React.FC = () => {
         card={card}
         integrated={facts.integrated}
         laptop={facts.laptop}
-        ramBandwidthGBs={facts.ramBandwidthGBs}
+        ramBandwidthGBs={machine.ramBandwidthGBs}
         latest={latest}
         npuTops={npuTopsOf(facts.cpuName)}
         bench={bench}

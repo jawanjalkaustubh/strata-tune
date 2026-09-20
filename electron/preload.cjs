@@ -11,6 +11,8 @@ const on = (channel) => (cb) => {
 // keep the two in step. Hardware never appears here: the collector talks to
 // the main process, and the main process talks to this bridge.
 contextBridge.exposeInMainWorld('strata', {
+  // 'darwin' hides what has no macOS counterpart (the Capture page, the Headroom hunt); a value, not a call.
+  platform: process.platform,
   version: () => ipcRenderer.invoke('app:version'),
   support: () => ipcRenderer.invoke('app:support'),
 

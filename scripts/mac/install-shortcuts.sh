@@ -83,6 +83,11 @@ touch "$APP"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
 echo "Installed $APP"
 
+# An alias the user moved into ~/Desktop/Strata (or any folder there) counts as present: no duplicate on the Desktop.
+if [ "$DO_DESKTOP" = 1 ] && [ -e "$HOME/Desktop/Strata/$NAME" ]; then
+  echo "Desktop shortcut already in ~/Desktop/Strata; not recreating it on the Desktop."
+  DO_DESKTOP=0
+fi
 if [ "$DO_DESKTOP" = 1 ]; then
   # A Finder alias (not a symlink) so it survives moves and shows the app icon.
   rm -rf "$DESKTOP"

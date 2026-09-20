@@ -11,6 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { app, type IpcMain } from 'electron';
 import type { CollectorClient } from './collector';
+import { macWorkerPath } from './mac/paths';
 
 /** One --bench --json line from the worker plus what the cache needs to decide reuse. */
 export interface GpuBench {
@@ -90,6 +91,8 @@ const benchPath = () => path.join(app.getPath('userData'), 'bench.json');
 
 /** Dev: the Release build in the solution tree. Packaged: resources/collector next to the app (same rule as the collector client). */
 function workerExe(): string {
+  // macOS: the Swift Metal worker (collector/mac), the same --bench --json line.
+  if (process.platform === 'darwin') return macWorkerPath(app.getAppPath(), app.isPackaged, process.resourcesPath);
   if (app.isPackaged) return path.join(process.resourcesPath, 'collector', 'strata-tune-worker.exe');
   const dir = path.join(app.getAppPath(), 'collector', 'StrataTune.Worker', 'bin', 'x64', 'Release', 'net10.0', 'win-x64');
   const names = ['strata-tune-worker.exe', 'StrataTune.Worker.exe'];
@@ -220,14 +223,14 @@ async function heldDuring<T>(collector: CollectorClient | null, until: Promise<T
 
 async function doBenchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
   const exe = workerExe();
-  if (!fs.existsSync(exe)) return { error: `Worker not built: ${exe}. Run dotnet build collector\\StrataTune.sln -c Release.` };
+  if (!fs.existsSync(exe)) return { error: `Worker not built: ${exe}. Run ${process.platform === 'darwin' ? 'scripts/mac/build-collector.sh' : 'dotnet build collector\\StrataTune.sln -c Release'}.` };
   const running = runWorker(exe);
   const held = await heldDuring(collector, running);
   const run = await running;
   if (run.cancelled) return { error: 'Measurement stopped', code: 'cancelled' };
   if (run.timedOut) return { error: `The GPU benchmark did not finish within ${BENCH_TIMEOUT_MS / 1000} s` };
   const firstErr = run.stderr.trim().split(/\r?\n/)[0] || '';
-  if (run.code === 3) return { error: 'No hardware GPU: the worker was given the software rasteriser (WARP)' };
+  if (run.code === 3) return { error: process.platform === 'darwin' ? `No Metal GPU: ${firstErr || 'the worker found no device'}` : 'No hardware GPU: the worker was given the software rasteriser (WARP)' };
   if (run.code === 10) return { error: 'The GPU was lost during the benchmark (TDR); the driver reset it' };
   if (run.code !== 0) return { error: `The worker exited with code ${run.code}${firstErr ? `: ${firstErr}` : ''}` };
   const parsed = parseBenchLine(run.stdout, driver);

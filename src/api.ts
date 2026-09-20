@@ -145,6 +145,8 @@ export interface LegalApi {
 
 /** What electron/preload.cjs exposes as window.strata. Keep the two in step. */
 export interface StrataApi {
+  /** process.platform of the main process: 'win32', 'darwin', 'linux'. */
+  platform: string;
   version(): Promise<string>;
   support(): Promise<Partial<SupportLinks>>;
 

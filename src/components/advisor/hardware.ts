@@ -15,6 +15,8 @@ export interface HardwareFacts {
   integrated: boolean;
   /** SMBIOS says portable: no PSU tile on the stats card (plan 17d). False standalone. */
   laptop: boolean;
+  /** An Apple Silicon GPU: one memory pool, so the RAM bus figure is the GPU's own measured bandwidth once Measure has run (Advisor.tsx). */
+  unified: boolean;
   cpuName: string | null;
   driver: string | null;
   vramBytes: number;
@@ -79,6 +81,7 @@ export function factsFromSnapshot(s: StaticSnapshot, freeRam: number | null, mod
     gpu: gpu ?? null,
     integrated: !card,
     laptop: s.chassis.isLaptop,
+    unified: card?.vendor === 'apple',
     cpuName: s.cpu.name,
     driver: gpu?.driver || card?.driverVersion || s.gpuDriver.version || null,
     vramBytes: totalMiB * MIB,
@@ -107,6 +110,7 @@ export function factsFromPicker(p: PickerChoice, vramGiB: number): HardwareFacts
     gpu: null,
     integrated: false,
     laptop: false,
+    unified: false,
     cpuName: null,
     driver: null,
     vramBytes: vramGiB * GIB,

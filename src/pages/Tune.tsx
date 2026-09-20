@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { AuditPanel } from './Audit';
 import { Headroom } from '../components/tune/Headroom';
 import { takeIntent } from '../components/navigate';
+import { api } from '../api';
 
 /**
  * Tune, the home page (plan section 17, user 2026-09-16: "what's the point of Audit as a
@@ -21,7 +22,8 @@ export const Tune: React.FC = () => {
       <div id="audit" ref={audit}>
         <AuditPanel />
       </div>
-      <Headroom />
+      {/* The hunt drives NVIDIA clock offsets; on a Mac there is nothing to hunt, so the section is not there at all (docs/MACOS.md). */}
+      {api?.platform !== 'darwin' && <Headroom />}
     </div>
   );
 };
