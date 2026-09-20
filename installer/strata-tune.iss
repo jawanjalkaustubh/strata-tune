@@ -89,6 +89,9 @@ Name: "{autodesktop}\Strata Tune"; Filename: "{app}\Strata Tune.exe"; WorkingDir
 
 [Run]
 ; net.exe exits 2 when the account is already a member; that is fine and never fails the install.
+; {username} is the account whose token runs this elevated setup. On a PC where a standard
+; user elevates with another administrator's credentials, that is the administrator, not the
+; person who will run Capture; the app then still offers "Add my account" on the Capture page.
 Filename: "{sys}\net.exe"; Parameters: "localgroup ""Performance Log Users"" ""{username}"" /add"; Flags: runhidden; StatusMsg: "Adding your account to Performance Log Users..."; Tasks: perflog
 Filename: "{app}\Strata Tune.exe"; Description: "&Launch Strata Tune"; Flags: nowait postinstall skipifsilent
 
@@ -150,6 +153,9 @@ var
 begin
   if (CurStep = ssPostInstall) and PawnIoFetched then
   begin
+    // The download sits in {tmp}, a folder the interactive account can write, and runs elevated
+    // after its hash was checked: the usual download-then-run window every driver installer has.
+    // Accepted: PawnIO's own installer is Authenticode-signed and refuses to run unsigned.
     if Exec(ExpandConstant('{tmp}\PawnIO_setup.exe'), '-install -silent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     begin
       Log('PawnIO setup exit code ' + IntToStr(ResultCode));
