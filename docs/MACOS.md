@@ -19,13 +19,22 @@ project; nothing here starts it.
 ## Build and run
 
 ```bash
-brew install node
+brew install node@24 && brew link --overwrite node@24   # not plain `node` (26): Electron's unpacker stops silently there
 npm ci
 npm run build          # also builds the single-file report bundle
 npm start              # or double-click run-strata-tune.command
 npm test               # vitest
 scripts/mac/install-shortcuts.sh   # Strata Tune.app in ~/Applications + a Desktop alias
 ```
+
+## Troubleshooting
+
+- **"Electron failed to install correctly"** on launch, or `node_modules/electron/dist`
+  holding only `LICENSES.chromium.html`: the dependencies were installed with Node 26
+  (Homebrew's plain `node`), where Electron's unpacker (extract-zip) stops silently
+  after the first file. Install Node 24: `brew install node@24 && brew link --overwrite
+  node@24`, then `node node_modules/electron/install.js`. Strata Code and Photo's
+  `scripts/mac/setup.sh` do this for you.
 
 ## What changed for the port
 

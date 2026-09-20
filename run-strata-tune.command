@@ -3,7 +3,9 @@
 cd "$(dirname "$0")" || exit 1
 if [ -x /opt/homebrew/bin/brew ]; then eval "$(/opt/homebrew/bin/brew shellenv)"; fi
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-command -v node >/dev/null 2>&1 || { echo "Node is not installed: brew install node" >&2; read -r -p "Press Return to close." _; exit 1; }
+# Node 24 first: Node 26 (Homebrew's plain `node`) breaks Electron's installer (see docs/MACOS.md).
+[ -d /opt/homebrew/opt/node@24/bin ] && export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
+command -v node >/dev/null 2>&1 || { echo "Node is not installed: brew install node@24 && brew link --overwrite node@24" >&2; read -r -p "Press Return to close." _; exit 1; }
 [ -d node_modules/electron/dist ] || { echo "[*] First run: installing dependencies..."; npm ci --no-audit --no-fund || { read -r -p "npm ci failed. Press Return." _; exit 1; }; }
 [ -f dist-electron/main.js ] || { echo "[*] First run: building..."; npm run build || { read -r -p "npm run build failed. Press Return." _; exit 1; }; }
 exec npm start
