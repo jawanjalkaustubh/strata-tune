@@ -1,6 +1,8 @@
 import type { SupportLinks } from './support';
 import type { FlightLine, GpuFacts, HogsResult, LoadKind, LoadRun, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, PstateDeltas, Tick, Timers, TuneExport, TuneRun, TuneRunKind, TuneStatus } from './collector-types';
 import type { BenchError, BenchGpuRequest, GpuBench, OllamaBench, OllamaList } from '../electron/bench';
+import type { LlmBenchRequest, LlmProgress } from '../electron/llm-bench';
+import type { LlmBenchResult } from './analysis/llm-bench';
 import type { CaptureFrames, CaptureState, ProcessPick, SessionListItem } from '../electron/capture';
 import type { CaptureSession } from './analysis/session-types';
 import type { Report } from './report/report-types';
@@ -10,6 +12,7 @@ import type { AboutSystem, DirectXInfo, LegalTexts, SaveFileRequest } from '../e
 import type { LegalStatus } from '../electron/legal';
 
 export type { BenchError, BenchGpuRequest, GpuBench, OllamaBench, OllamaInstalled, OllamaList } from '../electron/bench';
+export type { LlmBenchRequest, LlmProgress } from '../electron/llm-bench';
 export type { BenchSummary, CaptureFrames, CaptureState, CaptureStatus, PickGroup, ProcessInfo, ProcessPick, SessionListItem } from '../electron/capture';
 
 /** Measurements for the AI stats card (electron/bench.ts); every call answers { error } rather than throwing. */
@@ -23,6 +26,21 @@ export interface AdvisorApi {
   cancelBenchOllama(): Promise<void>;
   ollamaList(): Promise<OllamaList | BenchError>;
   ollamaUnload(): Promise<{ unloaded: string[] } | BenchError>;
+}
+
+/** The LLM benchmark (electron/llm-bench.ts, src/analysis/llm-bench.ts): results on disk, one run at a time, export and import for the other machine. */
+export interface LlmApi {
+  list(): Promise<LlmBenchResult[]>;
+  run(req: LlmBenchRequest): Promise<LlmBenchResult | BenchError>;
+  /** Stop: aborts the generation in flight; the pending run answers { error, code: 'cancelled' }. */
+  cancel(): Promise<void>;
+  /** Answers the results left. */
+  remove(id: string): Promise<LlmBenchResult[]>;
+  /** Save dialog; null when cancelled. An empty list exports every result. */
+  exportFile(ids: string[]): Promise<string | null>;
+  /** Open dialog; results merged by id, `added` the newcomers. */
+  importFile(): Promise<{ results: LlmBenchResult[]; added: number } | BenchError>;
+  onProgress(cb: (p: LlmProgress) => void): () => void;
 }
 
 /** The main process's view of the elevated collector (electron/collector.ts). */
@@ -156,6 +174,7 @@ export interface StrataApi {
 
   collector: CollectorApi;
   advisor: AdvisorApi;
+  llm: LlmApi;
   capture: CaptureApi;
   sessions: SessionsApi;
   history: HistoryApi;

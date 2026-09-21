@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { api, ipcErrorMessage, type BenchError, type GpuBench, type OllamaBench, type OllamaList } from '../api';
+import { api, ipcErrorMessage, type BenchError, type GpuBench, type LlmProgress, type OllamaBench, type OllamaList } from '../api';
+import type { LlmBenchResult } from '../analysis/llm-bench';
 import { loadSettings, saveSettings, type Settings } from '../settings';
 import { useCollectorStatus } from '../components/useCollectorStatus';
 import { CollectorStatusPill } from '../components/CollectorStatusPill';
@@ -8,6 +9,7 @@ import { vendorOf } from '../components/monitor/vendors';
 import { HardwarePicker } from '../components/advisor/HardwarePicker';
 import { StatsCard } from '../components/advisor/StatsCard';
 import { Calibration } from '../components/advisor/Calibration';
+import { LlmBenchCard } from '../components/advisor/LlmBenchCard';
 import { BestFor } from '../components/advisor/BestFor';
 import { ModelList } from '../components/advisor/ModelList';
 import { Tag } from '../components/advisor/Tag';
@@ -61,7 +63,11 @@ export const Advisor: React.FC = () => {
   const [calibrating, setCalibrating] = useState<string | null>(null);
   const [calibrateError, setCalibrateError] = useState('');
   /** Stop pressed on a run (plan section 17c): said once, in place of a result, until the next run. */
-  const [stopped, setStopped] = useState<'measure' | 'calibrate' | null>(null);
+  const [stopped, setStopped] = useState<'measure' | 'calibrate' | 'llm' | null>(null);
+  const [llmResults, setLlmResults] = useState<LlmBenchResult[]>([]);
+  const [llmRunning, setLlmRunning] = useState<LlmProgress | null>(null);
+  const [llmError, setLlmError] = useState('');
+  const [llmNotice, setLlmNotice] = useState('');
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [contextTokens, setContextTokens] = useState(DEFAULT_CONTEXT);
   const [filter, setFilter] = useState<string | null>(null);
@@ -183,18 +189,67 @@ export const Advisor: React.FC = () => {
   // Stop (plan section 17c): the worker is killed or the generation aborted; the pending call answers 'cancelled'.
   const stopMeasure = () => void api?.advisor.cancelBenchGpu();
   const stopCalibrate = () => void api?.advisor.cancelBenchOllama();
+  const stopLlm = () => void api?.llm.cancel();
+
+  // The LLM benchmark's rows on disk, and its progress while a run goes (electron/llm-bench.ts).
+  useEffect(() => {
+    if (!api) return;
+    let live = true;
+    api.llm.list().then((r) => live && setLlmResults(r)).catch(() => {});
+    const off = api.llm.onProgress((p) => live && setLlmRunning(p.phase === 'done' ? null : p));
+    return () => {
+      live = false;
+      off();
+    };
+  }, []);
+
+  const runLlm = async (model: string) => {
+    if (!api || llmRunning) return;
+    setLlmRunning({ model, phase: 'evict', run: 0, runs: 3 });
+    setLlmError('');
+    setLlmNotice('');
+    setStopped(null);
+    const r = await api.llm.run({
+      model,
+      machine: { gpuName: facts.gpuName, cpuName: facts.cpuName, ramBytes: facts.ramBytes, vramBytes: facts.vramBytes, unified: facts.unified, driver: facts.driver }
+    });
+    if ('error' in r) {
+      if (r.code === 'cancelled') setStopped('llm');
+      else setLlmError(`${model}: ${r.error}`);
+    } else setLlmResults((rows) => [...rows.filter((x) => x.id !== r.id), r]);
+    setLlmRunning(null);
+  };
+  const deleteLlm = async (id: string) => {
+    if (!api) return;
+    setLlmResults(await api.llm.remove(id));
+  };
+  const exportLlm = async () => {
+    if (!api) return;
+    const file = await api.llm.exportFile([]);
+    setLlmNotice(file ? `Written to ${file}; Import it on the other machine.` : '');
+  };
+  const importLlm = async () => {
+    if (!api) return;
+    const r = await api.llm.importFile();
+    if ('error' in r) setLlmError(r.error);
+    else {
+      setLlmResults(r.results);
+      setLlmNotice(r.added === 0 ? 'Nothing new in that file.' : `${r.added} row${r.added === 1 ? '' : 's'} imported.`);
+    }
+  };
 
   // Escape stops whichever run is going, the same as its button.
   useEffect(() => {
-    if (!measuring && calibrating === null) return;
+    if (!measuring && calibrating === null && llmRunning === null) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (measuring) stopMeasure();
       if (calibrating !== null) stopCalibrate();
+      if (llmRunning !== null) stopLlm();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [measuring, calibrating]);
+  }, [measuring, calibrating, llmRunning]);
 
   // Merged over what storage holds now: the PSU form and the Monitor write their own fields in between.
   const setFactor = (calibrationFactor: number | null) => {
@@ -285,6 +340,23 @@ export const Advisor: React.FC = () => {
         onCalibrate={calibrate}
         onSetFactor={() => derived !== null && setFactor(Number(derived.toFixed(2)))}
         onResetFactor={() => setFactor(null)}
+      />
+
+      <LlmBenchCard
+        installed={ollama?.installed ?? null}
+        available={!!api}
+        ollamaAbsent={ollamaError?.code === 'ollama-absent'}
+        collectorConnected={connected}
+        results={llmResults}
+        running={llmRunning}
+        error={llmError}
+        stopped={stopped === 'llm'}
+        notice={llmNotice}
+        onRun={runLlm}
+        onStop={stopLlm}
+        onDelete={deleteLlm}
+        onExport={exportLlm}
+        onImport={importLlm}
       />
 
       <BestFor picks={picks} measured={measuredByTag} contextTokens={tokens(contextTokens)} />

@@ -52,6 +52,18 @@ contextBridge.exposeInMainWorld('strata', {
     ollamaUnload: () => ipcRenderer.invoke('ollama:unload')
   },
 
+  // The LLM benchmark (electron/llm-bench.ts): the same model and prompt on every machine, Ollama's counters plus the collector's watts.
+  llm: {
+    list: () => ipcRenderer.invoke('llm:list'),
+    run: (req) => ipcRenderer.invoke('llm:run', req),
+    // Stop: the pending run then answers { error, code: 'cancelled' }.
+    cancel: () => ipcRenderer.invoke('llm:cancel'),
+    remove: (id) => ipcRenderer.invoke('llm:delete', id),
+    exportFile: (ids) => ipcRenderer.invoke('llm:export', ids),
+    importFile: () => ipcRenderer.invoke('llm:import'),
+    onProgress: on('llm:progress')
+  },
+
   // Frame capture (electron/capture.ts): PresentMon in main, one folder per session on disk.
   capture: {
     state: () => ipcRenderer.invoke('capture:state'),

@@ -109,3 +109,13 @@ shows the measurements and says so instead of an advertised TOPS headline.
 - `src/App.tsx`, `src/pages/Tune.tsx`: no Capture page and no Headroom section on macOS.
 - Tests: `tests/mac-sensors.test.ts` (the rows against the Monitor layouts, the parsers),
   `tests/mac-collector.test.ts` (the routes over the wire through `CollectorClient`).
+- `electron/llm-bench.ts`, `src/analysis/llm-bench.ts`, `src/components/advisor/LlmBenchCard.tsx`:
+  the LLM benchmark on the AI Models page, the one comparison that holds between a PC and a
+  Mac. The same Ollama model, the same thousand-token prompt, 256 tokens at temperature 0
+  with a fixed seed, three runs (run 1 loads cold), timed by Ollama's own counters; the
+  collector's GPU watts (the GPU core on Apple Silicon, the board on NVIDIA), the SMC's
+  whole-system watts (Apple only) and the model's resident memory read alongside. Rows live
+  in `~/Library/Application Support/Strata Tune/llm-bench.json`; Export writes them to a
+  JSON file, Import on the other machine reads it, and both rows sit under the model tag with
+  the best figure per column marked. A PC's advertised AI TOPS (fp4, sparse) and the Mac's
+  measured dense int8 never compare; tokens per second, and tokens per second per watt, do.

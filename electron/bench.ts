@@ -80,9 +80,9 @@ export interface BenchError {
   code?: 'ollama-absent' | 'cancelled';
 }
 
-const OLLAMA = 'http://127.0.0.1:11434';
+export const OLLAMA = 'http://127.0.0.1:11434';
 /** Family-wide: Strata Code, Photo and Video share the daemon, so a model is never evicted sooner. */
-const KEEP_ALIVE = '15m';
+export const KEEP_ALIVE = '15m';
 const BENCH_TIMEOUT_MS = 90_000;
 /** A 70B model can take a minute to page in before the first token. */
 const GENERATE_TIMEOUT_MS = 5 * 60_000;
@@ -251,7 +251,7 @@ async function doBenchGpu(driver: string | null, collector: CollectorClient | nu
 
 // ------------------------------------------------------------------ Ollama
 
-function ollamaError(e: unknown): BenchError {
+export function ollamaError(e: unknown): BenchError {
   const cause = (e as { cause?: { code?: string } }).cause;
   if (cause?.code === 'ECONNREFUSED') return { error: 'Ollama is not running', code: 'ollama-absent' };
   if (e instanceof Error && e.name === 'TimeoutError') return { error: 'Ollama did not answer in time' };
@@ -262,7 +262,7 @@ function ollamaError(e: unknown): BenchError {
 /** The generation in flight, so Stop can abort it; Ollama ends the decode when the request goes away. */
 let generation: AbortController | null = null;
 
-async function ollamaJson<T>(route: string, body?: unknown, timeoutMs = 10_000, abort?: AbortSignal): Promise<T> {
+export async function ollamaJson<T>(route: string, body?: unknown, timeoutMs = 10_000, abort?: AbortSignal): Promise<T> {
   const timeout = AbortSignal.timeout(timeoutMs);
   const res = await fetch(`${OLLAMA}${route}`, {
     method: body === undefined ? 'GET' : 'POST',

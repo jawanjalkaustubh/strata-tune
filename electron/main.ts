@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { CollectorClient } from './collector';
 import { registerAdvisorIpc } from './bench';
+import { registerLlmBenchIpc } from './llm-bench';
 import { registerHistoryIpc } from './history';
 import { CaptureController, registerCaptureIpc } from './capture';
 import { registerTuneIpc } from './tune';
@@ -375,6 +376,9 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       Menu.setApplicationMenu(null);
       registerIpc();
       registerAdvisorIpc(ipcMain, () => collector);
+      registerLlmBenchIpc(ipcMain, () => collector, (channel, payload) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+      });
       registerCapture();
       registerHistoryIpc(ipcMain);
       registerAboutIpc(ipcMain, () => collector);

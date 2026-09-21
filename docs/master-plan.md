@@ -445,6 +445,21 @@ library alongside the bundled `models.json`, cached a day, so a shipped build do
 stale. Its blind A/B model comparison is not worth the page space: speed is measured here,
 quality is the user's call.
 
+### 10c. The LLM benchmark (cross-machine, 2026-09-20)
+
+The AI stats headline is the vendor's advertised figure on a PC (the 5090: fp4 with
+sparsity) and the worker's measured dense int8 on a Mac, and the two never compare. The
+comparison that does is the one a `ollama run --verbose` prints: the same quantised model,
+the same prompt, tokens per second for prefill and generation, load duration, memory, and
+the watts drawn meanwhile. `src/analysis/llm-bench.ts` fixes the protocol (`strata-llm-1`:
+a thousand-token prompt prefixed per run so the KV prefix cache cannot answer it, 256
+tokens, `temperature 0`, `seed 7`, `num_ctx 4096`, three runs, the model evicted first so
+run 1 is the cold load), `electron/llm-bench.ts` runs it against Ollama while sampling the
+collector at 4 Hz (GPU power by the card's own sensor row, CPU package, the SMC system
+figure on a Mac, GPU memory in use) and keeps `llm-bench.json` beside `bench.json`; Export
+and Import move rows between machines. The card groups rows by model tag and marks the best
+of each column; tokens per second per GPU watt is the efficiency figure both sides report.
+
 ## 11. Frame capture and stutter classifier (Phases 4–5, the real lift)
 
 **Capture.** Start/stop by button, by the Game Mode process list lifted from Strata Video
