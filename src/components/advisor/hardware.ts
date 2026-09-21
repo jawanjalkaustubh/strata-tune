@@ -15,6 +15,11 @@ export interface HardwareFacts {
   integrated: boolean;
   /** SMBIOS says portable: no PSU tile on the stats card (plan 17d). False standalone. */
   laptop: boolean;
+  /** An Apple Silicon GPU: one memory pool, so the RAM bus figure is the GPU's own measured bandwidth once Measure has run (Advisor.tsx). */
+  unified: boolean;
+  /** Apple Silicon: the top of the GPU's clock table as macOS reports it, for the spec tiles Apple leaves blank; absent elsewhere. */
+  gpuMaxClockMhz?: number | null;
+  gpuCores?: number | null;
   cpuName: string | null;
   driver: string | null;
   vramBytes: number;
@@ -79,6 +84,9 @@ export function factsFromSnapshot(s: StaticSnapshot, freeRam: number | null, mod
     gpu: gpu ?? null,
     integrated: !card,
     laptop: s.chassis.isLaptop,
+    unified: card?.vendor === 'apple',
+    gpuMaxClockMhz: card?.maxClockMhz ?? null,
+    gpuCores: card?.cores ?? null,
     cpuName: s.cpu.name,
     driver: gpu?.driver || card?.driverVersion || s.gpuDriver.version || null,
     vramBytes: totalMiB * MIB,
@@ -107,6 +115,7 @@ export function factsFromPicker(p: PickerChoice, vramGiB: number): HardwareFacts
     gpu: null,
     integrated: false,
     laptop: false,
+    unified: false,
     cpuName: null,
     driver: null,
     vramBytes: vramGiB * GIB,
@@ -132,6 +141,8 @@ export function sameGpu(a: string, b: string): boolean {
       .toLowerCase()
       .replace(/\b(nvidia|amd|intel|geforce|radeon)\b|\(tm\)|\(r\)/g, '')
       .replace(/\b\d+\s*gb\b/g, '')
+      // The macOS collector names the Apple GPU with its core count; Metal names the bench device without it.
+      .replace(/\(\d+-core gpu\)/g, '')
       .replace(/\s+/g, ' ')
       .trim();
   return norm(a) === norm(b);

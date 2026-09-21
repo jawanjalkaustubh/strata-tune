@@ -212,13 +212,17 @@ export interface StaticSnapshot {
 
 export interface DisplayAdapter {
   name: string;
-  vendor: 'nvidia' | 'amd' | 'intel' | 'other';
+  /** 'apple' is an Apple Silicon GPU (the macOS collector): unified memory, `dedicatedMiB` its Metal working set. */
+  vendor: 'nvidia' | 'amd' | 'intel' | 'apple' | 'other';
   /** From the driver's own registry figure (Win32_VideoController.AdapterRAM is 32-bit and reads 4 GB on any bigger card); 0 when unknown. */
   dedicatedMiB: number;
   driverVersion: string;
   driverDate: string | null;
   /** Under 1 GiB of dedicated memory, or the name a processor's own graphics carry. */
   integrated: boolean;
+  /** Apple Silicon only (the macOS collector): GPU core count and the top of the GPU's clock table, which Apple does not publish. */
+  cores?: number;
+  maxClockMhz?: number;
 }
 
 export interface BatteryInfo {

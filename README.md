@@ -8,6 +8,10 @@ Fifth member of the Strata family (Code, Photo, Video, Snap/Remote).
 (Windows 10/11 x64): `Strata-Tune-Setup-x64.exe` installs everything in one go, or the portable
 zip needs nothing installed.
 
+## macOS
+
+The shell builds and runs on Apple Silicon (`npm ci && npm run build && npm start`, or `run-strata-tune.command`), but the sensor collector is Windows-only, so Tune, Monitor and Capture need a Windows PC. See `docs/MACOS.md`.
+
 ## What it does
 
 | Page | What you get |

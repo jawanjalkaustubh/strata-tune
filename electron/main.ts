@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { CollectorClient } from './collector';
 import { registerAdvisorIpc } from './bench';
+import { registerLlmBenchIpc } from './llm-bench';
 import { registerHistoryIpc } from './history';
 import { CaptureController, registerCaptureIpc } from './capture';
 import { registerTuneIpc } from './tune';
@@ -65,8 +66,11 @@ function createWindow() {
     minHeight: 600,
     center: true,
     frame: false,
+    // macOS keeps the frameless window's traffic lights; the custom title bar leaves them room and draws no controls of its own (src/components/TitleBar.tsx).
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 12 } } : {}),
     title: 'Strata Tune',
-    icon: path.join(app.getAppPath(), 'assets', 'strata-tune-st.ico'),
+    // .ico is Windows-only; macOS takes a PNG here in dev (the .app bundle's icns when packaged).
+    icon: path.join(app.getAppPath(), 'assets', process.platform === 'win32' ? 'strata-tune-st.ico' : 'strata-tune-st.png'),
     show: true,
     backgroundColor: '#0c0e14',
     webPreferences: {
@@ -355,6 +359,8 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
   app
     .whenReady()
     .then(async () => {
+      // macOS in development runs inside the stock Electron bundle: the Dock icon is set here so it never shows Electron's (the packaged .app carries its own icns).
+      if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'strata-tune-st.png'));
       if (SELFTEST) {
         // Never hang CI: a stuck test reports itself and exits 1.
         selfTestDeadline = setTimeout(() => finishSelfTest({ ok: false, reason: 'self-test timed out' }, 1), 15000);
@@ -370,6 +376,9 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       Menu.setApplicationMenu(null);
       registerIpc();
       registerAdvisorIpc(ipcMain, () => collector);
+      registerLlmBenchIpc(ipcMain, () => collector, (channel, payload) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+      });
       registerCapture();
       registerHistoryIpc(ipcMain);
       registerAboutIpc(ipcMain, () => collector);

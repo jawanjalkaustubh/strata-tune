@@ -11,6 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { app, type IpcMain } from 'electron';
 import type { CollectorClient } from './collector';
+import { macWorkerPath } from './mac/paths';
 
 /** One --bench --json line from the worker plus what the cache needs to decide reuse. */
 export interface GpuBench {
@@ -23,6 +24,13 @@ export interface GpuBench {
   matmulTflopsFp32: number;
   /** The worker's matmulTflopsFp16storage: half storage with float arithmetic, not tensor-core FP16. */
   matmulTflopsFp16: number | null;
+  /**
+   * macOS only (collector/mac): the GPU's matrix path through Metal 4 tensor ops at int8 with int32
+   * accumulate, the precision a PC's "AI TOPS" quotes, and fp16 through the same path. Absent in
+   * bench.json files from before it and null where the OS has no Metal 4.
+   */
+  matmulTopsInt8?: number | null;
+  matmulTflopsFp16tensor?: number | null;
   elapsedMs: number | null;
   /** The GPU driver the caller knew at measure time (from the collector snapshot); null standalone. */
   driver: string | null;
@@ -72,9 +80,9 @@ export interface BenchError {
   code?: 'ollama-absent' | 'cancelled';
 }
 
-const OLLAMA = 'http://127.0.0.1:11434';
+export const OLLAMA = 'http://127.0.0.1:11434';
 /** Family-wide: Strata Code, Photo and Video share the daemon, so a model is never evicted sooner. */
-const KEEP_ALIVE = '15m';
+export const KEEP_ALIVE = '15m';
 const BENCH_TIMEOUT_MS = 90_000;
 /** A 70B model can take a minute to page in before the first token. */
 const GENERATE_TIMEOUT_MS = 5 * 60_000;
@@ -90,6 +98,8 @@ const benchPath = () => path.join(app.getPath('userData'), 'bench.json');
 
 /** Dev: the Release build in the solution tree. Packaged: resources/collector next to the app (same rule as the collector client). */
 function workerExe(): string {
+  // macOS: the Swift Metal worker (collector/mac), the same --bench --json line.
+  if (process.platform === 'darwin') return macWorkerPath(app.getAppPath(), app.isPackaged, process.resourcesPath);
   if (app.isPackaged) return path.join(process.resourcesPath, 'collector', 'strata-tune-worker.exe');
   const dir = path.join(app.getAppPath(), 'collector', 'StrataTune.Worker', 'bin', 'x64', 'Release', 'net10.0', 'win-x64');
   const names = ['strata-tune-worker.exe', 'StrataTune.Worker.exe'];
@@ -140,6 +150,8 @@ function parseBenchLine(stdout: string, driver: string | null): GpuBench | null 
         matmulN: num(j.matmulN),
         matmulTflopsFp32: fp32,
         matmulTflopsFp16: num(j.matmulTflopsFp16storage),
+        matmulTopsInt8: num(j.matmulTopsInt8),
+        matmulTflopsFp16tensor: num(j.matmulTflopsFp16tensor),
         elapsedMs: num(j.elapsedMs),
         driver,
         measuredAt: new Date().toISOString()
@@ -220,14 +232,14 @@ async function heldDuring<T>(collector: CollectorClient | null, until: Promise<T
 
 async function doBenchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
   const exe = workerExe();
-  if (!fs.existsSync(exe)) return { error: `Worker not built: ${exe}. Run dotnet build collector\\StrataTune.sln -c Release.` };
+  if (!fs.existsSync(exe)) return { error: `Worker not built: ${exe}. Run ${process.platform === 'darwin' ? 'scripts/mac/build-collector.sh' : 'dotnet build collector\\StrataTune.sln -c Release'}.` };
   const running = runWorker(exe);
   const held = await heldDuring(collector, running);
   const run = await running;
   if (run.cancelled) return { error: 'Measurement stopped', code: 'cancelled' };
   if (run.timedOut) return { error: `The GPU benchmark did not finish within ${BENCH_TIMEOUT_MS / 1000} s` };
   const firstErr = run.stderr.trim().split(/\r?\n/)[0] || '';
-  if (run.code === 3) return { error: 'No hardware GPU: the worker was given the software rasteriser (WARP)' };
+  if (run.code === 3) return { error: process.platform === 'darwin' ? `No Metal GPU: ${firstErr || 'the worker found no device'}` : 'No hardware GPU: the worker was given the software rasteriser (WARP)' };
   if (run.code === 10) return { error: 'The GPU was lost during the benchmark (TDR); the driver reset it' };
   if (run.code !== 0) return { error: `The worker exited with code ${run.code}${firstErr ? `: ${firstErr}` : ''}` };
   const parsed = parseBenchLine(run.stdout, driver);
@@ -239,7 +251,7 @@ async function doBenchGpu(driver: string | null, collector: CollectorClient | nu
 
 // ------------------------------------------------------------------ Ollama
 
-function ollamaError(e: unknown): BenchError {
+export function ollamaError(e: unknown): BenchError {
   const cause = (e as { cause?: { code?: string } }).cause;
   if (cause?.code === 'ECONNREFUSED') return { error: 'Ollama is not running', code: 'ollama-absent' };
   if (e instanceof Error && e.name === 'TimeoutError') return { error: 'Ollama did not answer in time' };
@@ -250,7 +262,7 @@ function ollamaError(e: unknown): BenchError {
 /** The generation in flight, so Stop can abort it; Ollama ends the decode when the request goes away. */
 let generation: AbortController | null = null;
 
-async function ollamaJson<T>(route: string, body?: unknown, timeoutMs = 10_000, abort?: AbortSignal): Promise<T> {
+export async function ollamaJson<T>(route: string, body?: unknown, timeoutMs = 10_000, abort?: AbortSignal): Promise<T> {
   const timeout = AbortSignal.timeout(timeoutMs);
   const res = await fetch(`${OLLAMA}${route}`, {
     method: body === undefined ? 'GET' : 'POST',

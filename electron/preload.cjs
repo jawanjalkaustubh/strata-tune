@@ -11,6 +11,8 @@ const on = (channel) => (cb) => {
 // keep the two in step. Hardware never appears here: the collector talks to
 // the main process, and the main process talks to this bridge.
 contextBridge.exposeInMainWorld('strata', {
+  // 'darwin' hides what has no macOS counterpart (the Capture page, the Headroom hunt); a value, not a call.
+  platform: process.platform,
   version: () => ipcRenderer.invoke('app:version'),
   support: () => ipcRenderer.invoke('app:support'),
 
@@ -48,6 +50,23 @@ contextBridge.exposeInMainWorld('strata', {
     ollamaList: () => ipcRenderer.invoke('ollama:list'),
     // Free VRAM (plan 16, the hunt's Ollama refusal): evicts every resident model, keep_alive 0.
     ollamaUnload: () => ipcRenderer.invoke('ollama:unload')
+  },
+
+  // The LLM benchmark (electron/llm-bench.ts): the same model and prompt on every machine, Ollama's counters plus the collector's watts.
+  llm: {
+    list: () => ipcRenderer.invoke('llm:list'),
+    run: (req) => ipcRenderer.invoke('llm:run', req),
+    // Stop: the pending run then answers { error, code: 'cancelled' }.
+    cancel: () => ipcRenderer.invoke('llm:cancel'),
+    remove: (id) => ipcRenderer.invoke('llm:delete', id),
+    exportFile: () => ipcRenderer.invoke('llm:export'),
+    importFile: () => ipcRenderer.invoke('llm:import'),
+    onProgress: on('llm:progress'),
+    // llama-benchy (eugr/llama-benchy) through uvx against Ollama's OpenAI endpoint: the community table beside the card's rows.
+    benchyStatus: () => ipcRenderer.invoke('llm:benchyStatus'),
+    benchy: (req) => ipcRenderer.invoke('llm:benchy', req),
+    benchyCancel: () => ipcRenderer.invoke('llm:benchyCancel'),
+    onBenchyProgress: on('llm:benchyProgress')
   },
 
   // Frame capture (electron/capture.ts): PresentMon in main, one folder per session on disk.

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { api, ipcErrorMessage, type BenchError, type GpuBench, type OllamaBench, type OllamaList } from '../api';
+import { api, ipcErrorMessage, type BenchError, type BenchyProgress, type BenchyStatus, type GpuBench, type LlmProgress, type OllamaBench, type OllamaList } from '../api';
+import type { BenchyResult, LlmBenchResult } from '../analysis/llm-bench';
 import { loadSettings, saveSettings, type Settings } from '../settings';
 import { useCollectorStatus } from '../components/useCollectorStatus';
 import { CollectorStatusPill } from '../components/CollectorStatusPill';
@@ -8,6 +9,7 @@ import { vendorOf } from '../components/monitor/vendors';
 import { HardwarePicker } from '../components/advisor/HardwarePicker';
 import { StatsCard } from '../components/advisor/StatsCard';
 import { Calibration } from '../components/advisor/Calibration';
+import { LlmBenchCard } from '../components/advisor/LlmBenchCard';
 import { BestFor } from '../components/advisor/BestFor';
 import { ModelList } from '../components/advisor/ModelList';
 import { Tag } from '../components/advisor/Tag';
@@ -61,7 +63,14 @@ export const Advisor: React.FC = () => {
   const [calibrating, setCalibrating] = useState<string | null>(null);
   const [calibrateError, setCalibrateError] = useState('');
   /** Stop pressed on a run (plan section 17c): said once, in place of a result, until the next run. */
-  const [stopped, setStopped] = useState<'measure' | 'calibrate' | null>(null);
+  const [stopped, setStopped] = useState<'measure' | 'calibrate' | 'llm' | null>(null);
+  const [llmResults, setLlmResults] = useState<LlmBenchResult[]>([]);
+  const [benchyResults, setBenchyResults] = useState<BenchyResult[]>([]);
+  const [benchyStatus, setBenchyStatus] = useState<BenchyStatus | null>(null);
+  const [llmRunning, setLlmRunning] = useState<LlmProgress | null>(null);
+  const [benchyRunning, setBenchyRunning] = useState<BenchyProgress | null>(null);
+  const [llmError, setLlmError] = useState('');
+  const [llmNotice, setLlmNotice] = useState('');
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [contextTokens, setContextTokens] = useState(DEFAULT_CONTEXT);
   const [filter, setFilter] = useState<string | null>(null);
@@ -105,7 +114,7 @@ export const Advisor: React.FC = () => {
   }, [connected, modelsDir]);
 
   const facts: HardwareFacts = snapshotFacts ?? factsFromPicker(picker, gpuSpecOf(picker.gpuName)?.vramGiB ?? 0);
-  const spec = gpuSpecOf(facts.gpuName, snapshotFacts ? snapshotFacts.vramBytes / 1024 ** 2 : undefined);
+  const spec = gpuSpecOf(facts.gpuName, snapshotFacts ? snapshotFacts.vramBytes / 1024 ** 2 : undefined, { maxClockMhz: facts.gpuMaxClockMhz ?? null });
   // This card against the reference row (plan section 10): the driver's limits and the clocks it holds when the page loads it.
   const { held, latest, watch } = useHeldClocks(facts);
   const card = facts.gpu ? thisCard(facts.gpu, spec?.tiles.busBits ?? null, held) : null;
@@ -124,6 +133,8 @@ export const Advisor: React.FC = () => {
   const bandwidth = streamedBandwidth(bench, benchApplies, card?.bandwidthGBs ?? spec?.bandwidthGBs ?? null);
   const bandwidthGBs = bandwidth?.gbs ?? null;
   const factor = settings.calibrationFactor ?? DEFAULT_FACTOR;
+  // Apple Silicon: the CPU and GPU share one pool, so the "RAM bus" a spilled model streams from is the pool's measured bandwidth, not a DIMM table.
+  const machine: HardwareFacts = facts.unified && benchApplies && bench ? { ...facts, ramBandwidthGBs: bench.bandwidthGBs, ramBandwidthDefault: false } : facts;
 
   // Only timings from this card and driver count; the rest stay stored for the card they belong to.
   const measurements = useMemo(
@@ -131,7 +142,7 @@ export const Advisor: React.FC = () => {
     [stored, facts.gpuName, facts.driver]
   );
 
-  const rows = useMemo(() => adviseRows({ facts, bandwidthGBs, contextTokens, factor }), [facts, bandwidthGBs, contextTokens, factor]);
+  const rows = useMemo(() => adviseRows({ facts: machine, bandwidthGBs, contextTokens, factor }), [machine, bandwidthGBs, contextTokens, factor]);
   const picks = useMemo(() => bestRows(rows), [rows]);
   const shown = filter ? rows.filter((r) => r.tags.includes(filter)) : rows;
 
@@ -181,18 +192,86 @@ export const Advisor: React.FC = () => {
   // Stop (plan section 17c): the worker is killed or the generation aborted; the pending call answers 'cancelled'.
   const stopMeasure = () => void api?.advisor.cancelBenchGpu();
   const stopCalibrate = () => void api?.advisor.cancelBenchOllama();
+  const stopLlm = () => void api?.llm.cancel();
+
+  // The LLM benchmark's rows on disk, and its progress while a run goes (electron/llm-bench.ts).
+  useEffect(() => {
+    if (!api) return;
+    let live = true;
+    api.llm.list().then((r) => live && (setLlmResults(r.results), setBenchyResults(r.benchy))).catch(() => {});
+    api.llm.benchyStatus().then((r) => live && setBenchyStatus(r)).catch(() => {});
+    const off = api.llm.onProgress((p) => live && setLlmRunning(p.phase === 'done' ? null : p));
+    const offBenchy = api.llm.onBenchyProgress((p) => live && setBenchyRunning(p));
+    return () => {
+      live = false;
+      off();
+      offBenchy();
+    };
+  }, []);
+
+  const machineForLlm = () => ({ gpuName: facts.gpuName, cpuName: facts.cpuName, ramBytes: facts.ramBytes, vramBytes: facts.vramBytes, unified: facts.unified, driver: facts.driver });
+  const runLlm = async (model: string) => {
+    if (!api || llmRunning || benchyRunning) return;
+    setLlmRunning({ model, phase: 'evict', run: 0, runs: 3, depth: 0 });
+    setLlmError('');
+    setLlmNotice('');
+    setStopped(null);
+    const r = await api.llm.run({ model, machine: machineForLlm() });
+    if ('error' in r) {
+      if (r.code === 'cancelled') setStopped('llm');
+      else setLlmError(`${model}: ${r.error}`);
+    } else setLlmResults((rows) => [...rows.filter((x) => x.id !== r.id), r]);
+    setLlmRunning(null);
+  };
+  const runBenchy = async (model: string) => {
+    if (!api || llmRunning || benchyRunning) return;
+    setBenchyRunning({ model, line: 'starting uvx…' });
+    setLlmError('');
+    setLlmNotice('');
+    setStopped(null);
+    const r = await api.llm.benchy({ model, machine: machineForLlm() });
+    if ('error' in r) {
+      if (r.code === 'cancelled') setStopped('llm');
+      else setLlmError(`llama-benchy on ${model}: ${r.error}`);
+    } else setBenchyResults((rows) => [...rows.filter((x) => x.id !== r.id), r]);
+    setBenchyRunning(null);
+  };
+  const stopBenchy = () => void api?.llm.benchyCancel();
+  const deleteLlm = async (id: string) => {
+    if (!api) return;
+    const r = await api.llm.remove(id);
+    setLlmResults(r.results);
+    setBenchyResults(r.benchy);
+  };
+  const exportLlm = async () => {
+    if (!api) return;
+    const file = await api.llm.exportFile();
+    setLlmNotice(file ? `Written to ${file}; Import it on the other machine.` : '');
+  };
+  const importLlm = async () => {
+    if (!api) return;
+    const r = await api.llm.importFile();
+    if ('error' in r) setLlmError(r.error);
+    else {
+      setLlmResults(r.results);
+      setBenchyResults(r.benchy);
+      setLlmNotice(r.added === 0 ? 'Nothing new in that file.' : `${r.added} row${r.added === 1 ? '' : 's'} imported.`);
+    }
+  };
 
   // Escape stops whichever run is going, the same as its button.
   useEffect(() => {
-    if (!measuring && calibrating === null) return;
+    if (!measuring && calibrating === null && llmRunning === null && benchyRunning === null) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (measuring) stopMeasure();
       if (calibrating !== null) stopCalibrate();
+      if (llmRunning !== null) stopLlm();
+      if (benchyRunning !== null) stopBenchy();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [measuring, calibrating]);
+  }, [measuring, calibrating, llmRunning, benchyRunning]);
 
   // Merged over what storage holds now: the PSU form and the Monitor write their own fields in between.
   const setFactor = (calibrationFactor: number | null) => {
@@ -226,11 +305,11 @@ export const Advisor: React.FC = () => {
         <CollectorStatusPill state={status} />
         <span className="flex-1" />
         <span className="flex items-center gap-1.5 text-mini text-studio-muted figure">
-          {facts.integrated ? 'no discrete GPU' : `VRAM ${gib(facts.vramBytes, 0)}`} · RAM {gib(facts.ramBytes, 0)}
+          {facts.integrated ? 'no discrete GPU' : facts.unified ? `GPU working set ${gib(facts.vramBytes, 0)} of unified` : `VRAM ${gib(facts.vramBytes, 0)}`} · RAM {gib(facts.ramBytes, 0)}
           {facts.freeDiskBytes !== null && ` · ${diskLabel} ${gib(facts.freeDiskBytes, 0)} free`}
-          <Tag kind={summaryKind} title={facts.source === 'collector' ? 'From the collector snapshot' : 'From gpus.json and the inputs beside the picker'} />
-          <span>· RAM bus {facts.ramBandwidthGBs.toFixed(0)} GB/s</span>
-          <Tag kind={facts.ramBandwidthDefault ? 'default' : 'spec'} title={facts.ramBandwidthDefault ? 'No module speed known: the analysis default' : 'From the configured DIMM speed and channel count'} />
+          <Tag kind={summaryKind} title={facts.source === 'collector' ? (facts.unified ? "From the macOS collector: the working set is what Metal lets the GPU hold of the shared memory" : 'From the collector snapshot') : 'From gpus.json and the inputs beside the picker'} />
+          <span>· {facts.unified ? 'memory' : 'RAM'} bus {machine.ramBandwidthGBs.toFixed(0)} GB/s</span>
+          <Tag kind={machine.ramBandwidthDefault ? 'default' : facts.unified ? 'measured' : 'spec'} title={machine.ramBandwidthDefault ? (facts.unified ? 'Press Measure: unified memory has no DIMM table, the figure is measured' : 'No module speed known: the analysis default') : facts.unified ? 'Measured by the Metal worker: one pool for the CPU and the GPU' : 'From the configured DIMM speed and channel count'} />
         </span>
       </header>
 
@@ -251,7 +330,7 @@ export const Advisor: React.FC = () => {
         card={card}
         integrated={facts.integrated}
         laptop={facts.laptop}
-        ramBandwidthGBs={facts.ramBandwidthGBs}
+        ramBandwidthGBs={machine.ramBandwidthGBs}
         latest={latest}
         npuTops={npuTopsOf(facts.cpuName)}
         bench={bench}
@@ -283,6 +362,28 @@ export const Advisor: React.FC = () => {
         onCalibrate={calibrate}
         onSetFactor={() => derived !== null && setFactor(Number(derived.toFixed(2)))}
         onResetFactor={() => setFactor(null)}
+      />
+
+      <LlmBenchCard
+        installed={ollama?.installed ?? null}
+        available={!!api}
+        ollamaAbsent={ollamaError?.code === 'ollama-absent'}
+        collectorConnected={connected}
+        results={llmResults}
+        running={llmRunning}
+        error={llmError}
+        stopped={stopped === 'llm'}
+        notice={llmNotice}
+        onRun={runLlm}
+        onStop={stopLlm}
+        onDelete={deleteLlm}
+        onExport={exportLlm}
+        onImport={importLlm}
+        benchy={benchyResults}
+        benchyStatus={benchyStatus}
+        benchyRunning={benchyRunning}
+        onBenchy={runBenchy}
+        onBenchyStop={stopBenchy}
       />
 
       <BestFor picks={picks} measured={measuredByTag} contextTokens={tokens(contextTokens)} />

@@ -20,6 +20,9 @@ export const HOME: Page = 'tune';
 
 const PAGES: Record<Page, React.FC> = { tune: Tune, monitor: Monitor, capture: Capture, advisor: Advisor };
 
+/** macOS (docs/MACOS.md): frame capture needs PresentMon's ETW session, so the Capture page does not exist there; nothing is shown in its place. */
+const HIDDEN_PAGES: Page[] = api?.platform === 'darwin' ? ['capture'] : [];
+
 export const App: React.FC = () => {
   const [page, setPage] = useState<Page>(HOME);
   const [support, setSupport] = useState<SupportLinks>(EMPTY_SUPPORT);
@@ -77,7 +80,7 @@ export const App: React.FC = () => {
     ]).then(done, fail);
   }, []);
 
-  const Current = PAGES[page];
+  const Current = PAGES[HIDDEN_PAGES.includes(page) ? HOME : page];
 
   return (
     <div className="h-full flex flex-col bg-studio-bg text-studio-text">
@@ -87,7 +90,7 @@ export const App: React.FC = () => {
           <Current />
         </PageBoundary>
       </main>
-      <BottomBar page={page} onSelect={setPage} status={[`Collector: ${statusLabel(collector)}`, captureStatusLabel(capture)].filter(Boolean).join(' · ')} />
+      <BottomBar page={page} onSelect={setPage} hidden={HIDDEN_PAGES} status={[`Collector: ${statusLabel(collector)}`, HIDDEN_PAGES.includes('capture') ? '' : captureStatusLabel(capture)].filter(Boolean).join(' · ')} />
       <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} version={version} support={support} />
       <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
       {disclaimer !== null && <DisclaimerModal version={disclaimer} onAccepted={() => setDisclaimer(null)} />}

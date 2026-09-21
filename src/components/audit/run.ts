@@ -7,7 +7,8 @@ import { gpuTitle } from '../monitor/vendors';
 import { panelName } from '../monitor/Panel';
 import { gpuKey } from '../monitor/GpuPanel';
 import { BOARD_KEY, boardName } from '../monitor/BoardPanel';
-import { gpuSummary } from '../../analysis/adapters';
+import { discreteAdapter, gpuSummary } from '../../analysis/adapters';
+import { isMacSnapshot } from '../../analysis/audit-mac';
 
 /** One audit result, as the page shows and stores it. */
 export interface AuditResult {
@@ -38,6 +39,8 @@ export const STEPS: Step[] = [
  * measured fill after the bench's start-up and 1 s warm-up.
  */
 export const FILL_RATE_STEP: Step = { label: 'Fill-rate cross-check (the driver gave no ROP count)', seconds: 8 };
+/** macOS (audit-mac.ts): no PCIe link to measure and no ROP count to cross-check; the heavy Metal load and the all-core load are the sampled steps. */
+export const MAC_GPU_STEP: Step = { label: 'Thermal headroom under a heavy Metal load', seconds: 20 };
 const FILL_RATE_SECONDS = 6;
 /** The steps whose readings come from NVML (left out without an NVIDIA card) and the one whose rules read the library's CPU node (left out without it). */
 const GPU_LOAD_STEPS = new Set([STEPS[2].label, STEPS[3].label]);
@@ -123,17 +126,22 @@ export function auditRun(c: CollectorApi, onStep: (steps: Step[], step: number) 
     // laptop; the CPU load's rules read the library's CPU node, which needs PawnIO. A step
     // whose readings cannot exist is left out of the list, not run for nothing.
     const cpuSensors = await sensorsPresent(c, /^cpu$/i);
+    const mac = isMacSnapshot(snapshot);
     const gpuLoads = snapshot.gpus.length > 0;
-    steps = STEPS.filter((s) => (GPU_LOAD_STEPS.has(s.label) ? gpuLoads : CPU_LOAD_STEP === s.label ? cpuSensors : true));
+    // On a Mac the Apple GPU is sampled through the macOS collector (docs/MACOS.md): one heavy Metal load, no PCIe light load, no fill-rate cross-check.
+    const macGpu = mac && discreteAdapter(snapshot)?.vendor === 'apple';
+    steps = mac
+      ? [STEPS[0], STEPS[1], ...(macGpu ? [MAC_GPU_STEP] : []), ...(cpuSensors ? [STEPS[4]] : [])]
+      : STEPS.filter((s) => (GPU_LOAD_STEPS.has(s.label) ? gpuLoads : CPU_LOAD_STEP === s.label ? cpuSensors : true));
     // The snapshot decides whether the fill-rate step is worth its seconds, so the list is per run.
-    if (needsFillRateCrossCheck(snapshot)) steps = [...steps, FILL_RATE_STEP];
+    if (!mac && needsFillRateCrossCheck(snapshot)) steps = [...steps, FILL_RATE_STEP];
     const at = (label: string) => steps.findIndex((s) => s.label === label);
     // The timer probe runs beside the idle sample (both are the machine at rest); a failed read is 'unknown', never a skipped step.
     const timersRead = api ? api.about.timers(TIMER_TRACE_SECONDS).catch(() => null) : Promise.resolve(null);
     const hogs = await optional(1, () => c.hogs(5));
     const timers = stoppedAt === null ? await Promise.race([timersRead, stopSignal]) : null;
     const pcieUnderLoad = gpuLoads ? await load(at(STEPS[2].label), 'light', 3) : null;
-    const thermalRamp = gpuLoads ? await load(at(STEPS[3].label), 'heavy', 20) : null;
+    const thermalRamp = gpuLoads ? await load(at(STEPS[3].label), 'heavy', 20) : macGpu ? await load(at(MAC_GPU_STEP.label), 'heavy', 20) : null;
     const cpuLoad = cpuSensors ? await load(at(STEPS[4].label), 'cpu', 20) : null;
     const fillRate = at(FILL_RATE_STEP.label) >= 0 ? await load(at(FILL_RATE_STEP.label), 'fillrate', FILL_RATE_SECONDS) : null;
     const settings = loadSettings();

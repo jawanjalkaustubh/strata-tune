@@ -7,6 +7,7 @@ import { Bar, toneByLimit, toneByThresholds } from './Bar';
 import { Pill, type Tone } from './Pill';
 import { PinHeader } from './PinHeader';
 import { CardSchematic } from './CardSchematic';
+import { SocDiagram } from './SocDiagram';
 import { gpuLayout, igpuLayout, otherGpuNodes } from './gpuLayout';
 import { NO_CAPS, type Caps } from './caps';
 import { decodeReasons } from './reasons';
@@ -60,7 +61,12 @@ const LibraryGpuPanel: React.FC<Props> = ({ index, tick, ring, panel, caps = NO_
   const others = otherGpuNodes(index, layout.hardware, undefined);
   const load = v(layout.load) ?? 0;
   const asleep = discrete && (v(layout.clock) ?? 0) === 0 && load < 1;
-  const aside = discrete
+  // Apple Silicon (the macOS collector): the GPU node carries its core count, and the Neural Engine and memory nodes sit beside it; the SoC diagram is the twin of the CPU's chip diagram.
+  const apple = index.meta.find((m) => m.hardware === layout.hardware)?.hardwareType === 'GpuApple';
+  const gpuCores = apple ? v(index.find(layout.hardware, 'Factor', /^GPU Cores$/)?.id) : undefined;
+  const aside = apple
+    ? `${gpuCores ? `${gpuCores}-core GPU · ` : ''}unified memory${caps.dgpu?.driverVersion ? ` · ${caps.dgpu.driverVersion}` : ''}`
+    : discrete
     ? `${caps.dgpu?.dedicatedMiB ? `${Math.round(caps.dgpu.dedicatedMiB / 1024)} GB · ` : ''}${caps.dgpu?.driverVersion ? `driver ${caps.dgpu.driverVersion}` : 'discrete card'}`
     : 'integrated · no discrete card';
   const clockHigh = Math.max(ring.high((t) => (layout.clock ? t.sensors[layout.clock] : undefined)), v(layout.clock) ?? 0, 1000);
@@ -69,6 +75,24 @@ const LibraryGpuPanel: React.FC<Props> = ({ index, tick, ring, panel, caps = NO_
   const fanHigh = Math.max(ring.high((t) => (layout.fan ? t.sensors[layout.fan] : undefined)), v(layout.fan) ?? 0, 2000);
   const sharedTotal = v(layout.sharedTotal);
   const vramTotal = v(layout.vramTotal);
+  const aneHw = apple ? index.hardware(/^NeuralEngine$/i)[0] : undefined;
+  const memoryPowerW = apple ? v(index.find(index.hardware(/^EmbeddedController$/i), 'Power', /^Memory$/)?.id) : undefined;
+  const soc = apple && gpuCores ? (
+    <SocDiagram
+      vendor={vendor}
+      gpuCores={gpuCores}
+      load={v(layout.load)}
+      clockMhz={v(layout.clock)}
+      maxClockMhz={caps.dgpu?.maxClockMhz}
+      tempC={v(layout.temperature)}
+      powerW={v(layout.power)}
+      neuralCores={aneHw ? v(index.find(aneHw, 'Factor', /^Cores$/)?.id) : undefined}
+      anePowerW={aneHw ? v(index.find(aneHw, 'Power', /^Neural Engine$/)?.id) : undefined}
+      memUsedMiB={v(layout.vramUsed)}
+      memTotalMiB={vramTotal}
+      memoryPowerW={memoryPowerW}
+    />
+  ) : null;
   const engines = layout.engines.map((e) => ({ name: e.name, load: Math.max(0, ...e.ids.map((id) => tick.sensors[id] ?? 0)) })).filter((e) => e.load > 0);
   const fanRpm = v(layout.fan);
   const fan = fanState(fanRpm, v(layout.fanDuty));
@@ -79,7 +103,9 @@ const LibraryGpuPanel: React.FC<Props> = ({ index, tick, ring, panel, caps = NO_
           {asleep ? `The card is asleep; ${others[0]} drives the desktop until a game needs it.` : `${others[0]} sits beside it and drives the desktop.`}
         </p>
       )}
-      <div className="bars space-y-1.5 min-w-0">
+      <div className={soc ? 'split' : undefined}>
+        {soc && <div className="shrink-0 w-[40%] min-w-[min(100%,280px)] max-w-[min(100%,340px)]">{soc}</div>}
+      <div className={`bars space-y-1.5 min-w-0${soc ? ' flex-1' : ''}`}>
         <Bar label="Core clock" value={v(layout.clock)} format={mhz} max={clockHigh * 1.05} mark={clockHigh} markLabel={`Highest this session ${clockHigh.toFixed(0)} MHz`} tone={load < 5 ? 'idle' : 'ok'} history={hist(layout.clock)} />
         {layout.memClock && <Bar label="Memory clock" value={v(layout.memClock)} format={mhz} max={memHigh * 1.05} tone={load < 5 ? 'idle' : 'ok'} history={hist(layout.memClock)} />}
         <Bar label="GPU load" value={v(layout.load)} format={percent} max={100} tone={load < 5 ? 'idle' : 'ok'} history={hist(layout.load)} />
@@ -99,6 +125,7 @@ const LibraryGpuPanel: React.FC<Props> = ({ index, tick, ring, panel, caps = NO_
         {layout.hotSpot && <Bar label="Hot spot" value={v(layout.hotSpot)} format={degrees} max={110} tone={toneByThresholds(v(layout.hotSpot) ?? 0, 90, 100)} history={hist(layout.hotSpot)} />}
         {layout.fan && !fan.unused && <Bar label="Fan" value={fanRpm} format={(x) => `${x.toFixed(0)} rpm`} max={fanHigh * 1.1} sub={fan.note || v(layout.fanDuty) === undefined ? undefined : `${v(layout.fanDuty)!.toFixed(0)} %`} note={fan.note} tone={fan.tone} history={hist(layout.fan)} />}
         {layout.fan && fan.unused && <p className="label text-studio-subtle pl-0.5">fan stopped</p>}
+      </div>
       </div>
     </Panel>
   );

@@ -15,6 +15,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { app } from 'electron';
 import type { CollectorState, CollectorStatus } from '../src/api';
+import { tuneDataDir } from './presence';
+import { macWorkerPath, macmonPath } from './mac/paths';
+import { MacCollector } from './mac/server';
 import type { GpuFacts, Handshake, Health, HogsResult, LoadKind, LoadRun, LoadRunRequest, SensorMeta, SensorRow, SensorWindow, StaticSnapshot, Tick } from '../src/collector-types';
 
 /** Every route in one place, so a rename on the server side is a one-line change. */
@@ -51,7 +54,7 @@ const COLLECTOR_IMAGE = 'strata-tune-collector.exe';
 /** Win32 ERROR_CANCELLED: the UAC prompt was declined, in any language. */
 const ERROR_CANCELLED = 1223;
 
-const dataDir = () => path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune');
+const dataDir = () => tuneDataDir();
 const handshakePath = () => path.join(dataDir(), 'collector.json');
 const logPath = () => path.join(dataDir(), 'logs', 'collector.log');
 const orphanLogPath = () => path.join(dataDir(), 'orphan.log');
@@ -70,6 +73,7 @@ function pidAlive(pid: number): boolean {
 
 /** The image name behind a pid, from tasklist (it lists elevated processes without elevation); null when the pid is gone. */
 function imageName(pid: number): Promise<string | null> {
+  if (process.platform !== 'win32') return Promise.resolve(null);
   return new Promise((resolve) => {
     execFile('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 5000 }, (err, stdout) => {
       if (err) return resolve(null);
@@ -144,6 +148,8 @@ export class CollectorClient extends EventEmitter {
   private reconnectDelay = RECONNECT_MIN_MS;
   private streamFailures = 0;
   private starting: Promise<CollectorState> | null = null;
+  /** macOS: the collector runs inside this process (electron/mac/server.ts); nothing to elevate or spawn. */
+  private mac: MacCollector | null = null;
 
   private set(status: CollectorStatus, message: string) {
     this.state = { status, message };
@@ -179,6 +185,13 @@ export class CollectorClient extends EventEmitter {
   }
 
   private async doStart(): Promise<CollectorState> {
+    if (process.platform === 'darwin') return this.startMac();
+    if (process.platform !== 'win32') {
+      // The collector is a .NET service on LibreHardwareMonitor, NVML, NVAPI, WMI and PresentMon; the
+      // macOS twin lives in electron/mac. Elsewhere the shell runs without sensors.
+      this.set('error', 'The sensor collector exists for Windows and macOS only. On this platform Strata Tune runs without live sensors: the AI Models page and saved reports work.');
+      return this.state;
+    }
     this.reportOrphans();
     this.set('starting', 'Looking for a running collector…');
     const existing = readHandshake();
@@ -250,6 +263,31 @@ export class CollectorClient extends EventEmitter {
         ? `The collector did not answer within ${HANDSHAKE_TIMEOUT_MS / 1000} s of the UAC prompt. Run it with --probe to see whether PawnIO and elevation are in order.`
         : 'The UAC prompt was not answered.'
     );
+    return this.state;
+  }
+
+  /**
+   * macOS (docs/MACOS.md): the collector is electron/mac/server.ts inside this process, reading
+   * macmon and IOKit; the same handshake, token and routes as the Windows service, so
+   * everything below this point is shared. Without macmon only the battery and GPU memory
+   * rows exist, and the status says what to install.
+   */
+  private async startMac(): Promise<CollectorState> {
+    this.set('starting', 'Starting the macOS collector…');
+    try {
+      if (!this.mac) {
+        this.mac = new MacCollector({
+          version: app.getVersion(),
+          dataDir: dataDir(),
+          workerPath: macWorkerPath(app.getAppPath(), app.isPackaged, process.resourcesPath),
+          macmonPath: macmonPath()
+        });
+      }
+      const h = await this.mac.start();
+      this.adopt(h, this.mac.macmonInstalled ? 'Connected' : 'Connected · install macmon (brew install macmon) for CPU, GPU, fan and power sensors');
+    } catch (e) {
+      this.set('error', `The macOS collector could not start: ${(e as Error).message}`);
+    }
     return this.state;
   }
 
@@ -502,6 +540,11 @@ export class CollectorClient extends EventEmitter {
     }
     if (!pid) return;
     this.set('stopped', 'Quitting');
+    if (process.platform !== 'win32') {
+      // In-process on macOS: there is no second process to orphan; stop it with the app.
+      void this.mac?.stop();
+      return;
+    }
     const script = [
       `$parent=${process.pid}; $c=${pid}`,
       'while (Get-Process -Id $parent -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }',

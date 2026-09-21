@@ -218,6 +218,10 @@ export const StatsCard: React.FC<Props> = (p) => {
   const memClockMhz = c?.memMhz != null && t ? memClockMhzOf(c.memMhz, t.vramType) : null;
   const precisions = PRECISIONS.filter((x) => p.spec?.tops[x] !== undefined || p.spec?.sparse[x] !== undefined);
   const lead = p.spec ? headline(p.spec) : null;
+  // Plan 17d: a Mac's measured figure is dense INT8, so the PC card shows its dense INT8 row right under a
+  // headline that is anything else (NVIDIA's is fp4 with sparsity: 4x the like-for-like number on Blackwell).
+  const comparable = lead && p.spec?.tops.int8 !== undefined && !(lead.precision === 'int8' && lead.sparse === false) ? p.spec.tops.int8 : null;
+  const comparableTitle = `Dense INT8 at ${p.spec?.denseDerived ? 'the figures derived from the advertised headline' : "the vendor's own dense table"}: the precision a Mac's Measure reports. Still a peak at the reference boost, not a measurement; a Mac's number is what its GPU achieved on a real matmul, so expect a PC to land under this row too when measured.`;
   const scale = p.spec ? ownScale(p.spec, c) : null;
   const own = (v: number) => (scale ? v * scale.factor : v);
   const ownTag: Provenance = scale ? 'this card' : 'spec';
@@ -250,13 +254,39 @@ export const StatsCard: React.FC<Props> = (p) => {
                 {scale && <span className="text-[10px] text-studio-subtle">at {scale.mhz} MHz held under load</span>}
                 {!lead.advertised && <span className="text-[10px] text-studio-subtle">no advertised AI TOPS; largest published figure</span>}
               </>
+            ) : measured?.matmulTopsInt8 != null ? (
+              <>
+                <span className="figure text-2xl leading-7 text-studio-text">{tops(measured.matmulTopsInt8)}</span>
+                <span className="text-mini text-studio-muted">TOPS</span>
+                <span className="label">int8 · dense · measured on this GPU</span>
+                <Tag kind="measured" title={`The GPU's matrix path (Metal 4 tensor ops) at int8 with int32 accumulate, a ${measured.matmulN ?? 4096}² matmul on this machine, ${when(measured)}. ${p.spec.vendor} advertises no TOPS figure. A PC's "AI TOPS" headline is its vendor's peak at fp4 with 2:1 sparsity (an RTX 5090's 3,352); its dense INT8 row (838 for that card) is the like-for-like figure, and even that is a spec-sheet peak where this is what the GPU achieved.`} />
+                <span className="text-[10px] text-studio-subtle">not an "AI TOPS" headline: compare with a PC's dense INT8 row, not its fp4-sparse figure</span>
+              </>
+            ) : measured?.matmulTflopsFp16 != null ? (
+              <>
+                <span className="figure text-2xl leading-7 text-studio-text">{tops(measured.matmulTflopsFp16)}</span>
+                <span className="text-mini text-studio-muted">AI TOPS</span>
+                <span className="label">fp16 · dense · measured on this GPU</span>
+                <Tag kind="measured" title={`The worker's ${measured.matmulN ?? 4096}² half-precision matmul on this machine, ${when(measured)}; ${p.spec.vendor} publishes no tensor or TOPS figure`} />
+                <span className="text-[10px] text-studio-subtle">no vendor figure; a measurement stands in</span>
+              </>
             ) : (
-              <span className="text-mini text-studio-muted">No tensor figure published for this GPU.</span>
+              <span className="text-mini text-studio-muted">{p.spec.unified ? 'Apple publishes no tensor or TOPS figure; press Measure for this GPU\'s own.' : 'No tensor figure published for this GPU.'}</span>
             )}
           </div>
           {lead && scale && (
             <div className="text-[10px] text-studio-subtle">
               {p.spec.vendor} {lead.advertised ? 'advertises' : 'publishes'} <span className="figure">{grouped(lead.value)}</span> at the {t.boostMhz} MHz reference boost <Tag kind="spec" />
+            </div>
+          )}
+          {comparable && (
+            <div className="flex items-baseline gap-2 flex-wrap text-[10px] text-studio-subtle" title={comparableTitle}>
+              <span className="label">comparable</span>
+              <span className="figure text-mini text-studio-text">{grouped(own(comparable))}</span>
+              <span>TOPS</span>
+              <span className="label">INT8 · dense</span>
+              <Tag kind={denseKind} />
+              <span>the row to set beside a Mac's measured figure; the {LABEL[lead!.precision]}{lead!.sparse ? ' sparse' : ''} headline is not it</span>
             </div>
           )}
           <div className="text-mini text-studio-muted figure">
@@ -280,7 +310,7 @@ export const StatsCard: React.FC<Props> = (p) => {
             ) : (
               <Tile label="ROPs" value={String(t.rops)} />
             )}
-            <Tile label="VRAM" value={`${p.spec.vramGiB} GB`} sub={t.vramType} />
+            <Tile label={p.spec.unified ? 'GPU working set' : 'VRAM'} value={`${p.spec.vramGiB} GB`} sub={p.spec.unified ? `${t.vramType} · unified, what Metal lets the GPU hold` : t.vramType} />
             <Tile label="bus" value={`${t.busBits}-bit`} />
             {c ? (
               <Tile
@@ -291,34 +321,40 @@ export const StatsCard: React.FC<Props> = (p) => {
                 title={`${c.seenSmMhz !== null ? `The highest SM clock this card has held under load; Measure, Calibrate or a game shows it.${c.seenSmMhz < t.boostMhz ? ' Below the reference boost it came from a memory-bound run (a stream copy holds the SM clock low) or a ramp, not from compute; the figures above keep the advertised clock until a compute load is seen.' : ''}` : 'The SM clock this card holds under load shows after Measure, Calibrate or a game.'} Reference design base / boost beneath${c.ceilingSmMhz !== null ? ", then the driver's VF-curve top, which every card of this model reports and no card runs at" : ''}.`}
               />
             ) : (
-              <Tile label={t.baseMhz !== null ? 'base / boost' : 'boost'} value={t.baseMhz !== null ? `${t.baseMhz}/${t.boostMhz}` : `${t.boostMhz}`} title={t.baseMhz === null ? 'The vendor page prints no base clock' : 'MHz, reference design'} />
+              <Tile
+                label={t.baseMhz !== null ? 'base / boost' : 'boost'}
+                value={t.baseMhz !== null ? `${t.baseMhz}/${t.boostMhz}` : t.boostMhz > 0 ? `${t.boostMhz}` : 'not published'}
+                tag={p.spec.unified && t.boostMhz > 0 ? 'this card' : undefined}
+                sub={p.spec.unified ? "top of the GPU's clock table as macOS reports it" : undefined}
+                title={p.spec.unified ? 'Apple publishes no GPU clock; this is the highest state in the clock table the OS reports for this chip' : t.baseMhz === null ? 'The vendor page prints no base clock' : 'MHz, reference design'}
+              />
             )}
             {c?.memGbps != null ? (
               <Tile
-                label="memory"
+                label={p.spec.unified ? 'unified memory data rate' : 'VRAM data rate'}
                 value={gbps(c.memGbps)}
                 tag="this card"
                 sub={`reference ${t.memoryGbps} Gbps`}
                 title={c.memSource === 'held' ? 'From the memory clock this card holds under load: a tune above the driver ceiling' : "The driver's memory clock ceiling plus any offset in force; measure to see the clock the card holds under load"}
               />
             ) : (
-              <Tile label="memory" value={`${t.memoryGbps} Gbps`} />
+              <Tile label={p.spec.unified ? 'unified memory data rate' : 'VRAM data rate'} value={`${t.memoryGbps} Gbps`} />
             )}
             {memClockMhz !== null ? (
               <Tile
-                label="memory clock"
+                label="VRAM clock"
                 value={`${memClockMhz} MHz`}
                 tag="this card"
                 sub={t.memoryClockMhz !== null ? `reference ${t.memoryClockMhz} MHz · ${offsetMhz(memClockMhz, t.memoryClockMhz, MEM_GBPS_PER_MHZ[t.vramType])}` : 'no reference clock in the table'}
                 title={`${c!.memSource === 'held' ? 'The memory clock this card holds under load' : "The driver's memory clock ceiling plus any offset in force; measure to see the clock the card holds under load"}, in the MHz GPU-Z and GPU Tweak print (NVML's figure ÷ ${MEM_GBPS_PER_MHZ[t.vramType] / NVML_MEM_RATE_FACTOR} for ${t.vramType}); the reference clock and the offset a tune reads as beneath`}
               />
             ) : (
-              !c && t.memoryClockMhz !== null && <Tile label="memory clock" value={`${t.memoryClockMhz} MHz`} title="Reference design memory clock as GPU-Z and GPU Tweak print it" />
+              !c && t.memoryClockMhz !== null && <Tile label="VRAM clock" value={`${t.memoryClockMhz} MHz`} title="Reference design memory clock as GPU-Z and GPU Tweak print it" />
             )}
             {cardBandwidth !== null ? (
-              <Tile label="bandwidth" value={gb(cardBandwidth)} tag="this card" sub={specBandwidth !== null ? `reference ${gb(specBandwidth)}` : 'no reference figure'} title="Memory data rate x bus width / 8, from this card's own clock" />
+              <Tile label={p.spec.unified ? 'unified memory bandwidth' : 'VRAM bandwidth'} value={gb(cardBandwidth)} tag="this card" sub={specBandwidth !== null ? `reference ${gb(specBandwidth)}` : 'no reference figure'} title="Memory data rate x bus width / 8, from this card's own clock" />
             ) : (
-              <Tile label="bandwidth" value={specBandwidth !== null ? gb(specBandwidth) : 'no figure'} />
+              <Tile label={p.spec.unified ? 'unified memory bandwidth' : 'VRAM bandwidth'} value={specBandwidth !== null ? gb(specBandwidth) : 'no figure'} />
             )}
             {c?.tdpW != null ? (
               <Tile
@@ -328,10 +364,12 @@ export const StatsCard: React.FC<Props> = (p) => {
                 sub={`${c.limitW !== null && c.limitW < c.tdpW ? `set to ${c.limitW.toFixed(0)} W now · ` : ''}${c.sliderMaxW !== null ? `${t.tgpRangeW ? 'Dynamic Boost' : 'slider'} up to ${c.sliderMaxW.toFixed(0)} W · ` : ''}${t.tgpRangeW ? `laptop makers set ${t.tgpRangeW[0]}–${t.tgpRangeW[1]} W` : `reference ${t.tdpW} W`}`}
                 title={t.tgpRangeW ? 'The TGP this laptop runs the card at, as the driver reports it; Dynamic Boost can add to it, and the range laptop makers choose from is beneath.' : "The board's default power limit as the driver reports it: what this card is built for. The slider's top when it goes higher, and the reference design's TDP, beneath."}
               />
-            ) : (
+            ) : t.tdpW > 0 ? (
               <Tile label={t.tgpRangeW ? 'TGP' : 'TDP'} value={t.tgpRangeW ? `${t.tgpRangeW[0]}–${t.tgpRangeW[1]} W` : `${t.tdpW} W`} title={t.tgpRangeW ? 'The TGP range laptop makers choose from; the driver reports the one this laptop runs at' : undefined} />
+            ) : (
+              <Tile label="TDP" value="not published" sub="Apple prints no power figure; the Monitor shows what it draws" />
             )}
-            {!p.laptop && (
+            {!p.laptop && !p.spec.unified && (
               <Tile
                 label="PSU"
                 tag={psuSet ? 'you' : undefined}
@@ -348,9 +386,15 @@ export const StatsCard: React.FC<Props> = (p) => {
                 <Tag kind="this card" /> from the driver: power limit, clock ceilings, clocks held under load.
               </span>
             )}
-            <span>
-              Reference design figures <Tag kind="spec" />: <Link href={p.spec.source}>vendor page</Link>. A board-partner card runs above them.
-            </span>
+            {p.spec.unified ? (
+              <span>
+                Apple's figures <Tag kind="spec" />: <Link href={p.spec.source}>tech specs</Link>; unit counts by the per-core rule the review sites list: <Link href={p.spec.unitsUrl}>listing</Link>. Clock and FP32 are this Mac's own.
+              </span>
+            ) : (
+              <span>
+                Reference design figures <Tag kind="spec" />: <Link href={p.spec.source}>vendor page</Link>. A board-partner card runs above them.
+              </span>
+            )}
           </div>
         </div>
       ) : (
@@ -382,6 +426,18 @@ export const StatsCard: React.FC<Props> = (p) => {
               })}
               <Stat label="FP32 shader" value={tops(own(p.spec.fp32Tflops))} unit="TFLOPS" note={scale ? `not a tensor figure · reference ${tops(p.spec.fp32Tflops)}` : 'not a tensor figure'} />
             </div>
+          ) : p.spec?.unified ? (
+            <div className="space-y-2">
+              <p className="text-mini text-studio-muted">Apple publishes no tensor or TOPS figure for its GPUs or the Neural Engine; the measured matmul is what there is.</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <Stat label="int8" value={measured?.matmulTopsInt8 != null ? tops(measured.matmulTopsInt8) : 'press Measure'} unit={measured?.matmulTopsInt8 != null ? 'TOPS' : undefined} kind={measured?.matmulTopsInt8 != null ? 'measured' : undefined} muted={measured?.matmulTopsInt8 == null} note="dense, int32 accumulate · Metal 4 tensor ops" />
+                <Stat label="fp16 tensor" value={measured?.matmulTflopsFp16tensor != null ? tops(measured.matmulTflopsFp16tensor) : 'press Measure'} unit={measured?.matmulTflopsFp16tensor != null ? 'TFLOPS' : undefined} kind={measured?.matmulTflopsFp16tensor != null ? 'measured' : undefined} muted={measured?.matmulTflopsFp16tensor == null} note="dense, fp32 accumulate · Metal 4 tensor ops" />
+                <Stat label="fp16 matmul" value={measured?.matmulTflopsFp16 != null ? tops(measured.matmulTflopsFp16) : 'press Measure'} unit={measured?.matmulTflopsFp16 != null ? 'TFLOPS' : undefined} kind={measured?.matmulTflopsFp16 != null ? 'measured' : undefined} muted={measured?.matmulTflopsFp16 == null} note="half-precision storage, this GPU" />
+                <Stat label="fp32 matmul" value={measured ? tops(measured.matmulTflopsFp32) : 'press Measure'} unit={measured ? 'TFLOPS' : undefined} kind={measured ? 'measured' : undefined} muted={!measured} note="single precision, this GPU" />
+                {p.spec.fp32Tflops > 0 && <Stat label="FP32 shader" value={tops(p.spec.fp32Tflops)} unit="TFLOPS" kind="derived" note={`${grouped(t!.shadingUnits)} ALUs × 2 × ${t!.boostMhz} MHz · not a tensor figure`} />}
+                {p.spec.neuralEngineCores !== null && <Stat label="Neural Engine" value={`${p.spec.neuralEngineCores}`} unit="cores" note="no vendor throughput figure" />}
+              </div>
+            </div>
           ) : (
             <p className="text-mini text-studio-muted">{p.spec ? 'No tensor figures published for this GPU.' : p.integrated ? 'No tensor cores: an integrated GPU runs no local model faster than the CPU does.' : 'No reference tensor figures for this GPU yet.'}</p>
           )}
@@ -389,7 +445,7 @@ export const StatsCard: React.FC<Props> = (p) => {
           {p.npuTops !== null && <Stat label="NPU" value={tops(p.npuTops)} unit="TOPS" note="vendor figure for the CPU's NPU" />}
         </Section>
 
-        <Section title="Memory bandwidth">
+        <Section title={p.integrated ? 'Memory bandwidth' : p.spec?.unified ? 'Unified memory bandwidth' : 'VRAM bandwidth'}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2">
             {p.integrated ? (
               <Stat label="RAM bus" value={p.ramBandwidthGBs ? p.ramBandwidthGBs.toFixed(0) : 'unknown'} unit="GB/s" kind="spec" note="what a model streams from with no discrete GPU: the configured DIMM speed and channel count" />
@@ -403,7 +459,10 @@ export const StatsCard: React.FC<Props> = (p) => {
                 note={specBandwidth === null ? (p.spec ? 'nobody publishes a figure' : 'no reference row for this GPU yet') : 'reference design'}
               />
             )}
-            {!p.integrated && (
+            {!p.integrated && p.spec?.unified && (
+              <Stat label="Measured" value={measured ? measured.bandwidthGBs.toFixed(0) : 'press Measure'} unit={measured ? 'GB/s' : undefined} kind={measured ? 'measured' : undefined} muted={!measured} note={measured ? `stream copy on this Mac · ${specBandwidth !== null ? `${Math.round((measured.bandwidthGBs / specBandwidth) * 100)} % of Apple's figure` : ''}` : "the pool's real rate, one figure for the CPU and the GPU"} />
+            )}
+            {!p.integrated && !p.spec?.unified && (
               <Stat
                 label="This card"
                 value={cardBandwidth !== null ? cardBandwidth.toFixed(0) : 'not read'}

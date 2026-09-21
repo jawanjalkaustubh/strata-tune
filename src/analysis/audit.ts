@@ -21,9 +21,11 @@ import { lookupGpu } from './hardware-tables';
 import { cleanPartNumber, ratedSpeedFor } from './kits';
 import { hasAny, hasBit, SW_POWER_CAP, THERMAL_OR_BRAKE } from './nvmlBits';
 import { discreteAdapter, gpuSummary, integratedAdapter } from './adapters';
+import { isMacSnapshot, runMacAudit } from './audit-mac';
 
 export type AuditState = 'ok' | 'warn' | 'bad' | 'info' | 'unknown';
-export type FixWhere = 'bios' | 'windows' | 'game' | 'hardware' | 'none' | 'app';
+/** 'macos' is System Settings on a Mac (audit-mac.ts). */
+export type FixWhere = 'bios' | 'windows' | 'macos' | 'game' | 'hardware' | 'none' | 'app';
 
 export interface AuditFinding {
   id: string;
@@ -69,19 +71,19 @@ export interface AuditInputs {
   cpuSensors?: boolean;
 }
 
-type Base = Pick<AuditFinding, 'id' | 'title' | 'costText' | 'fixWhere'>;
-type Verdict = Pick<AuditFinding, 'state' | 'severity' | 'costEstimate' | 'detail' | 'fix'> & Partial<Pick<AuditFinding, 'costText' | 'fixWhere'>>;
+export type Base = Pick<AuditFinding, 'id' | 'title' | 'costText' | 'fixWhere'>;
+export type Verdict = Pick<AuditFinding, 'state' | 'severity' | 'costEstimate' | 'detail' | 'fix'> & Partial<Pick<AuditFinding, 'costText' | 'fixWhere'>>;
 
-function finding(base: Base, v: Verdict): AuditFinding {
+export function finding(base: Base, v: Verdict): AuditFinding {
   return {
     id: base.id, title: base.title, state: v.state, severity: v.severity, costEstimate: v.costEstimate,
     costText: v.costText ?? base.costText, detail: v.detail, fix: v.fix, fixWhere: v.fixWhere ?? base.fixWhere
   };
 }
 
-const ok = (detail: string): Verdict => ({ state: 'ok', severity: 0, costEstimate: 0, detail, fix: 'Nothing to change.' });
-const info = (detail: string, fix = 'Nothing to change.'): Verdict => ({ state: 'info', severity: 0, costEstimate: 0, detail, fix });
-const unknown = (detail: string, fix = 'Nothing to change; there is not enough information to judge this yet.'): Verdict =>
+export const ok = (detail: string): Verdict => ({ state: 'ok', severity: 0, costEstimate: 0, detail, fix: 'Nothing to change.' });
+export const info = (detail: string, fix = 'Nothing to change.'): Verdict => ({ state: 'info', severity: 0, costEstimate: 0, detail, fix });
+export const unknown = (detail: string, fix = 'Nothing to change; there is not enough information to judge this yet.'): Verdict =>
   ({ state: 'unknown', severity: 0, costEstimate: 0, detail, fix });
 
 const HIGH_PERFORMANCE = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c';
@@ -102,7 +104,7 @@ const OVERLAY_BEST_EFFICIENCY = '961cc777-2547-4f9d-8174-7d86181b8a7a';
  */
 const STEADY_FROM_S = 3;
 const ENGAGED_FRACTION = 0.5;
-const SAG_WARN = 0.08;
+export const SAG_WARN = 0.08;
 const WARM_C = 75;
 
 /** Per-lane transfer rate by PCIe generation, GT/s, to size a downgraded link. */
@@ -120,22 +122,22 @@ const AT_LIMIT_FRACTION = 0.95;
  */
 const CPU_WARM_BELOW_TJMAX_C = 5;
 const CPU_PINNED_BELOW_TJMAX_C = 1;
-const CPU_SAG_WARN = 0.05;
+export const CPU_SAG_WARN = 0.05;
 const CPU_REST_WARN_BELOW_TJMAX_C = 2;
 const BELOW_BASE = 0.9;
 
 const GIB = 1024 ** 3;
-const gib = (bytes: number) => Math.round(bytes / GIB);
-const pct = (fraction: number) => Math.round(fraction * 100);
+export const gib = (bytes: number) => Math.round(bytes / GIB);
+export const pct = (fraction: number) => Math.round(fraction * 100);
 const watts = (mw: number) => Math.round(mw / 1000);
-const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
-const list = (items: string[]) => items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-const doneSamples = (run: LoadRun | null) => run && run.state === 'done' && run.gpuSamples.length > 0 ? run.gpuSamples : null;
-const ghz = (mhz: number) => `${(mhz / 1000).toFixed(1)} GHz`;
+export const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+export const list = (items: string[]) => items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+export const doneSamples = (run: LoadRun | null) => run && run.state === 'done' && run.gpuSamples.length > 0 ? run.gpuSamples : null;
+export const ghz = (mhz: number) => `${(mhz / 1000).toFixed(1)} GHz`;
 const signed = (mhz: number) => (mhz >= 0 ? `+${mhz}` : `${mhz}`);
-const finite = (xs: (number | null)[]) => xs.filter((x): x is number => x !== null && Number.isFinite(x));
+export const finite = (xs: (number | null)[]) => xs.filter((x): x is number => x !== null && Number.isFinite(x));
 /** Mean of the first and last third of a series, for "did it sag" questions. */
-const endsOf = (xs: number[]) => {
+export const endsOf = (xs: number[]) => {
   const third = Math.max(1, Math.floor(xs.length / 3));
   return { start: mean(xs.slice(0, third)), end: mean(xs.slice(-third)) };
 };
@@ -145,7 +147,7 @@ const endsOf = (xs: number[]) => {
  * length. The steady window (t >= 3 s) leaves the worker's start-up and the boost governor's
  * first seconds out of the verdict.
  */
-function steadyWindow<T extends { qpc: number }>(run: LoadRun, samples: T[]): T[] {
+export function steadyWindow<T extends { qpc: number }>(run: LoadRun, samples: T[]): T[] {
   if (run.qpcEnd === null || run.qpcEnd <= run.qpcStart) return [];
   const span = run.qpcEnd - run.qpcStart;
   return samples.filter(x => (x.qpc - run.qpcStart) / span * run.seconds >= STEADY_FROM_S);
@@ -154,13 +156,13 @@ function steadyWindow<T extends { qpc: number }>(run: LoadRun, samples: T[]): T[
 type CpuSample = LoadRun['cpuSamples'][number];
 
 /** The finished CPU run's steady window, or null when there is no run to judge from. */
-function cpuSteady(run: LoadRun | null): CpuSample[] | null {
+export function cpuSteady(run: LoadRun | null): CpuSample[] | null {
   if (!run || run.kind !== 'cpu' || run.state !== 'done' || run.cpuSamples.length === 0) return null;
   const steady = steadyWindow(run, run.cpuSamples);
   return steady.length >= 4 ? steady : null;
 }
 
-const CPU_RUN_MISSING = unknown('Measured with a 20-second all-core CPU load.', 'Run the audit; the CPU load test is part of it.');
+export const CPU_RUN_MISSING = unknown('Measured with a 20-second all-core CPU load.', 'Run the audit; the CPU load test is part of it.');
 /** No CPU node in the tree: the library reads the CPU through PawnIO, so the driver is what is missing, and the fix is the same for every CPU rule. */
 const CPU_SENSORS_MISSING = unknown('The CPU sensors need the PawnIO driver, which is not installed on this PC.', 'Install PawnIO from pawnio.eu (About shows its status), restart Strata Tune and run the audit again.');
 /** The CPU rules' shared gate: the run, then the sensors it needs. */
@@ -514,8 +516,9 @@ const isOllamaRunner = (name: string) => /^(ollama|llama-server|ollama_llama_ser
 const BUSY_CPU_PERCENT = 5;
 const HOG_MIB = 2048;
 
-function checkHogs(hogs: HogsResult | null, s: StaticSnapshot): AuditFinding {
-  const base: Base = { id: 'background-hogs', title: 'Background programs', costText: 'Whatever they take: a busy background program steals CPU time from the game, a large one its memory.', fixWhere: 'windows' };
+/** `where` is the platform's own way to stop a program starting by itself (audit-mac.ts passes macOS's). */
+export function checkHogs(hogs: HogsResult | null, s: StaticSnapshot, where: { fixWhere: FixWhere; startup: string } = { fixWhere: 'windows', startup: 'stop it from starting with Windows (Settings > Apps > Startup)' }): AuditFinding {
+  const base: Base = { id: 'background-hogs', title: 'Background programs', costText: 'Whatever they take: a busy background program steals CPU time from the game, a large one its memory.', fixWhere: where.fixWhere };
   if (!hogs) return finding(base, unknown('Measured with a 5-second sample while the machine idles.', 'Run the audit with the machine idle.'));
   const modelResident = (s.ollama?.length ?? 0) > 0;
   const heavy = hogs.processes.filter(p => (p.cpuPercent > BUSY_CPU_PERCENT || p.workingSetMiB > HOG_MIB) && !isVmHost(p.name) && !(modelResident && isOllamaRunner(p.name)));
@@ -534,7 +537,7 @@ function checkHogs(hogs: HogsResult | null, s: StaticSnapshot): AuditFinding {
   return finding(base, {
     state: 'warn', severity: 2, costEstimate: 0.1,
     detail: `${[busyText, holdingText].filter(Boolean).join(' ')}${vmNote}`,
-    fix: 'Close what you do not need before gaming, or stop it from starting with Windows (Settings > Apps > Startup).'
+    fix: `Close what you do not need before gaming, or ${where.startup}.`
   });
 }
 
@@ -766,7 +769,7 @@ function checkCpuSmt(s: StaticSnapshot): AuditFinding {
 }
 
 /** The first sample of the CPU run is taken before the worker starts (LoadRunner), so it is the idle reference. */
-function checkCpuIdleClock(run: LoadRun | null, cpuSensors?: boolean): AuditFinding {
+export function checkCpuIdleClock(run: LoadRun | null, cpuSensors?: boolean): AuditFinding {
   const base: Base = { id: 'cpu-idle-clock', title: 'Idle clock', costText: 'Nothing at stake: how the CPU rests between frames.', fixWhere: 'none' };
   if (cpuSensors === false) return finding(base, CPU_SENSORS_MISSING);
   const idle = run && run.kind === 'cpu' && run.state === 'done' ? run.cpuSamples[0] : undefined;
@@ -848,11 +851,12 @@ function checkGpuUnits(s: StaticSnapshot, fillRate: LoadRun | null | undefined):
  * not running there is no row at all, because this is an observation for AI users, not a
  * finding for everyone.
  */
-function checkAiModel(s: StaticSnapshot): AuditFinding | null {
-  const base: Base = { id: 'ai-model-resident', title: 'AI model in video memory', costText: 'Games get less video memory while a model is loaded.', fixWhere: 'app' };
+/** `pool` names the memory the model sits in: VRAM on a card, unified memory on a Mac (audit-mac.ts). */
+export function checkAiModel(s: StaticSnapshot, pool = 'VRAM'): AuditFinding | null {
+  const base: Base = { id: 'ai-model-resident', title: pool === 'VRAM' ? 'AI model in video memory' : 'AI model in unified memory', costText: pool === 'VRAM' ? 'Games get less video memory while a model is loaded.' : 'Everything else gets less memory while a model is loaded.', fixWhere: 'app' };
   if (s.ollama === null) return null;
   if (s.ollama.length === 0) return finding(base, ok('Ollama is running but holds no model.'));
-  const held = s.ollama.map(m => `${m.name} holds ${Number((m.sizeVramBytes / 1e9).toFixed(1))} GB of VRAM`);
+  const held = s.ollama.map(m => `${m.name} holds ${Number((m.sizeVramBytes / 1e9).toFixed(1))} GB of ${pool}`);
   return finding(base, {
     state: 'info', severity: 1, costEstimate: 0.1,
     detail: `${list(held)}; fine for AI work, costs games headroom.`,
@@ -927,6 +931,8 @@ export function rankTop(findings: AuditFinding[], n: number): AuditFinding[] {
 
 export function runAudit(inputs: AuditInputs): AuditFinding[] {
   const s = inputs.snapshot;
+  // A Mac has its own rule set (audit-mac.ts): no BIOS, no Windows power plan, no NVIDIA driver, and a GPU the Windows rules cannot see.
+  if (isMacSnapshot(s)) return runMacAudit(inputs);
   const findings = [
     checkExpo(s),
     checkChannels(s),

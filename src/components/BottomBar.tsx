@@ -22,15 +22,17 @@ interface Props {
   onSelect: (p: Page) => void;
   /** Collector state and, while one runs or is armed, the capture's ("Collector: Connected · Capturing game.exe"). */
   status: string;
+  /** Pages this platform does not have (macOS: capture); left out of the bar rather than disabled. */
+  hidden?: Page[];
 }
 
 /** No monogram or wordmark here: the title bar already carries them (user, 2026-09-15). The status shortens by content, never by clipping (plan 17a). */
-const BottomBarInner: React.FC<Props> = ({ page, onSelect, status }) => (
+const BottomBarInner: React.FC<Props> = ({ page, onSelect, status, hidden = [] }) => (
   <div className="h-9 flex items-center gap-3 px-3 bg-studio-surface border-t border-studio-border text-micro text-studio-subtle shrink-0">
     <span className="min-w-0 whitespace-nowrap">{status}</span>
     <span className="flex-1" />
     <nav className="flex items-center gap-0.5" aria-label="Pages">
-      {PAGES.map(({ id, label, icon: Icon }) => {
+      {PAGES.filter((p) => !hidden.includes(p.id)).map(({ id, label, icon: Icon }) => {
         const active = id === page;
         return (
           <button

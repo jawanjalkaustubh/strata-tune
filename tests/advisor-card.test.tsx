@@ -329,13 +329,13 @@ describe('MEMORY CLOCK tile: the GPU-Z convention beside the Gbps one (plan sect
     const c = thisCard(gpu(), spec.tiles.busBits, { smMhz: 3225, memMhz: 16008 });
     expect(c.memMhz).toBe(16008);
     const html = render(c);
-    expect(html).toContain('leading-tight">memory clock <span class="text-slate-300 whitespace-nowrap">· this card</span>');
+    expect(html).toContain('leading-tight">VRAM clock <span class="text-slate-300 whitespace-nowrap">· this card</span>');
     expect(html).toContain('2001 MHz');
     expect(html).toContain('reference 1750 MHz · +251 MHz');
     // Gbps and MHz sit side by side and never contradict: 32.0 Gbps is 2001 MHz x 16.
     expect(html).toContain('32.0 Gbps');
-    expect(html.indexOf('leading-tight">memory clock')).toBeGreaterThan(html.indexOf('leading-tight">memory <span'));
-    expect(html.indexOf('leading-tight">memory clock')).toBeLessThan(html.indexOf('leading-tight">bandwidth'));
+    expect(html.indexOf('leading-tight">VRAM clock')).toBeGreaterThan(html.indexOf('leading-tight">VRAM data rate <span'));
+    expect(html.indexOf('leading-tight">VRAM clock')).toBeLessThan(html.indexOf('leading-tight">VRAM bandwidth'));
   });
 
   it('at the ceiling the tile says "at reference"; below it the offset is negative; without a card the reference clock stands alone', () => {
