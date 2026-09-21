@@ -453,12 +453,30 @@ comparison that does is the one a `ollama run --verbose` prints: the same quanti
 the same prompt, tokens per second for prefill and generation, load duration, memory, and
 the watts drawn meanwhile. `src/analysis/llm-bench.ts` fixes the protocol (`strata-llm-1`:
 a thousand-token prompt prefixed per run so the KV prefix cache cannot answer it, 256
-tokens, `temperature 0`, `seed 7`, `num_ctx 4096`, three runs, the model evicted first so
-run 1 is the cold load), `electron/llm-bench.ts` runs it against Ollama while sampling the
-collector at 4 Hz (GPU power by the card's own sensor row, CPU package, the SMC system
-figure on a Mac, GPU memory in use) and keeps `llm-bench.json` beside `bench.json`; Export
-and Import move rows between machines. The card groups rows by model tag and marks the best
-of each column; tokens per second per GPU watt is the efficiency figure both sides report.
+tokens, `temperature 0`, `seed 7`, three runs at each context depth of 0, 4k and 16k with
+deterministic filler behind the prompt and `num_ctx` = depth + 4096, the model evicted
+first so run 1 is the cold load), `electron/llm-bench.ts` runs it against Ollama while
+sampling the collector at 4 Hz (GPU power by the card's own sensor row, CPU package, the
+SMC system figure on a Mac, GPU memory in use) and keeps `llm-bench.json` beside
+`bench.json`; Export and Import move rows between machines, and a rerun on the same
+machine and model replaces its earlier row. The card groups rows by model tag, marks the
+best of each column, prints the ± sample spread beside the medians and a line per depth
+under each row; tokens per second per GPU watt is the efficiency figure both sides report.
+
+The same file runs llama-benchy (eugr/llama-benchy, the llama-bench-style table people
+publish for DGX Spark and Mac Studio comparisons) through `uvx` against Ollama's OpenAI
+endpoint: `--pp 1024 --tg 256 --depth 0 4096 16384 --runs 3 --latency-mode generation
+--format json`, a tokenizer picked by model family (an ungated relative is enough: the
+server's own token count corrects the prompt after the warmup), and any depth Ollama's
+window (`/api/ps context_length`) would truncate is skipped. Its rows sit under the card's
+own in a second table, best pp and tg per context size marked, and travel in the same
+export file. It times tokens only, on the client with its latency correction; the watts
+and memory stay with the card's rows. Without `uv` the button says how to install it.
+
+Measured on the M5 Max, qwen3.8:27b Q4_K_M: 35.5 tok/s gen and 593 prefill at zero depth,
+31 / 560 behind 4k, 23.5 / 426 behind 16k; 40 W GPU, 102 W system. llama-benchy on the
+same model: tg 32.8 / 30.8 / 26.7, pp 528 / 532 / 415, in agreement with the card's own
+counters to within its spread.
 
 ## 11. Frame capture and stutter classifier (Phases 4–5, the real lift)
 

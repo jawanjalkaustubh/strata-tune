@@ -11,9 +11,20 @@
 
 export const LLM_PROTOCOL = 'strata-llm-1';
 export const PREDICT_TOKENS = 256;
+/** The context window above the depth: room for the prompt, the answer and the chat template. */
 export const NUM_CTX = 4096;
 export const DEFAULT_RUNS = 3;
 export const SEED = 7;
+/**
+ * Context depths (llama-benchy's `--depth`): the same prompt with this much text already in
+ * the window before it. Prefill and decode both slow as the KV cache grows, and by different
+ * amounts on different machines, so the zero-depth figure alone flatters whichever side has
+ * the least memory bandwidth to spare.
+ */
+export const DEPTHS = [0, 4096, 16384];
+/** English prose through a modern tokenizer: the filler is sized by this, and the run records the count the server saw. */
+export const CHARS_PER_TOKEN = 4.7;
+export const numCtxFor = (depth: number) => depth + NUM_CTX;
 /** How often the collector is read while a generation runs, and for how long the idle baseline is read before it. */
 export const SAMPLE_MS = 250;
 export const IDLE_SECONDS = 2;
@@ -49,10 +60,49 @@ export const PROMPT_BODY =
   'relays and the tired seals, and the crew replaced them one by one, and wrote them down, and drove back down the road before dark.\n\n' +
   'On the night the weather changed, the first sign was';
 
-/** The run's own prefix keeps Ollama from answering the prefill from its cached prefix: a different first token, a full prompt evaluation every time. */
-export const promptForRun = (run: number, runs: number) => `Benchmark run ${run} of ${runs}.\n\n${PROMPT_BODY}`;
+const FILLER_SENTENCES = [
+  'The survey of the northern basin took the better part of three seasons, and its findings were filed in the usual way.',
+  'Rainfall along the escarpment varies more from year to year than from village to village, which the older records already suggested.',
+  'The mill at the ford was rebuilt twice, once after the flood and once after the fire, and the second builder kept the first one\'s foundations.',
+  'A road that follows the contour is longer than one that climbs straight over, but the carts that use it last twice as long.',
+  'The ledger for that decade lists forty-one households, two of which appear under different names in the tax rolls.',
+  'Nobody who worked the quarry could say when the lower face was abandoned, only that it had been fenced off before the war.',
+  'The schoolhouse was heated by a single stove, and the children nearest it were rotated by the week in a system nobody wrote down.',
+  'Where the river bends east the soil turns to clay, and the field boundaries change with it, a pattern visible from the ridge.',
+  'The bridge toll was abolished in the same year the ferry stopped running, which the ferryman\'s family still holds against the council.',
+  'Most of the orchard stock came from a single nursery whose catalogue survives in the county archive with its prices pencilled in.'
+];
+
+/**
+ * Deterministic prose of about `depth` tokens: numbered paragraphs cycling through a fixed
+ * pool of sentences, the same on every machine. The paragraph numbers keep it from being one
+ * repeated string, which some caches and tokenizers treat differently from ordinary text.
+ */
+export function fillerForDepth(depth: number): string {
+  if (depth <= 0) return '';
+  const target = Math.round(depth * CHARS_PER_TOKEN);
+  const parts: string[] = [];
+  let length = 0;
+  for (let n = 1; length < target; n++) {
+    const sentences = [0, 1, 2, 3].map((k) => FILLER_SENTENCES[(n * 3 + k) % FILLER_SENTENCES.length]);
+    const para = `${n}. ${sentences.join(' ')}`;
+    parts.push(para);
+    length += para.length + 2;
+  }
+  return parts.join('\n\n');
+}
+
+/**
+ * The run's own prefix keeps Ollama from answering the prefill from its cached prefix: a
+ * different first token, a full prompt evaluation every time. At a depth the filler sits
+ * between the prefix and the prompt, so the prompt is evaluated behind that much context.
+ */
+export const promptForRun = (run: number, runs: number, depth = 0) =>
+  `Benchmark run ${run} of ${runs} at depth ${depth}.\n\n` + (depth > 0 ? `Background notes, for context only; do not summarise them.\n\n${fillerForDepth(depth)}\n\n` : '') + PROMPT_BODY;
 
 export interface LlmRun {
+  /** Context depth the run was made at (DEPTHS); absent in rows from before the sweep, which were all at zero. */
+  depth?: number;
   /** Ollama's counters for the run. */
   promptEvalCount: number;
   promptEvalMs: number;
@@ -89,6 +139,19 @@ export interface LlmModel {
   sizeBytes: number;
 }
 
+/** One depth of the sweep: medians and sample spread over its runs. */
+export interface LlmDepth {
+  depth: number;
+  /** What the server counted, filler included; the depth is nominal. */
+  promptTokens: number;
+  prefillTokPerSec: number;
+  prefillStd: number;
+  genTokPerSec: number;
+  genStd: number;
+  firstTokenMs: number;
+  runs: LlmRun[];
+}
+
 export interface LlmBenchResult {
   id: string;
   protocol: typeof LLM_PROTOCOL;
@@ -103,7 +166,10 @@ export interface LlmBenchResult {
   genTokPerSec: number;
   /** Median prompt evaluation time: the wait before the first token once the model is resident. */
   firstTokenMs: number;
+  /** The zero-depth runs (the figures above are theirs); the sweep's other depths are in `depths`. */
   runs: LlmRun[];
+  /** Every depth of the sweep, zero first; absent in rows from before it. */
+  depths?: LlmDepth[];
   memory: {
     /** Ollama's own figure for the model in GPU memory after the run (/api/ps size_vram); null when it was not listed. */
     residentBytes: number | null;
@@ -133,6 +199,13 @@ export const median = (xs: number[]): number => {
 };
 
 const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+
+/** Sample standard deviation (n − 1), the ± llama-benchy prints; zero below two values. */
+export const std = (xs: number[]): number => {
+  if (xs.length < 2) return 0;
+  const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+  return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1));
+};
 const max = (xs: number[]): number | null => (xs.length ? Math.max(...xs) : null);
 const pick = (samples: LlmSample[], key: keyof LlmSample): number[] => samples.map((s) => s[key]).filter((v): v is number => v !== null && Number.isFinite(v));
 
@@ -145,22 +218,45 @@ const perSec = (count: number, ms: number) => (count > 0 && ms > 0 ? count / (ms
 export function summarise(
   input: { id: string; measuredAt: string; machine: LlmMachine; model: LlmModel; runs: LlmRun[]; idle: LlmSample[]; busy: LlmSample[]; residentBytes: number | null; numCtx?: number; predictTokens?: number }
 ): LlmBenchResult {
-  const runs = input.runs;
+  const byDepth = new Map<number, LlmRun[]>();
+  for (const r of input.runs) {
+    const d = r.depth ?? 0;
+    byDepth.set(d, [...(byDepth.get(d) ?? []), r]);
+  }
+  const depths: LlmDepth[] = [...byDepth.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([depth, rs]) => {
+      const pp = rs.map((r) => perSec(r.promptEvalCount, r.promptEvalMs));
+      const tg = rs.map((r) => perSec(r.evalCount, r.evalMs));
+      return {
+        depth,
+        promptTokens: Math.round(median(rs.map((r) => r.promptEvalCount))),
+        prefillTokPerSec: median(pp),
+        prefillStd: std(pp),
+        genTokPerSec: median(tg),
+        genStd: std(tg),
+        firstTokenMs: median(rs.map((r) => r.promptEvalMs)),
+        runs: rs
+      };
+    });
+  const zero = depths.find((d) => d.depth === 0) ?? depths[0];
+  const runs = zero?.runs ?? [];
   const gpuAvgW = mean(pick(input.busy, 'gpuW'));
   const systemAvgW = mean(pick(input.busy, 'systemW'));
-  const gen = median(runs.map((r) => perSec(r.evalCount, r.evalMs)));
+  const gen = zero?.genTokPerSec ?? 0;
   return {
     id: input.id,
     protocol: LLM_PROTOCOL,
     measuredAt: input.measuredAt,
     machine: input.machine,
     model: input.model,
-    settings: { promptTokens: Math.round(median(runs.map((r) => r.promptEvalCount))), predictTokens: input.predictTokens ?? PREDICT_TOKENS, numCtx: input.numCtx ?? NUM_CTX, runs: runs.length },
+    settings: { promptTokens: zero?.promptTokens ?? 0, predictTokens: input.predictTokens ?? PREDICT_TOKENS, numCtx: input.numCtx ?? NUM_CTX, runs: runs.length },
     loadMs: runs[0]?.loadMs ?? 0,
-    prefillTokPerSec: median(runs.map((r) => perSec(r.promptEvalCount, r.promptEvalMs))),
+    prefillTokPerSec: zero?.prefillTokPerSec ?? 0,
     genTokPerSec: gen,
-    firstTokenMs: median(runs.map((r) => r.promptEvalMs)),
+    firstTokenMs: zero?.firstTokenMs ?? 0,
     runs,
+    depths,
     memory: { residentBytes: input.residentBytes, gpuUsedIdleMiB: mean(pick(input.idle, 'gpuMemMiB')), gpuUsedPeakMiB: max(pick(input.busy, 'gpuMemMiB')) },
     power: {
       gpuIdleW: mean(pick(input.idle, 'gpuW')),
@@ -176,11 +272,130 @@ export function summarise(
   };
 }
 
+// ------------------------------------------------------------ llama-benchy
+
+export interface Stat {
+  mean: number;
+  std: number;
+}
+
+/** One shape of a llama-benchy run (its `benchmarks[]` entry): the prompt behind `contextSize` tokens of context. */
+export interface BenchyRow {
+  contextSize: number;
+  promptSize: number;
+  responseSize: number;
+  /** Prompt processing tok/s (prompt tokens / est_ppt) and decode tok/s (tokens after the first / their interval). */
+  pp: Stat | null;
+  tg: Stat | null;
+  /** The best one-second window of decode. */
+  peak: Stat | null;
+  ttfrMs: Stat | null;
+  estPptMs: Stat | null;
+  e2eTtftMs: Stat | null;
+}
+
+/**
+ * A llama-benchy run kept beside the card's own rows: the community table (eugr/llama-benchy),
+ * client-side timing against Ollama's OpenAI endpoint, comparable with figures other people
+ * publish. It times tokens only; the watts and memory stay with the card's rows.
+ */
+export interface BenchyResult {
+  id: string;
+  measuredAt: string;
+  machine: LlmMachine;
+  model: string;
+  version: string;
+  latencyMode: string;
+  latencyMs: number | null;
+  /** Ollama's window for the model on that machine (/api/ps context_length): a depth beyond it would have been truncated, so such depths are not run. */
+  contextLength: number | null;
+  /** The command line, so a row says what shape was asked for. */
+  args: string;
+  rows: BenchyRow[];
+  imported: boolean;
+}
+
+const statOf = (v: unknown): Stat | null => {
+  const o = v as { mean?: unknown; std?: unknown } | null | undefined;
+  return o && isNum(o.mean) ? { mean: o.mean, std: isNum(o.std) ? o.std : 0 } : null;
+};
+
+/** Reads llama-benchy's `--format json` file into rows; the error names what was wrong. */
+export function parseBenchyJson(text: string): { version: string; latencyMode: string; latencyMs: number | null; model: string; rows: BenchyRow[] } | { error: string } {
+  let j: unknown;
+  try {
+    j = JSON.parse(text);
+  } catch {
+    return { error: 'llama-benchy wrote no JSON' };
+  }
+  const o = j as Record<string, unknown>;
+  const list = o?.benchmarks;
+  if (!Array.isArray(list)) return { error: 'llama-benchy\'s file has no benchmarks list' };
+  const rows: BenchyRow[] = list
+    .filter((b): b is Record<string, unknown> => !!b && typeof b === 'object' && !(b as Record<string, unknown>).is_context_prefill_phase)
+    .map((b) => ({
+      contextSize: isNum(b.context_size) ? b.context_size : 0,
+      promptSize: isNum(b.prompt_size) ? b.prompt_size : 0,
+      responseSize: isNum(b.response_size) ? b.response_size : 0,
+      pp: statOf(b.pp_throughput),
+      tg: statOf(b.tg_throughput),
+      peak: statOf(b.peak_throughput),
+      ttfrMs: statOf(b.ttfr),
+      estPptMs: statOf(b.est_ppt),
+      e2eTtftMs: statOf(b.e2e_ttft)
+    }));
+  if (rows.length === 0) return { error: 'llama-benchy reported no completed test' };
+  return { version: String(o.version ?? ''), latencyMode: String(o.latency_mode ?? ''), latencyMs: isNum(o.latency_ms) ? o.latency_ms : null, model: String(o.model ?? ''), rows };
+}
+
+export function validBenchy(v: unknown): v is BenchyResult {
+  if (!v || typeof v !== 'object') return false;
+  const r = v as Record<string, unknown>;
+  const machine = r.machine as Record<string, unknown> | undefined;
+  return (
+    typeof r.id === 'string' && typeof r.measuredAt === 'string' && typeof r.model === 'string' && typeof r.version === 'string' &&
+    !!machine && typeof machine.hostname === 'string' && typeof machine.gpuName === 'string' &&
+    Array.isArray(r.rows) && r.rows.every((x) => x && typeof x === 'object' && isNum((x as BenchyRow).contextSize))
+  );
+}
+
+/** llama-benchy rows grouped by model tag, and within a group the context sizes seen, so machines line up shape by shape. */
+export function groupBenchy(results: BenchyResult[]): { model: string; contexts: number[]; results: BenchyResult[] }[] {
+  const byModel = new Map<string, BenchyResult[]>();
+  for (const r of results) byModel.set(r.model, [...(byModel.get(r.model) ?? []), r]);
+  return [...byModel.entries()]
+    .map(([model, list]) => ({
+      model,
+      contexts: [...new Set(list.flatMap((r) => r.rows.map((x) => x.contextSize)))].sort((a, b) => a - b),
+      results: [...list].sort((a, b) => b.measuredAt.localeCompare(a.measuredAt))
+    }))
+    .sort((a, b) => a.model.localeCompare(b.model));
+}
+
+/** The winners per context size and metric ('pp' | 'tg') among a group's results; ids of the rows that hold the highest mean. */
+export function bestBenchy(results: BenchyResult[]): Record<string, Set<string>> {
+  const best: Record<string, Set<string>> = {};
+  const contexts = [...new Set(results.flatMap((r) => r.rows.map((x) => x.contextSize)))];
+  for (const ctx of contexts) {
+    for (const metric of ['pp', 'tg'] as const) {
+      const values = results
+        .map((r) => [r.id, r.rows.find((x) => x.contextSize === ctx)?.[metric]?.mean ?? null] as const)
+        .filter((x): x is readonly [string, number] => x[1] !== null);
+      if (values.length < 2) continue;
+      const top = Math.max(...values.map((v) => v[1]));
+      best[`${metric}@${ctx}`] = new Set(values.filter((v) => v[1] === top).map((v) => v[0]));
+    }
+  }
+  return best;
+}
+
 /** The export file: one protocol tag, then results; anything else is refused on import. */
 export interface LlmBenchFile {
   strataLlmBench: 1;
   exportedAt: string;
   results: LlmBenchResult[];
+  /** llama-benchy runs, when any; files from before the runner have none. */
+  benchy?: BenchyResult[];
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -208,7 +423,7 @@ export function validResult(v: unknown): v is LlmBenchResult {
 }
 
 /** Reads an export file's text; the error names what was wrong rather than throwing. */
-export function parseBenchFile(text: string): { results: LlmBenchResult[] } | { error: string } {
+export function parseBenchFile(text: string): { results: LlmBenchResult[]; benchy: BenchyResult[] } | { error: string } {
   let j: unknown;
   try {
     j = JSON.parse(text);
@@ -218,8 +433,21 @@ export function parseBenchFile(text: string): { results: LlmBenchResult[] } | { 
   const f = j as Partial<LlmBenchFile>;
   if (f?.strataLlmBench !== 1 || !Array.isArray(f.results)) return { error: 'Not a Strata Tune LLM benchmark export' };
   const results = f.results.filter(validResult);
-  if (results.length === 0) return { error: 'The file holds no readable result' };
-  return { results: results.map((r) => ({ ...r, imported: true })) };
+  const benchy = (Array.isArray(f.benchy) ? f.benchy : []).filter(validBenchy);
+  if (results.length === 0 && benchy.length === 0) return { error: 'The file holds no readable result' };
+  return { results: results.map((r) => ({ ...r, imported: true })), benchy: benchy.map((r) => ({ ...r, imported: true })) };
+}
+
+/**
+ * A new row replaces the earlier row for the same machine and model of the same origin (this
+ * machine's own, or imported), so a rerun updates the table instead of stacking a second line;
+ * a newer incoming row wins, an older one is dropped.
+ */
+export function supersede<T extends { id: string; measuredAt: string; imported: boolean; machine: LlmMachine }>(rows: T[], incoming: T, modelOf: (r: T) => string): T[] {
+  const same = (r: T) => r.imported === incoming.imported && r.machine.hostname === incoming.machine.hostname && modelOf(r) === modelOf(incoming);
+  const older = rows.filter((r) => same(r) && r.measuredAt > incoming.measuredAt && r.id !== incoming.id);
+  if (older.length) return rows;
+  return [...rows.filter((r) => !same(r)), incoming];
 }
 
 /** Results grouped by model tag, the newest first within a group, so a PC row and a Mac row on the same model sit together. */
@@ -235,13 +463,23 @@ export function groupByModel(results: LlmBenchResult[]): { model: string; result
     .sort((a, b) => a.model.localeCompare(b.model));
 }
 
+/** The sweep's entry at a depth; undefined for rows from before the sweep or a depth that did not fit the window. */
+export const atDepth = (r: LlmBenchResult, depth: number): LlmDepth | undefined => r.depths?.find((d) => d.depth === depth);
+
+/** The main table's columns are the zero-depth ones; the depth columns rank the sweep lines under each row. */
+export const TABLE_COLUMNS = ['gen', 'prefill', 'first', 'load', 'memory', 'gpuW', 'systemW', 'perGpuW', 'perSystemW'];
+
 /** The columns the comparison ranks; `higher` says which way is better. */
 export const COLUMNS: { key: string; label: string; higher: boolean; of: (r: LlmBenchResult) => number | null }[] = [
   { key: 'gen', label: 'Generation', higher: true, of: (r) => r.genTokPerSec },
   { key: 'prefill', label: 'Prefill', higher: true, of: (r) => r.prefillTokPerSec },
+  { key: 'gen4k', label: 'Generation at 4k', higher: true, of: (r) => atDepth(r, 4096)?.genTokPerSec ?? null },
+  { key: 'pp4k', label: 'Prefill at 4k', higher: true, of: (r) => atDepth(r, 4096)?.prefillTokPerSec ?? null },
+  { key: 'gen16k', label: 'Generation at 16k', higher: true, of: (r) => atDepth(r, 16384)?.genTokPerSec ?? null },
+  { key: 'pp16k', label: 'Prefill at 16k', higher: true, of: (r) => atDepth(r, 16384)?.prefillTokPerSec ?? null },
   { key: 'first', label: 'First token', higher: false, of: (r) => r.firstTokenMs },
   { key: 'load', label: 'Load', higher: false, of: (r) => r.loadMs },
-  { key: 'memory', label: 'Model in memory', higher: false, of: (r) => r.memory.residentBytes },
+  { key: 'memory', label: 'Model resident', higher: false, of: (r) => r.memory.residentBytes },
   { key: 'gpuW', label: 'GPU power', higher: false, of: (r) => r.power.gpuAvgW },
   { key: 'systemW', label: 'System power', higher: false, of: (r) => r.power.systemAvgW },
   { key: 'perGpuW', label: 'tok/s per GPU W', higher: true, of: (r) => r.efficiency.tokPerSecPerGpuW },

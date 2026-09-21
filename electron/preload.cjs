@@ -59,9 +59,14 @@ contextBridge.exposeInMainWorld('strata', {
     // Stop: the pending run then answers { error, code: 'cancelled' }.
     cancel: () => ipcRenderer.invoke('llm:cancel'),
     remove: (id) => ipcRenderer.invoke('llm:delete', id),
-    exportFile: (ids) => ipcRenderer.invoke('llm:export', ids),
+    exportFile: () => ipcRenderer.invoke('llm:export'),
     importFile: () => ipcRenderer.invoke('llm:import'),
-    onProgress: on('llm:progress')
+    onProgress: on('llm:progress'),
+    // llama-benchy (eugr/llama-benchy) through uvx against Ollama's OpenAI endpoint: the community table beside the card's rows.
+    benchyStatus: () => ipcRenderer.invoke('llm:benchyStatus'),
+    benchy: (req) => ipcRenderer.invoke('llm:benchy', req),
+    benchyCancel: () => ipcRenderer.invoke('llm:benchyCancel'),
+    onBenchyProgress: on('llm:benchyProgress')
   },
 
   // Frame capture (electron/capture.ts): PresentMon in main, one folder per session on disk.

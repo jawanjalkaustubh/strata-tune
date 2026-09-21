@@ -317,30 +317,30 @@ export const StatsCard: React.FC<Props> = (p) => {
             )}
             {c?.memGbps != null ? (
               <Tile
-                label="memory"
+                label={p.spec.unified ? 'unified memory data rate' : 'VRAM data rate'}
                 value={gbps(c.memGbps)}
                 tag="this card"
                 sub={`reference ${t.memoryGbps} Gbps`}
                 title={c.memSource === 'held' ? 'From the memory clock this card holds under load: a tune above the driver ceiling' : "The driver's memory clock ceiling plus any offset in force; measure to see the clock the card holds under load"}
               />
             ) : (
-              <Tile label="memory" value={`${t.memoryGbps} Gbps`} />
+              <Tile label={p.spec.unified ? 'unified memory data rate' : 'VRAM data rate'} value={`${t.memoryGbps} Gbps`} />
             )}
             {memClockMhz !== null ? (
               <Tile
-                label="memory clock"
+                label="VRAM clock"
                 value={`${memClockMhz} MHz`}
                 tag="this card"
                 sub={t.memoryClockMhz !== null ? `reference ${t.memoryClockMhz} MHz · ${offsetMhz(memClockMhz, t.memoryClockMhz, MEM_GBPS_PER_MHZ[t.vramType])}` : 'no reference clock in the table'}
                 title={`${c!.memSource === 'held' ? 'The memory clock this card holds under load' : "The driver's memory clock ceiling plus any offset in force; measure to see the clock the card holds under load"}, in the MHz GPU-Z and GPU Tweak print (NVML's figure ÷ ${MEM_GBPS_PER_MHZ[t.vramType] / NVML_MEM_RATE_FACTOR} for ${t.vramType}); the reference clock and the offset a tune reads as beneath`}
               />
             ) : (
-              !c && t.memoryClockMhz !== null && <Tile label="memory clock" value={`${t.memoryClockMhz} MHz`} title="Reference design memory clock as GPU-Z and GPU Tweak print it" />
+              !c && t.memoryClockMhz !== null && <Tile label="VRAM clock" value={`${t.memoryClockMhz} MHz`} title="Reference design memory clock as GPU-Z and GPU Tweak print it" />
             )}
             {cardBandwidth !== null ? (
-              <Tile label="bandwidth" value={gb(cardBandwidth)} tag="this card" sub={specBandwidth !== null ? `reference ${gb(specBandwidth)}` : 'no reference figure'} title="Memory data rate x bus width / 8, from this card's own clock" />
+              <Tile label={p.spec.unified ? 'unified memory bandwidth' : 'VRAM bandwidth'} value={gb(cardBandwidth)} tag="this card" sub={specBandwidth !== null ? `reference ${gb(specBandwidth)}` : 'no reference figure'} title="Memory data rate x bus width / 8, from this card's own clock" />
             ) : (
-              <Tile label="bandwidth" value={specBandwidth !== null ? gb(specBandwidth) : 'no figure'} />
+              <Tile label={p.spec.unified ? 'unified memory bandwidth' : 'VRAM bandwidth'} value={specBandwidth !== null ? gb(specBandwidth) : 'no figure'} />
             )}
             {c?.tdpW != null ? (
               <Tile
@@ -431,7 +431,7 @@ export const StatsCard: React.FC<Props> = (p) => {
           {p.npuTops !== null && <Stat label="NPU" value={tops(p.npuTops)} unit="TOPS" note="vendor figure for the CPU's NPU" />}
         </Section>
 
-        <Section title="Memory bandwidth">
+        <Section title={p.integrated ? 'Memory bandwidth' : p.spec?.unified ? 'Unified memory bandwidth' : 'VRAM bandwidth'}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2">
             {p.integrated ? (
               <Stat label="RAM bus" value={p.ramBandwidthGBs ? p.ramBandwidthGBs.toFixed(0) : 'unknown'} unit="GB/s" kind="spec" note="what a model streams from with no discrete GPU: the configured DIMM speed and channel count" />

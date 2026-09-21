@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { api, ipcErrorMessage, type BenchError, type GpuBench, type LlmProgress, type OllamaBench, type OllamaList } from '../api';
-import type { LlmBenchResult } from '../analysis/llm-bench';
+import { api, ipcErrorMessage, type BenchError, type BenchyProgress, type BenchyStatus, type GpuBench, type LlmProgress, type OllamaBench, type OllamaList } from '../api';
+import type { BenchyResult, LlmBenchResult } from '../analysis/llm-bench';
 import { loadSettings, saveSettings, type Settings } from '../settings';
 import { useCollectorStatus } from '../components/useCollectorStatus';
 import { CollectorStatusPill } from '../components/CollectorStatusPill';
@@ -65,7 +65,10 @@ export const Advisor: React.FC = () => {
   /** Stop pressed on a run (plan section 17c): said once, in place of a result, until the next run. */
   const [stopped, setStopped] = useState<'measure' | 'calibrate' | 'llm' | null>(null);
   const [llmResults, setLlmResults] = useState<LlmBenchResult[]>([]);
+  const [benchyResults, setBenchyResults] = useState<BenchyResult[]>([]);
+  const [benchyStatus, setBenchyStatus] = useState<BenchyStatus | null>(null);
   const [llmRunning, setLlmRunning] = useState<LlmProgress | null>(null);
+  const [benchyRunning, setBenchyRunning] = useState<BenchyProgress | null>(null);
   const [llmError, setLlmError] = useState('');
   const [llmNotice, setLlmNotice] = useState('');
   const [settings, setSettings] = useState<Settings>(loadSettings);
@@ -195,37 +198,54 @@ export const Advisor: React.FC = () => {
   useEffect(() => {
     if (!api) return;
     let live = true;
-    api.llm.list().then((r) => live && setLlmResults(r)).catch(() => {});
+    api.llm.list().then((r) => live && (setLlmResults(r.results), setBenchyResults(r.benchy))).catch(() => {});
+    api.llm.benchyStatus().then((r) => live && setBenchyStatus(r)).catch(() => {});
     const off = api.llm.onProgress((p) => live && setLlmRunning(p.phase === 'done' ? null : p));
+    const offBenchy = api.llm.onBenchyProgress((p) => live && setBenchyRunning(p));
     return () => {
       live = false;
       off();
+      offBenchy();
     };
   }, []);
 
+  const machineForLlm = () => ({ gpuName: facts.gpuName, cpuName: facts.cpuName, ramBytes: facts.ramBytes, vramBytes: facts.vramBytes, unified: facts.unified, driver: facts.driver });
   const runLlm = async (model: string) => {
-    if (!api || llmRunning) return;
-    setLlmRunning({ model, phase: 'evict', run: 0, runs: 3 });
+    if (!api || llmRunning || benchyRunning) return;
+    setLlmRunning({ model, phase: 'evict', run: 0, runs: 3, depth: 0 });
     setLlmError('');
     setLlmNotice('');
     setStopped(null);
-    const r = await api.llm.run({
-      model,
-      machine: { gpuName: facts.gpuName, cpuName: facts.cpuName, ramBytes: facts.ramBytes, vramBytes: facts.vramBytes, unified: facts.unified, driver: facts.driver }
-    });
+    const r = await api.llm.run({ model, machine: machineForLlm() });
     if ('error' in r) {
       if (r.code === 'cancelled') setStopped('llm');
       else setLlmError(`${model}: ${r.error}`);
     } else setLlmResults((rows) => [...rows.filter((x) => x.id !== r.id), r]);
     setLlmRunning(null);
   };
+  const runBenchy = async (model: string) => {
+    if (!api || llmRunning || benchyRunning) return;
+    setBenchyRunning({ model, line: 'starting uvx…' });
+    setLlmError('');
+    setLlmNotice('');
+    setStopped(null);
+    const r = await api.llm.benchy({ model, machine: machineForLlm() });
+    if ('error' in r) {
+      if (r.code === 'cancelled') setStopped('llm');
+      else setLlmError(`llama-benchy on ${model}: ${r.error}`);
+    } else setBenchyResults((rows) => [...rows.filter((x) => x.id !== r.id), r]);
+    setBenchyRunning(null);
+  };
+  const stopBenchy = () => void api?.llm.benchyCancel();
   const deleteLlm = async (id: string) => {
     if (!api) return;
-    setLlmResults(await api.llm.remove(id));
+    const r = await api.llm.remove(id);
+    setLlmResults(r.results);
+    setBenchyResults(r.benchy);
   };
   const exportLlm = async () => {
     if (!api) return;
-    const file = await api.llm.exportFile([]);
+    const file = await api.llm.exportFile();
     setLlmNotice(file ? `Written to ${file}; Import it on the other machine.` : '');
   };
   const importLlm = async () => {
@@ -234,22 +254,24 @@ export const Advisor: React.FC = () => {
     if ('error' in r) setLlmError(r.error);
     else {
       setLlmResults(r.results);
+      setBenchyResults(r.benchy);
       setLlmNotice(r.added === 0 ? 'Nothing new in that file.' : `${r.added} row${r.added === 1 ? '' : 's'} imported.`);
     }
   };
 
   // Escape stops whichever run is going, the same as its button.
   useEffect(() => {
-    if (!measuring && calibrating === null && llmRunning === null) return;
+    if (!measuring && calibrating === null && llmRunning === null && benchyRunning === null) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (measuring) stopMeasure();
       if (calibrating !== null) stopCalibrate();
       if (llmRunning !== null) stopLlm();
+      if (benchyRunning !== null) stopBenchy();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [measuring, calibrating, llmRunning]);
+  }, [measuring, calibrating, llmRunning, benchyRunning]);
 
   // Merged over what storage holds now: the PSU form and the Monitor write their own fields in between.
   const setFactor = (calibrationFactor: number | null) => {
@@ -357,6 +379,11 @@ export const Advisor: React.FC = () => {
         onDelete={deleteLlm}
         onExport={exportLlm}
         onImport={importLlm}
+        benchy={benchyResults}
+        benchyStatus={benchyStatus}
+        benchyRunning={benchyRunning}
+        onBenchy={runBenchy}
+        onBenchyStop={stopBenchy}
       />
 
       <BestFor picks={picks} measured={measuredByTag} contextTokens={tokens(contextTokens)} />

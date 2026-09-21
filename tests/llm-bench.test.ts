@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  COLUMNS, LLM_PROTOCOL, PROMPT_BODY, bestOf, groupByModel, median, parseBenchFile, promptForRun, summarise, validResult,
+  COLUMNS, DEPTHS, LLM_PROTOCOL, PROMPT_BODY, atDepth, bestBenchy, bestOf, fillerForDepth, groupBenchy, groupByModel, median, numCtxFor, parseBenchFile, parseBenchyJson, promptForRun, std, summarise, supersede, validBenchy, validResult,
+  type BenchyResult,
   type LlmBenchResult, type LlmMachine, type LlmModel, type LlmRun
 } from '../src/analysis/llm-bench';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { resolveIds } from '../electron/llm-bench';
+import { resolveIds, tokenizerFor } from '../electron/llm-bench';
 import { sensorsOf, type MacmonSample } from '../electron/mac/sensors';
 import { devboxMeta } from './fixtures';
 
@@ -50,7 +51,7 @@ describe('the LLM benchmark protocol', () => {
     const a = promptForRun(1, 3);
     const b = promptForRun(2, 3);
     expect(a).not.toBe(b);
-    expect(a.startsWith('Benchmark run 1 of 3.')).toBe(true);
+    expect(a.startsWith('Benchmark run 1 of 3 at depth 0.')).toBe(true);
     expect(a.endsWith(PROMPT_BODY)).toBe(true);
   });
 
@@ -113,6 +114,19 @@ describe('the comparison', () => {
     expect(COLUMNS.map((c) => c.key)).toContain('load');
   });
 
+  it('a rerun on the same machine and model replaces the earlier row of the same origin; an older incoming row is dropped', () => {
+    const rows = [a, b];
+    const again = { ...a, id: 'pc2', measuredAt: '2026-09-21T10:00:00Z' };
+    const after = supersede(rows, again, (r) => r.model.name);
+    expect(after.map((r) => r.id)).toEqual(['mac', 'pc2']);
+    // An imported row of the same machine does not replace this machine's own, and vice versa.
+    const importedPc = { ...a, id: 'pc-imp', imported: true, measuredAt: '2026-09-22T10:00:00Z' };
+    expect(supersede(after, importedPc, (r) => r.model.name).map((r) => r.id)).toEqual(['mac', 'pc2', 'pc-imp']);
+    // Older than what is there: nothing changes.
+    const stale = { ...a, id: 'pc0', measuredAt: '2026-09-19T10:00:00Z' };
+    expect(supersede(after, stale, (r) => r.model.name).map((r) => r.id)).toEqual(['mac', 'pc2']);
+  });
+
   it('validates rows and reads an export file, marking its rows imported and refusing anything else', () => {
     expect(validResult(a)).toBe(true);
     expect(validResult({ ...a, protocol: 'other' })).toBe(false);
@@ -147,5 +161,117 @@ describe('the sensor ids the run samples', () => {
     expect(ids.cpuW).toBe('/apple/cpu/0/power/package');
     expect(ids.systemW).toBe('/apple/smc/0/power/system');
     expect(ids.gpuMemMiB).toBe('/apple/gpu/0/smalldata/memory-used');
+  });
+
+  it('names an ungated tokenizer for llama-benchy by model family, Qwen for anything unknown', () => {
+    expect(tokenizerFor('qwen35', 'qwen3.8:27b')).toBe('Qwen/Qwen2.5-7B-Instruct');
+    expect(tokenizerFor('gemma3', 'gemma3:27b')).toBe('unsloth/gemma-3-1b-it');
+    expect(tokenizerFor('llama', 'llama3.1:8b')).toBe('unsloth/Llama-3.2-1B-Instruct');
+    expect(tokenizerFor('', 'deepseek-r1:32b')).toBe('deepseek-ai/DeepSeek-R1-Distill-Qwen-7B');
+    expect(tokenizerFor('mystery', 'x:1b')).toBe('Qwen/Qwen2.5-7B-Instruct');
+  });
+});
+
+describe('the context-depth sweep', () => {
+  it('sizes the filler by depth, keeps the prefix first so the cache cannot answer it, and widens the window by the depth', () => {
+    expect(DEPTHS).toEqual([0, 4096, 16384]);
+    expect(fillerForDepth(0)).toBe('');
+    const f4k = fillerForDepth(4096);
+    const f16k = fillerForDepth(16384);
+    expect(f4k.length).toBeGreaterThan(4096 * 4.5);
+    expect(f4k.length).toBeLessThan(4096 * 6.5);
+    expect(f16k.length / f4k.length).toBeGreaterThan(3.5);
+    expect(f16k.length / f4k.length).toBeLessThan(4.5);
+    // Numbered paragraphs, not one string repeated.
+    expect(f4k.startsWith('1. ')).toBe(true);
+    expect(f4k).toContain('\n\n2. ');
+    const deep = promptForRun(2, 3, 4096);
+    expect(deep.startsWith('Benchmark run 2 of 3 at depth 4096.')).toBe(true);
+    expect(deep.endsWith(PROMPT_BODY)).toBe(true);
+    expect(deep).toContain(f4k);
+    expect(promptForRun(1, 3, 0)).not.toContain('Background notes');
+    expect(numCtxFor(0)).toBe(4096);
+    expect(numCtxFor(16384)).toBe(20480);
+    expect(std([100, 110])).toBeCloseTo(7.071, 2);
+    expect(std([5])).toBe(0);
+  });
+
+  it('summarise folds each depth separately, the headline figures being the zero-depth ones, with ± per depth', () => {
+    const r = summarise({
+      id: 'd', measuredAt: '2026-09-20T10:00:00Z', machine: pc, model: qwen,
+      runs: [
+        run(100, 5000, { depth: 0, loadMs: 3000 }), run(110, 5000, { depth: 0, loadMs: 1 }),
+        run(80, 3000, { depth: 4096, loadMs: 1, promptEvalCount: 5000 }), run(82, 3100, { depth: 4096, loadMs: 1, promptEvalCount: 5000 }),
+        run(60, 2000, { depth: 16384, loadMs: 1, promptEvalCount: 17000, promptEvalMs: 8500 })
+      ],
+      idle: [], busy: [], residentBytes: null
+    });
+    expect(r.genTokPerSec).toBeCloseTo(105, 5);
+    expect(r.loadMs).toBe(3000);
+    expect(r.settings.runs).toBe(2);
+    expect(r.depths?.map((d) => d.depth)).toEqual([0, 4096, 16384]);
+    expect(atDepth(r, 0)?.genStd).toBeCloseTo(7.071, 2);
+    expect(atDepth(r, 4096)?.genTokPerSec).toBeCloseTo(81, 5);
+    expect(atDepth(r, 4096)?.promptTokens).toBe(5000);
+    expect(atDepth(r, 16384)?.prefillTokPerSec).toBeCloseTo(2000, 5);
+    expect(atDepth(r, 16384)?.genStd).toBe(0);
+    expect(atDepth(r, 8192)).toBeUndefined();
+    expect(COLUMNS.find((c) => c.key === 'gen16k')?.of(r)).toBeCloseTo(60, 5);
+    // A row from before the sweep answers null for the depth columns and still validates.
+    const old = { ...r, depths: undefined };
+    expect(COLUMNS.find((c) => c.key === 'gen4k')?.of(old)).toBeNull();
+    expect(validResult(old)).toBe(true);
+  });
+});
+
+describe('llama-benchy', () => {
+  const file = JSON.stringify({
+    version: '0.4.0', timestamp: 'x', latency_mode: 'generation', latency_ms: 26.6, model: 'qwen2.5vl:7b',
+    benchmarks: [
+      { concurrency: 1, context_size: 0, prompt_size: 1024, response_size: 256, is_context_prefill_phase: false, pp_throughput: { mean: 3073.1, std: 12.0 }, tg_throughput: { mean: 102.0, std: 0.02 }, peak_throughput: { mean: 102.5, std: 0.5 }, ttfr: { mean: 359.8, std: 1.3 }, est_ppt: { mean: 333.2, std: 1.3 }, e2e_ttft: { mean: 359.8, std: 1.3 } },
+      { concurrency: 1, context_size: 4096, prompt_size: 1024, response_size: 256, is_context_prefill_phase: true, pp_throughput: { mean: 1, std: 0 } },
+      { concurrency: 1, context_size: 4096, prompt_size: 1024, response_size: 256, is_context_prefill_phase: false, pp_throughput: { mean: 2224.5, std: 56.9 }, tg_throughput: { mean: 91.0, std: 2.6 }, peak_throughput: null, ttfr: { mean: 500 }, est_ppt: null, e2e_ttft: null }
+    ]
+  });
+
+  it('reads the JSON file into one row per shape, skipping the context-prefill phases, with ± carried', () => {
+    const p = parseBenchyJson(file);
+    expect('error' in p).toBe(false);
+    if ('error' in p) return;
+    expect(p.version).toBe('0.4.0');
+    expect(p.latencyMs).toBeCloseTo(26.6, 5);
+    expect(p.rows.map((r) => r.contextSize)).toEqual([0, 4096]);
+    expect(p.rows[0].pp).toEqual({ mean: 3073.1, std: 12.0 });
+    expect(p.rows[1].ttfrMs).toEqual({ mean: 500, std: 0 });
+    expect(p.rows[1].peak).toBeNull();
+    expect(parseBenchyJson('nope')).toEqual({ error: 'llama-benchy wrote no JSON' });
+    expect(parseBenchyJson('{"benchmarks":[]}')).toEqual({ error: 'llama-benchy reported no completed test' });
+  });
+
+  it('groups by model with the context sizes seen, ranks pp and tg per size, and travels in the export file', () => {
+    const p = parseBenchyJson(file);
+    if ('error' in p) throw new Error(p.error);
+    const mk = (machine: LlmMachine, id: string, scale: number): BenchyResult => ({
+      id, measuredAt: '2026-09-20T11:00:00Z', machine, model: 'qwen2.5vl:7b', version: '0.4.0', latencyMode: 'generation', latencyMs: 26.6, contextLength: 32768, args: '',
+      rows: p.rows.map((r) => ({ ...r, pp: r.pp && { ...r.pp, mean: r.pp.mean * scale }, tg: r.tg && { ...r.tg, mean: r.tg.mean * scale } })), imported: false
+    });
+    const a = mk(pc, 'pc', 3);
+    const b = mk(mac, 'mac', 1);
+    expect(validBenchy(a)).toBe(true);
+    expect(validBenchy({ ...a, rows: 'x' })).toBe(false);
+    const groups = groupBenchy([b, a]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].contexts).toEqual([0, 4096]);
+    const best = bestBenchy([a, b]);
+    expect(best['pp@0'].has('pc')).toBe(true);
+    expect(best['tg@4096'].has('pc')).toBe(true);
+    expect(best['tg@4096'].has('mac')).toBe(false);
+    const text = JSON.stringify({ strataLlmBench: 1, exportedAt: 'x', results: [], benchy: [a, { junk: 1 }] });
+    const parsed = parseBenchFile(text);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) return;
+    expect(parsed.results).toEqual([]);
+    expect(parsed.benchy).toHaveLength(1);
+    expect(parsed.benchy[0].imported).toBe(true);
   });
 });
