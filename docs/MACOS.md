@@ -79,7 +79,11 @@ The AI Models stats card reads the same on both: Measure's bandwidth and matmul 
 measured the same way (a 1 GiB stream copy, a 4096² matmul), Ollama tok/s is Ollama's own
 count, and the tok/s estimates use the same bandwidth-bound model. No reference row exists
 for Apple GPUs in `gpus.json` (Apple publishes no tensor-throughput figures), so the card
-shows the measurements and says so instead of an advertised TOPS headline.
+shows the measurements and says so instead of an advertised TOPS headline. The int8 figure is
+labelled plain TOPS, not "AI TOPS": a PC's AI TOPS headline is fp4 with 2:1 sparsity (an RTX
+5090's 3,352), four times its dense INT8 spec (838), and the PC card now prints that dense
+INT8 row as *comparable* right under its headline. Even that row is a spec-sheet peak where
+the Mac's is what the GPU achieved on a real matmul, so a measured PC would land under it too.
 
 ## Troubleshooting
 

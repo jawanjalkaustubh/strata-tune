@@ -218,6 +218,10 @@ export const StatsCard: React.FC<Props> = (p) => {
   const memClockMhz = c?.memMhz != null && t ? memClockMhzOf(c.memMhz, t.vramType) : null;
   const precisions = PRECISIONS.filter((x) => p.spec?.tops[x] !== undefined || p.spec?.sparse[x] !== undefined);
   const lead = p.spec ? headline(p.spec) : null;
+  // Plan 17d: a Mac's measured figure is dense INT8, so the PC card shows its dense INT8 row right under a
+  // headline that is anything else (NVIDIA's is fp4 with sparsity: 4x the like-for-like number on Blackwell).
+  const comparable = lead && p.spec?.tops.int8 !== undefined && !(lead.precision === 'int8' && lead.sparse === false) ? p.spec.tops.int8 : null;
+  const comparableTitle = `Dense INT8 at ${p.spec?.denseDerived ? 'the figures derived from the advertised headline' : "the vendor's own dense table"}: the precision a Mac's Measure reports. Still a peak at the reference boost, not a measurement; a Mac's number is what its GPU achieved on a real matmul, so expect a PC to land under this row too when measured.`;
   const scale = p.spec ? ownScale(p.spec, c) : null;
   const own = (v: number) => (scale ? v * scale.factor : v);
   const ownTag: Provenance = scale ? 'this card' : 'spec';
@@ -253,10 +257,10 @@ export const StatsCard: React.FC<Props> = (p) => {
             ) : measured?.matmulTopsInt8 != null ? (
               <>
                 <span className="figure text-2xl leading-7 text-studio-text">{tops(measured.matmulTopsInt8)}</span>
-                <span className="text-mini text-studio-muted">AI TOPS</span>
+                <span className="text-mini text-studio-muted">TOPS</span>
                 <span className="label">int8 · dense · measured on this GPU</span>
-                <Tag kind="measured" title={`The GPU's matrix path (Metal 4 tensor ops) at int8 with int32 accumulate, a ${measured.matmulN ?? 4096}² matmul on this machine, ${when(measured)}. ${p.spec.vendor} advertises no TOPS figure; a PC's headline is its vendor's peak, often at fp4 with sparsity, so compare precision for precision.`} />
-                <span className="text-[10px] text-studio-subtle">no vendor figure; measured, dense int8</span>
+                <Tag kind="measured" title={`The GPU's matrix path (Metal 4 tensor ops) at int8 with int32 accumulate, a ${measured.matmulN ?? 4096}² matmul on this machine, ${when(measured)}. ${p.spec.vendor} advertises no TOPS figure. A PC's "AI TOPS" headline is its vendor's peak at fp4 with 2:1 sparsity (an RTX 5090's 3,352); its dense INT8 row (838 for that card) is the like-for-like figure, and even that is a spec-sheet peak where this is what the GPU achieved.`} />
+                <span className="text-[10px] text-studio-subtle">not an "AI TOPS" headline: compare with a PC's dense INT8 row, not its fp4-sparse figure</span>
               </>
             ) : measured?.matmulTflopsFp16 != null ? (
               <>
@@ -273,6 +277,16 @@ export const StatsCard: React.FC<Props> = (p) => {
           {lead && scale && (
             <div className="text-[10px] text-studio-subtle">
               {p.spec.vendor} {lead.advertised ? 'advertises' : 'publishes'} <span className="figure">{grouped(lead.value)}</span> at the {t.boostMhz} MHz reference boost <Tag kind="spec" />
+            </div>
+          )}
+          {comparable && (
+            <div className="flex items-baseline gap-2 flex-wrap text-[10px] text-studio-subtle" title={comparableTitle}>
+              <span className="label">comparable</span>
+              <span className="figure text-mini text-studio-text">{grouped(own(comparable))}</span>
+              <span>TOPS</span>
+              <span className="label">INT8 · dense</span>
+              <Tag kind={denseKind} />
+              <span>the row to set beside a Mac's measured figure; the {LABEL[lead!.precision]}{lead!.sparse ? ' sparse' : ''} headline is not it</span>
             </div>
           )}
           <div className="text-mini text-studio-muted figure">

@@ -59,8 +59,11 @@ describe('Apple Silicon on the AI stats card', () => {
     const html = renderToStaticMarkup(
       <StatsCard gpuName={NAME} gpuColour="#A2AAAD" spec={spec} card={null} laptop integrated={false} ramBandwidthGBs={548} latest={null} npuTops={null} bench={bench} applies measuring={false} canMeasure error="" onMeasure={() => {}} />
     );
-    expect(html).toContain('AI TOPS');
+    // The unit beside the figure is plain TOPS; "AI TOPS" appears only in the caption that says not to compare with one.
+    expect(html).toContain('<span class="text-mini text-studio-muted">TOPS</span>');
+    expect(html).not.toContain('>AI TOPS<');
     expect(html).toContain('int8 · dense · measured on this GPU');
+    expect(html).toContain("compare with a PC&#x27;s dense INT8 row");
     expect(html).toContain('107');
     expect(html).toContain('5,120');
     expect(html).toContain('614');
