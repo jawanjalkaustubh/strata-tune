@@ -16,7 +16,7 @@ updating() { [ "$UPDATING" = 1 ] || notify "Updating after a code change (about 
 # and this launch only focuses its window (the single-instance lock). Nothing is reinstalled or rebuilt then.
 ELECTRON_BIN="$(pwd -P)/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 RUNNING=0
-pgrep -f "$(printf '%s' "$ELECTRON_BIN" | sed 's/[][\.*^$()+?{}|]/\\&/g')" >/dev/null 2>&1 && RUNNING=1
+pgrep -af "$(printf '%s' "$ELECTRON_BIN" | sed 's/[][\.*^$()+?{}|]/\\&/g')" >/dev/null 2>&1 && RUNNING=1
 [ "$RUNNING" = 1 ] && echo "[*] Strata Tune is already running from this checkout: focusing it (no reinstall or rebuild while it runs)"
 [ -d node_modules/electron/dist ] || { echo "[*] First run: installing dependencies..."; npm ci --no-audit --no-fund || { read -r -p "npm ci failed. Press Return." _; exit 1; }; }
 # A pull that changed the dependencies reinstalls them (npm ci stamps node_modules/.package-lock.json).
