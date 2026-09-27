@@ -12,6 +12,7 @@ import * as path from 'path';
 import { app, type IpcMain } from 'electron';
 import type { CollectorClient } from './collector';
 import { macWorkerPath } from './mac/paths';
+import { keepAwakeOnMac } from './keepAwake';
 
 /** One --bench --json line from the worker plus what the cache needs to decide reuse. */
 export interface GpuBench {
@@ -204,7 +205,7 @@ let inFlight: Promise<GpuBench | BenchError> | null = null;
 
 /** A second Measure while one runs joins it: two kernels on the card at once would measure each other. */
 function benchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
-  if (!inFlight) inFlight = doBenchGpu(driver, collector).finally(() => (inFlight = null));
+  if (!inFlight) inFlight = keepAwakeOnMac('measure', () => doBenchGpu(driver, collector)).finally(() => (inFlight = null));
   return inFlight;
 }
 

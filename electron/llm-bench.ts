@@ -19,6 +19,7 @@ import { spawn, execFile, execFileSync, type ChildProcess } from 'child_process'
 import { app, dialog, BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from 'electron';
 import type { CollectorClient } from './collector';
 import { KEEP_ALIVE, OLLAMA, ollamaError, ollamaJson, type BenchError } from './bench';
+import { keepAwakeOnMac } from './keepAwake';
 import { powerModeOf } from './mac/snapshot';
 import type { GpuFacts, SensorMeta, Tick } from '../src/collector-types';
 import {
@@ -613,7 +614,7 @@ export function registerLlmBenchIpc(ipcMain: IpcMain, collector: () => Collector
   ipcMain.handle('llm:list', () => readAll());
   ipcMain.handle('llm:run', (_e, req: LlmBenchRequest) => {
     // A second Run while one goes joins it: two generations on the card at once would time each other.
-    if (!inFlight) inFlight = run(req, collector(), (p) => send('llm:progress', p)).finally(() => (inFlight = null));
+    if (!inFlight) inFlight = keepAwakeOnMac('llm benchmark', () => run(req, collector(), (p) => send('llm:progress', p))).finally(() => (inFlight = null));
     return inFlight;
   });
   ipcMain.handle('llm:cancel', () => cancel());
@@ -627,7 +628,7 @@ export function registerLlmBenchIpc(ipcMain: IpcMain, collector: () => Collector
   ipcMain.handle('llm:import', (e) => importResults(e));
   ipcMain.handle('llm:benchyStatus', () => benchyStatus());
   ipcMain.handle('llm:benchy', (_e, req: LlmBenchRequest) => {
-    if (!benchyInFlight) benchyInFlight = runBenchy(req, (p) => send('llm:benchyProgress', p)).finally(() => (benchyInFlight = null));
+    if (!benchyInFlight) benchyInFlight = keepAwakeOnMac('llama-benchy', () => runBenchy(req, (p) => send('llm:benchyProgress', p))).finally(() => (benchyInFlight = null));
     return benchyInFlight;
   });
   ipcMain.handle('llm:benchyCancel', () => cancelBenchy());

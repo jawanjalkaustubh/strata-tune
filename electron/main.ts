@@ -12,6 +12,7 @@ import { registerTuneIpc } from './tune';
 import { legalFilePaths, registerAboutIpc } from './about';
 import { acceptanceFile, legalStatus, registerLegalIpc } from './legal';
 import { GameMode } from './game-mode';
+import { keepAwakeOnMac, releaseAll } from './keepAwake';
 import type { CollectorState } from '../src/api';
 import type { LoadKind, Tick } from '../src/collector-types';
 
@@ -188,7 +189,7 @@ function registerCollectorIpc(c: CollectorClient) {
   ipcMain.handle('collector:sensorsWindow', (_e, seconds: number) => c.sensorsWindow(seconds));
   ipcMain.handle('collector:gpu', () => c.gpu());
   ipcMain.handle('collector:hogs', (_e, seconds: number) => c.hogs(seconds));
-  ipcMain.handle('collector:load', (_e, kind: LoadKind, seconds: number) => c.load(kind, seconds));
+  ipcMain.handle('collector:load', (_e, kind: LoadKind, seconds: number) => keepAwakeOnMac(`load ${kind}`, () => c.load(kind, seconds)));
   ipcMain.handle('collector:cancelLoad', () => c.cancelLoad());
   // A tick subscriber is a live session: the Monitor must keep its 2 Hz while a game is in front.
   const dropLease = () => {
@@ -418,6 +419,8 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
   app.on('before-quit', (e) => {
     if (quitting) return;
     quitting = true;
+    // macOS: whatever run is still in flight lets the Mac sleep again (Windows' holds live in the collector and the capture).
+    if (process.platform === 'darwin') releaseAll();
     e.preventDefault();
     Promise.race([shutdown(), delay(5000)]).finally(() => app.quit());
   });

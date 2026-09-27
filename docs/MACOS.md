@@ -65,6 +65,10 @@ first file on 26 and the app then fails with "Electron failed to install correct
   measured dense rather than a vendor's sparse peak); `--load light|heavy|cpu|fillrate` are the
   audit's kernels; `--info` the device facts. On the M5 Max 40-core: 549 GB/s, 15 / 65 TFLOPS, 122 int8 TOPS.
 - **Time base**: microseconds from the Mach monotonic clock (`Health.qpcFrequency` = 1e6).
+- **No sleeping mid-run**: Measure, the audit's loads, the LLM benchmark and llama-benchy
+  hold the Mac awake while they run (`electron/keepAwake.ts`, a `prevent-app-suspension`
+  power-save blocker: the display may still sleep), released when the run ends, fails or
+  the app quits.
 - **Tune routes**: `/tune/state` answers `nvapi.available: false` with the reason; every
   `/tune/*` write is 403. `/timers` answers nulls: macOS has no timer-resolution setting.
 
