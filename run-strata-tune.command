@@ -7,9 +7,15 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 [ -d /opt/homebrew/opt/node@24/bin ] && export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
 command -v node >/dev/null 2>&1 || { echo "Node is not installed: brew install node@24 && brew link --overwrite node@24" >&2; read -r -p "Press Return to close." _; exit 1; }
 [ -d node_modules/electron/dist ] || { echo "[*] First run: installing dependencies..."; npm ci --no-audit --no-fund || { read -r -p "npm ci failed. Press Return." _; exit 1; }; }
-[ -f dist-electron/main.js ] || { echo "[*] First run: building..."; npm run build || { read -r -p "npm run build failed. Press Return." _; exit 1; }; }
+# Build on the first run and whenever the sources are newer than the build (after a git pull).
+if [ ! -f dist-electron/main.js ] || [ -n "$(find electron src index.html package.json vite.config.ts -newer dist-electron/main.js 2>/dev/null | head -1)" ]; then
+  echo "[*] Building..."; npm run build || { read -r -p "npm run build failed. Press Return." _; exit 1; }
+fi
 # The Swift worker (Metal bench, audit loads) and macmon (sensors): built and installed by scripts/mac/setup.sh; a missing worker is built here.
-[ -x collector/mac/.build/release/strata-tune-mac-worker ] || { echo "[*] Building the macOS worker..."; scripts/mac/build-collector.sh || echo "[!] worker build failed; AI Models Measure and the audit loads are unavailable until it builds"; }
+W=collector/mac/.build/release/strata-tune-mac-worker
+if [ ! -x "$W" ] || [ -n "$(find collector/mac/Sources collector/mac/Package.swift -newer "$W" 2>/dev/null | head -1)" ]; then
+  echo "[*] Building the macOS worker..."; scripts/mac/build-collector.sh || echo "[!] worker build failed; AI Models Measure and the audit loads are unavailable until it builds"
+fi
 command -v macmon >/dev/null 2>&1 || echo "[!] macmon is not installed (brew install macmon): the Monitor shows only the battery and GPU memory"
 # Name and icon. In development the app runs inside the stock Electron bundle, which macOS
 # shows as "Electron" in the Dock, the menu bar and the app switcher. The bundle is only
