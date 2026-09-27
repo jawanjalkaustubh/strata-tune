@@ -167,6 +167,8 @@ let collector: CollectorClient | null = null;
 // Audit page and an idle app cost nothing. Single window, so a flag suffices;
 // a reload of the renderer starts it over unsubscribed.
 let ticksWanted = false;
+/** macOS: the subscribed page's sensor lease (2 Hz macmon); the sensors drop to 5 s once it goes. Nothing on Windows. */
+let ticksLease: { release: () => void } | null = null;
 
 function sendToRenderer(channel: string, payload: CollectorState | Tick) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
@@ -184,17 +186,24 @@ function registerCollectorIpc(c: CollectorClient) {
   ipcMain.handle('collector:load', (_e, kind: LoadKind, seconds: number) => c.load(kind, seconds));
   ipcMain.handle('collector:cancelLoad', () => c.cancelLoad());
   // A tick subscriber is a live session: the Monitor must keep its 2 Hz while a game is in front.
+  const dropLease = () => {
+    ticksLease?.release();
+    ticksLease = null;
+  };
   ipcMain.on('collector:subscribe', () => {
     ticksWanted = true;
     setLiveSession(true);
+    ticksLease ??= c.lease('monitor');
   });
   ipcMain.on('collector:unsubscribe', () => {
     ticksWanted = false;
     setLiveSession(false);
+    dropLease();
   });
   mainWindow?.webContents.on('did-start-loading', () => {
     ticksWanted = false;
     setLiveSession(false);
+    dropLease();
   });
   c.on('status', (s: CollectorState) => sendToRenderer('collector:status', s));
   c.on('tick', (t: Tick) => {

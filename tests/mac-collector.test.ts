@@ -38,6 +38,7 @@ describe('the macOS collector over the wire', () => {
   let dir: string;
   let mac: MacCollector;
   let h: Handshake;
+  let sensors: MacSensors;
   const client = () => {
     const c = new CollectorClient();
     Object.assign(c, { handshake: h });
@@ -50,7 +51,7 @@ describe('the macOS collector over the wire', () => {
     const worker = join(dir, 'fake-worker.sh');
     writeFileSync(worker, '#!/bin/sh\n[ "$1" = "--info" ] && { echo \'{"device":"Apple Test","luid":"1","unified":true,"recommendedMaxWorkingSetBytes":805306368,"maxBufferBytes":1}\'; exit 0; }\nsleep "$4"\n');
     chmodSync(worker, 0o755);
-    const sensors = new MacSensors({ macmon: null, chip: 'Apple Test', gpuTotalMiB: 768, pollers: false, tickMs: 20 });
+    sensors = new MacSensors({ macmon: null, chip: 'Apple Test', gpuTotalMiB: 768, pollers: false, tickMs: 20, idleTickMs: 50 });
     mac = new MacCollector({ version: 'test', dataDir: dir, workerPath: worker, macmonPath: null, sensors, snapshot: () => Promise.resolve(SNAPSHOT), logicalCpus: 4 });
     h = await mac.start();
     mac.feed(sample);
@@ -114,6 +115,8 @@ describe('the macOS collector over the wire', () => {
     expect(run.exitCode).toBe(0);
     expect(run.cpuSamples.length).toBeGreaterThanOrEqual(2);
     expect(run.cpuSamples[0].packageW).toBe(5);
+    // The run held the sensors at the leased rate and let them go when it ended.
+    expect(sensors.leaseReasons).toEqual([]);
   });
 
   it('refuses a bad load request and a second run while one is going', async () => {

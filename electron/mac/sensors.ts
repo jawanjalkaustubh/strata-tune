@@ -309,19 +309,57 @@ export interface MacSensorsOptions {
   facts?: Partial<ChipFacts>;
   /** Metal's recommended working set, the "GPU Memory Total" row; null leaves the memory rows out. */
   gpuTotalMiB: number | null;
+  /**
+   * The chip's facts are still being read (the collector listens before macmon's soc info and the
+   * worker's --info answer): Health.warming holds until setFacts() lands, so the Monitor's last
+   * sensor-list fetch, the one at the end of warming, carries the final names.
+   */
+  factsPending?: boolean;
   /** Off in tests: no ioreg polling, no macmon; samples arrive through feed(). */
   pollers?: boolean;
+  /** The fallback tick when there is no macmon to pace the rows: at the leased rate, and with no lease. */
   tickMs?: number;
+  idleTickMs?: number;
+  /** How long the leased rate outlives its last lease: a page switch releases one and takes another. */
+  lingerMs?: number;
 }
 
-const MACMON_INTERVAL_MS = 500;
-const IOREG_POLL_MS = 2000;
+/** macmon's interval while anything reads the sensors (a lease) and while nothing does. */
+export const LEASED_MS = 500;
+export const IDLE_MS = 5000;
+/** The GPU's memory in use is a 45 KB ioreg dump: read only while leased. */
+export const GPU_MEMORY_POLL_MS = 2000;
+/** The battery changes slowly: read every 30 s whatever the rate. */
+export const BATTERY_POLL_MS = 30_000;
 const MACMON_RESTART_MS = 5000;
+const LINGER_MS = 3000;
+const FRESH_TIMEOUT_MS = 3000;
+
+/** A reader of the sensors at the leased rate: the Monitor page, a load run, Measure, the LLM benchmark. */
+export interface SensorLease {
+  readonly reason: string;
+  /** Idempotent: a second call is nothing. */
+  release(): void;
+}
+
+/** What the source runs now; null is "not at all". Tests read it with pollers off. */
+export interface SensorSchedule {
+  macmonMs: number | null;
+  gpuMemoryMs: number | null;
+  batteryMs: number;
+  fallbackTickMs: number | null;
+}
 
 /**
- * The live source. `tick` is emitted at 2 Hz with a SensorRow; `meta()` is the list for
- * /sensors/meta and grows as sources answer (Health.warming until macmon's first sample, or
- * at once when macmon is absent).
+ * The live source. `tick` is emitted with a SensorRow each time macmon prints a line (a timer
+ * paces the rows only when macmon is absent), so every row is a new reading and none is a
+ * repeat of the last; `meta()` is the list for /sensors/meta and grows as sources answer
+ * (Health.warming until macmon's first sample and the chip's facts).
+ *
+ * A system monitor must itself be cheap, so the rate follows the readers. While any lease is
+ * held (acquire()), macmon samples every 500 ms and the GPU's memory is read every 2 s; with
+ * none, macmon samples every 5 s and the GPU's memory is not read. The battery is read every
+ * 30 s either way. macmon cannot change its interval while it runs, so a rate change restarts it.
  */
 export class MacSensors extends EventEmitter {
   private sample: MacmonSample | null = null;
@@ -331,46 +369,126 @@ export class MacSensors extends EventEmitter {
   private latestRow: SensorRow = { qpc: qpcNow(), values: {} };
   readonly ring = new Ring();
   private child: ChildProcess | null = null;
-  private timers: NodeJS.Timeout[] = [];
+  private started = false;
   private stopped = false;
+  private factsPending: boolean;
+  private readonly leases = new Set<SensorLease>();
+  private leased = false;
+  private linger: NodeJS.Timeout | null = null;
+  private restart: NodeJS.Timeout | null = null;
+  private gpuMemTimer: NodeJS.Timeout | null = null;
+  private batteryTimer: NodeJS.Timeout | null = null;
+  private fallbackTimer: NodeJS.Timeout | null = null;
+  /** Bumped at every macmon start; `leasedGeneration` is the process started at the leased interval, `sampleGeneration` the one the last sample came from. */
+  private generation = 0;
+  private leasedGeneration = -1;
+  private sampleGeneration = -1;
+  private freshWaiters: (() => void)[] = [];
   /** macmon is running and has answered at least once. */
   up = false;
-  /** The first macmon sample has not arrived (false at once when macmon is absent). */
-  warming: boolean;
   lastError: string | null = null;
 
-  private readonly facts: ChipFacts;
+  private facts: ChipFacts;
 
   constructor(private readonly opts: MacSensorsOptions) {
     super();
     this.facts = chipFacts(opts.chip, opts.facts);
-    this.warming = opts.macmon !== null;
+    this.factsPending = !!opts.factsPending;
     if (opts.gpuTotalMiB !== null) this.gpuMem = { usedMiB: 0, totalMiB: opts.gpuTotalMiB };
   }
 
+  /** The first macmon sample has not arrived, or the chip's facts have not (without macmon, only the facts). */
+  get warming(): boolean {
+    return this.factsPending || (this.opts.macmon !== null && this.sample === null);
+  }
+
   start() {
+    this.started = true;
     this.stopped = false;
     if (this.opts.pollers !== false) {
       this.spawnMacmon();
-      this.pollIoreg();
-      this.timers.push(setInterval(() => this.pollIoreg(), IOREG_POLL_MS));
+      this.pollBattery();
+      this.batteryTimer = setInterval(() => this.pollBattery(), BATTERY_POLL_MS);
     }
-    this.timers.push(setInterval(() => this.tick(), this.opts.tickMs ?? MACMON_INTERVAL_MS));
+    this.armGpuMemory();
+    this.armFallback();
   }
 
   stop() {
     this.stopped = true;
-    for (const t of this.timers) clearInterval(t);
-    this.timers = [];
-    this.child?.kill();
+    for (const t of [this.linger, this.restart]) if (t) clearTimeout(t);
+    for (const t of [this.gpuMemTimer, this.batteryTimer, this.fallbackTimer]) if (t) clearInterval(t);
+    this.linger = this.restart = this.gpuMemTimer = this.batteryTimer = this.fallbackTimer = null;
+    const child = this.child;
     this.child = null;
+    child?.kill();
+    this.resolveFresh();
   }
 
-  /** A macmon sample from the stream (or a test). */
-  feed(sample: MacmonSample) {
+  /** The chip's facts once macmon's soc info and the worker's --info have answered; rows carry the final names from here on. */
+  setFacts(chip: string, facts: Partial<ChipFacts>, gpuTotalMiB: number | null) {
+    this.facts = chipFacts(chip, facts);
+    this.gpuMem = gpuTotalMiB === null ? null : { usedMiB: this.gpuMem?.usedMiB ?? 0, totalMiB: gpuTotalMiB };
+    this.factsPending = false;
+    this.rebuild();
+    this.armGpuMemory();
+  }
+
+  /** Holds the leased rate until release(); the first lease restarts macmon at 500 ms. */
+  acquire(reason: string): SensorLease {
+    const lease: SensorLease = {
+      reason,
+      release: () => {
+        if (this.leases.delete(lease)) this.leasesChanged();
+      }
+    };
+    this.leases.add(lease);
+    this.leasesChanged();
+    return lease;
+  }
+
+  get leaseReasons(): string[] {
+    return [...this.leases].map((l) => l.reason);
+  }
+
+  get rate(): 'leased' | 'idle' {
+    return this.leased ? 'leased' : 'idle';
+  }
+
+  get schedule(): SensorSchedule {
+    return {
+      macmonMs: this.opts.macmon === null ? null : this.leased ? LEASED_MS : IDLE_MS,
+      gpuMemoryMs: this.leased && this.gpuMem !== null ? GPU_MEMORY_POLL_MS : null,
+      batteryMs: BATTERY_POLL_MS,
+      fallbackTickMs: this.opts.macmon !== null ? null : this.leased ? this.opts.tickMs ?? LEASED_MS : this.opts.idleTickMs ?? IDLE_MS
+    };
+  }
+
+  /**
+   * Resolves once a sample taken at the leased rate has arrived: at once when the last one
+   * already is, or when there is no macmon to wait for; after the timeout otherwise (macmon slow
+   * to restart). A load run takes its idle reference after this, never from a 5 s-old sample.
+   */
+  whenFresh(timeoutMs = FRESH_TIMEOUT_MS): Promise<void> {
+    if (this.opts.macmon === null || this.stopped || (this.leased && this.sampleGeneration === this.leasedGeneration)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.freshWaiters = this.freshWaiters.filter((w) => w !== done);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      this.freshWaiters.push(done);
+    });
+  }
+
+  /** A macmon sample from the stream (or a test): a new row, emitted as a tick. */
+  feed(sample: MacmonSample, generation = this.generation) {
     this.sample = sample;
+    this.sampleGeneration = generation;
     this.up = true;
-    this.warming = false;
+    this.tick();
+    if (this.leased && generation === this.leasedGeneration) this.resolveFresh();
   }
 
   feedBattery(b: BatteryReading | null) {
@@ -394,20 +512,92 @@ export class MacSensors extends EventEmitter {
     return typeof v === 'number' && Number.isFinite(v) ? v : null;
   }
 
-  private tick() {
+  private rebuild() {
     this.built = sensorsOf(this.facts, this.sample, this.gpuMem, this.battery);
     this.latestRow = { qpc: qpcNow(), values: this.built.values };
+  }
+
+  private tick() {
+    this.rebuild();
     this.ring.push(this.latestRow);
     this.emit('tick', this.latestRow);
   }
 
+  private resolveFresh() {
+    for (const w of [...this.freshWaiters]) w();
+  }
+
+  private leasesChanged() {
+    if (this.leases.size > 0) {
+      if (this.linger) clearTimeout(this.linger);
+      this.linger = null;
+      if (!this.leased) this.setLeased(true);
+      return;
+    }
+    if (!this.leased || this.linger) return;
+    const ms = this.opts.lingerMs ?? LINGER_MS;
+    if (ms <= 0) return this.setLeased(false);
+    this.linger = setTimeout(() => {
+      this.linger = null;
+      if (this.leases.size === 0) this.setLeased(false);
+    }, ms);
+  }
+
+  private setLeased(on: boolean) {
+    this.leased = on;
+    if (!this.started || this.stopped) return;
+    this.restartMacmon();
+    this.armGpuMemory();
+    this.armFallback();
+  }
+
+  /** At the new interval. The old process's exit is ours, not a crash: it is forgotten before it is killed. */
+  private restartMacmon() {
+    if (this.opts.macmon === null) return;
+    const old = this.child;
+    this.child = null;
+    old?.kill();
+    if (this.restart) clearTimeout(this.restart);
+    this.restart = null;
+    if (this.opts.pollers === false) this.nextGeneration();
+    else this.spawnMacmon();
+  }
+
+  private nextGeneration(): number {
+    this.generation += 1;
+    if (this.leased) this.leasedGeneration = this.generation;
+    return this.generation;
+  }
+
+  private armGpuMemory() {
+    const ms = this.opts.pollers !== false && this.started && !this.stopped ? this.schedule.gpuMemoryMs : null;
+    if (ms !== null && !this.gpuMemTimer) {
+      this.pollGpuMemory();
+      this.gpuMemTimer = setInterval(() => this.pollGpuMemory(), ms);
+    } else if (ms === null && this.gpuMemTimer) {
+      clearInterval(this.gpuMemTimer);
+      this.gpuMemTimer = null;
+    }
+  }
+
+  /** Without macmon nothing prints a line to pace the rows (the battery and GPU memory still change): a timer does, at the same two rates. */
+  private armFallback() {
+    if (this.fallbackTimer) clearInterval(this.fallbackTimer);
+    this.fallbackTimer = null;
+    const ms = this.started && !this.stopped ? this.schedule.fallbackTickMs : null;
+    if (ms !== null) this.fallbackTimer = setInterval(() => this.tick(), ms);
+  }
+
   private spawnMacmon() {
-    if (this.stopped || !this.opts.macmon) return;
+    if (this.stopped || !this.opts.macmon || this.opts.pollers === false) return;
+    const generation = this.nextGeneration();
     let buffer = '';
-    const child = spawn(this.opts.macmon, ['pipe', '-i', String(MACMON_INTERVAL_MS)], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(this.opts.macmon, ['pipe', '-i', String(this.leased ? LEASED_MS : IDLE_MS)], { stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child;
     child.stdout.setEncoding('utf-8');
     child.stdout.on('data', (d: string) => {
+      // A line from a process already replaced at another rate is dropped.
+      if (this.child !== child) return;
       buffer += d;
       let nl: number;
       while ((nl = buffer.indexOf('\n')) >= 0) {
@@ -415,7 +605,7 @@ export class MacSensors extends EventEmitter {
         buffer = buffer.slice(nl + 1);
         if (!line.startsWith('{')) continue;
         try {
-          this.feed(JSON.parse(line) as MacmonSample);
+          this.feed(JSON.parse(line) as MacmonSample, generation);
         } catch {
           /* a partial or foreign line */
         }
@@ -430,21 +620,28 @@ export class MacSensors extends EventEmitter {
       this.up = false;
       this.lastError = why;
       console.warn(`[mac-collector] macmon ${why}; restarting in ${MACMON_RESTART_MS / 1000} s`);
-      if (!this.stopped) this.timers.push(setTimeout(() => this.spawnMacmon(), MACMON_RESTART_MS));
+      if (!this.stopped) {
+        this.restart = setTimeout(() => {
+          this.restart = null;
+          this.spawnMacmon();
+        }, MACMON_RESTART_MS);
+      }
     };
     child.on('error', (e) => gone(e.message));
     child.on('exit', (code) => gone(`exited ${code}${stderr.trim() ? `: ${stderr.trim().split('\n').pop()}` : ''}`));
   }
 
-  private pollIoreg() {
+  private pollBattery() {
     execFile('ioreg', ['-r', '-c', 'AppleSmartBattery', '-d', '1'], { timeout: 4000 }, (err, out) => {
       if (!err) this.battery = parseBattery(String(out));
     });
-    if (this.gpuMem) {
-      execFile('ioreg', ['-r', '-c', 'IOAccelerator', '-d', '1'], { timeout: 4000, maxBuffer: 4 * MIB }, (err, out) => {
-        const used = err ? null : parseGpuMemoryUsed(String(out));
-        if (used !== null) this.feedGpuMemoryUsed(used);
-      });
-    }
+  }
+
+  private pollGpuMemory() {
+    if (!this.gpuMem) return;
+    execFile('ioreg', ['-r', '-c', 'IOAccelerator', '-d', '1'], { timeout: 4000, maxBuffer: 4 * MIB }, (err, out) => {
+      const used = err ? null : parseGpuMemoryUsed(String(out));
+      if (used !== null) this.feedGpuMemoryUsed(used);
+    });
   }
 }

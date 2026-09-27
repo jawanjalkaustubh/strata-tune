@@ -1,16 +1,16 @@
 /**
  * POST /load on macOS: the Swift worker's kernels (heavy/light matmul and spin, the all-core
- * FMA loop, the fill-rate render) with the GPU or CPU sampled at 2 Hz from the sensor stream,
- * so src/components/audit/run.ts sees the same LoadRun it gets from the Windows collector.
+ * FMA loop, the fill-rate render) with the GPU or CPU sampled from the sensor stream, one sample
+ * per macmon row (2 Hz: the run holds a sensor lease for its length), so
+ * src/components/audit/run.ts sees the same LoadRun it gets from the Windows collector.
  * Cancel kills the worker and keeps the samples (plan section 17c).
  */
 import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import type { LoadKind, LoadRun, LoadRunRequest } from '../../src/collector-types';
-import { IDS, qpcNow, type MacSensors } from './sensors';
+import { IDS, qpcNow, type MacSensors, type SensorLease } from './sensors';
 
 const KINDS: LoadKind[] = ['light', 'heavy', 'cpu', 'fillrate'];
-const SAMPLE_MS = 500;
 const MAX_SECONDS = 600;
 
 export interface StartRefusal {
@@ -21,7 +21,9 @@ export interface StartRefusal {
 interface Live {
   run: LoadRun;
   child: ChildProcess | null;
-  timer: NodeJS.Timeout | null;
+  lease: SensorLease | null;
+  /** Unsubscribes the run from the sensor ticks. */
+  off: (() => void) | null;
   stdout: string;
   stderr: string;
 }
@@ -33,7 +35,7 @@ export class LoadRunner {
 
   constructor(private readonly worker: string, private readonly sensors: MacSensors) {}
 
-  start(req: Partial<LoadRunRequest>): LoadRun | StartRefusal {
+  async start(req: Partial<LoadRunRequest>): Promise<LoadRun | StartRefusal> {
     const kind = req.kind as LoadKind;
     const seconds = Number(req.seconds);
     if (!KINDS.includes(kind)) return { status: 400, error: `unknown load kind ${String(req.kind)}` };
@@ -43,9 +45,14 @@ export class LoadRunner {
 
     const id = `mac-${Date.now().toString(36)}-${this.next++}`;
     const run: LoadRun = { id, kind, seconds, state: 'running', exitCode: null, qpcStart: qpcNow(), qpcEnd: null, gpuSamples: [], cpuSamples: [], fillRate: null, error: null };
-    const live: Live = { run, child: null, timer: null, stdout: '', stderr: '' };
+    const live: Live = { run, child: null, lease: null, off: null, stdout: '', stderr: '' };
     this.runs.set(id, live);
     this.active = live;
+    // The sensors run at 5 s with no reader: the lease brings them to 2 Hz, and the idle reference
+    // waits for a sample taken at that rate rather than one up to 5 s old.
+    live.lease = this.sensors.acquire(`load ${kind}`);
+    await this.sensors.whenFresh();
+    if (live.run.state !== 'running') return run;
     // The first CPU sample is the idle reference, taken before the worker starts (collector-types.ts LoadRun.cpuSamples).
     this.sample(live);
 
@@ -55,7 +62,9 @@ export class LoadRunner {
     child.stderr.setEncoding('utf-8');
     child.stdout.on('data', (d: string) => (live.stdout += d));
     child.stderr.on('data', (d: string) => (live.stderr = (live.stderr + d).slice(-2000)));
-    live.timer = setInterval(() => this.sample(live), SAMPLE_MS);
+    const onTick = () => this.sample(live);
+    this.sensors.on('tick', onTick);
+    live.off = () => this.sensors.off('tick', onTick);
     const finish = (code: number | null, failure?: string) => {
       if (live.run.state !== 'running') return;
       this.end(live);
@@ -94,8 +103,10 @@ export class LoadRunner {
   }
 
   private end(live: Live) {
-    if (live.timer) clearInterval(live.timer);
-    live.timer = null;
+    live.off?.();
+    live.off = null;
+    live.lease?.release();
+    live.lease = null;
     live.run.qpcEnd = qpcNow();
     if (this.active === live) this.active = null;
   }

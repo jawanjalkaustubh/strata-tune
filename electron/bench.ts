@@ -233,8 +233,10 @@ async function heldDuring<T>(collector: CollectorClient | null, until: Promise<T
 async function doBenchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
   const exe = workerExe();
   if (!fs.existsSync(exe)) return { error: `Worker not built: ${exe}. Run ${process.platform === 'darwin' ? 'scripts/mac/build-collector.sh' : 'dotnet build collector\\StrataTune.sln -c Release'}.` };
+  // macOS: the sensors at 2 Hz while the worker runs, so the Monitor and the ring see the sweep (nothing on Windows).
+  const lease = collector?.lease('measure');
   const running = runWorker(exe);
-  const held = await heldDuring(collector, running);
+  const held = await heldDuring(collector, running).finally(() => lease?.release());
   const run = await running;
   if (run.cancelled) return { error: 'Measurement stopped', code: 'cancelled' };
   if (run.timedOut) return { error: `The GPU benchmark did not finish within ${BENCH_TIMEOUT_MS / 1000} s` };

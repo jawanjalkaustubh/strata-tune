@@ -40,11 +40,20 @@ first file on 26 and the app then fails with "Electron failed to install correct
 
 - **macmon** (`brew install macmon`, sudo-less) streams per-core frequency and active
   ratio for the P and E clusters, CPU / GPU / ANE / memory / system power, GPU frequency and
-  active ratio, fan speeds, memory and the average CPU and GPU temperatures at 2 Hz.
+  active ratio, fan speeds, memory and the average CPU and GPU temperatures.
   `electron/mac/sensors.ts` shapes them into LibreHardwareMonitor's names so the Monitor's
-  layouts match unchanged. Without macmon the status pill says so and only the IOKit rows exist.
+  layouts match unchanged, and each macmon line is one tick (no timer re-sending the last
+  row). Without macmon the status pill says so and only the IOKit rows exist.
 - **IOKit through ioreg**: the GPU's memory in use (`IOAccelerator`) and the battery
-  (`AppleSmartBattery`), polled every 2 s.
+  (`AppleSmartBattery`, every 30 s).
+- **The rate follows the readers**: a monitor must itself be cheap. The Monitor page, an
+  audit load, Measure and the LLM benchmark each hold a sensor lease (`MacSensors.acquire`);
+  while any is held macmon samples every 500 ms and the GPU memory is read every 2 s, with none
+  macmon samples every 5 s and the GPU memory is not read. A load run waits for a sample at
+  the fast rate before it takes its idle reference.
+- **Start-up**: the collector listens at once; macmon's `--soc-info`, the worker's `--info`
+  and (only when macmon gives no core count) the AGXAccelerator dump fill the names in behind
+  `Health.warming`, and `/snapshot` waits for them.
 - **The snapshot** (`electron/mac/snapshot.ts`): `sysctl`, `system_profiler`, `diskutil`,
   `df`, `pmset` (the power mode) and Ollama's `/api/ps`. The Apple GPU is listed as a display
   adapter with vendor `apple` and, as its "dedicated" memory, Metal's recommended working set
