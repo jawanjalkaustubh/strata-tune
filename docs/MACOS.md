@@ -43,7 +43,10 @@ first file on 26 and the app then fails with "Electron failed to install correct
   active ratio, fan speeds, memory and the average CPU and GPU temperatures.
   `electron/mac/sensors.ts` shapes them into LibreHardwareMonitor's names so the Monitor's
   layouts match unchanged, and each macmon line is one tick (no timer re-sending the last
-  row). Without macmon the status pill says so and only the IOKit rows exist.
+  row). Without macmon the status pill says so and only the IOKit rows exist. An installed macmon
+  that stops printing (a crash loop after an OS update, a hang) counts as absent after three of
+  its intervals: a timer paces the IOKit rows again, and its last sample gives no readings until
+  a line comes.
 - **IOKit through ioreg**: the GPU's memory in use (`IOAccelerator`) and the battery
   (`AppleSmartBattery`, every 30 s).
 - **The rate follows the readers**: a monitor must itself be cheap. The Monitor page, an

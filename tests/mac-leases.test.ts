@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BATTERY_POLL_MS, GPU_MEMORY_IDLE_POLL_MS, GPU_MEMORY_POLL_MS, IDLE_MS, LEASED_MS, MacSensors, type MacmonSample } from '../electron/mac/sensors';
+import { BATTERY_POLL_MS, GPU_MEMORY_IDLE_POLL_MS, GPU_MEMORY_POLL_MS, IDLE_MS, IDS, LEASED_MS, MacSensors, type MacmonSample } from '../electron/mac/sensors';
 
 /**
  * A system monitor must itself be cheap (electron/mac/sensors.ts): with no reader the macOS
@@ -16,11 +16,11 @@ describe('sensor leases', () => {
     const s = sensors();
     s.start();
     expect(s.rate).toBe('idle');
-    expect(s.schedule).toEqual({ macmonMs: IDLE_MS, gpuMemoryMs: GPU_MEMORY_IDLE_POLL_MS, batteryMs: BATTERY_POLL_MS, fallbackTickMs: null });
+    expect(s.schedule).toEqual({ macmonMs: IDLE_MS, gpuMemoryMs: GPU_MEMORY_IDLE_POLL_MS, batteryMs: BATTERY_POLL_MS, fallbackTickMs: IDLE_MS });
     const monitor = s.acquire('monitor');
     const load = s.acquire('load heavy');
     expect(s.rate).toBe('leased');
-    expect(s.schedule).toEqual({ macmonMs: LEASED_MS, gpuMemoryMs: GPU_MEMORY_POLL_MS, batteryMs: BATTERY_POLL_MS, fallbackTickMs: null });
+    expect(s.schedule).toEqual({ macmonMs: LEASED_MS, gpuMemoryMs: GPU_MEMORY_POLL_MS, batteryMs: BATTERY_POLL_MS, fallbackTickMs: LEASED_MS });
     expect(s.leaseReasons).toEqual(['monitor', 'load heavy']);
     monitor.release();
     monitor.release();
@@ -110,6 +110,39 @@ describe('sensor leases', () => {
     expect(s.schedule.fallbackTickMs).toBe(10);
     await new Promise((r) => setTimeout(r, 60));
     expect(n).toBeGreaterThan(2);
+    s.stop();
+  });
+
+  it('with macmon installed but printing nothing the timer paces the rows, and never while its lines arrive', async () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const s = sensors({ tickMs: 50, idleTickMs: 50 });
+    let n = 0;
+    s.on('tick', () => n++);
+    s.start();
+    // Healthy: one tick per line and none from the timer, also while a restarted macmon (a lease) has not printed yet.
+    for (let i = 0; i < 8; i++) {
+      s.feed(sample(3));
+      await sleep(10);
+    }
+    const monitor = s.acquire('monitor');
+    await sleep(80);
+    s.feed(sample(3));
+    expect(n).toBe(9);
+    // Silent (a crash loop): after three intervals the timer ticks, with the live IOKit rows and not the dead sample's readings.
+    await sleep(400);
+    expect(n).toBeGreaterThanOrEqual(11);
+    expect(s.value(IDS.gpuMemTotalMiB)).toBe(768);
+    expect(s.value(IDS.cpuPackageW)).toBeNull();
+    expect(s.meta().some((m) => m.id === IDS.cpuPackageW)).toBe(true);
+    // Nothing waits for a fresh sample that is not coming, a lease's restart included.
+    monitor.release();
+    s.acquire('load cpu');
+    const asked = Date.now();
+    await s.whenFresh(2000);
+    expect(Date.now() - asked).toBeLessThan(100);
+    // A line brings the readings back.
+    s.feed(sample(8));
+    expect(s.value(IDS.cpuPackageW)).toBe(8);
     s.stop();
   });
 

@@ -317,7 +317,7 @@ export interface MacSensorsOptions {
   factsPending?: boolean;
   /** Off in tests: no ioreg polling, no macmon; samples arrive through feed(). */
   pollers?: boolean;
-  /** The fallback tick when there is no macmon to pace the rows: at the leased rate, and with no lease. */
+  /** The fallback tick when macmon paces no rows (absent, or silent): at the leased rate, and with no lease. */
   tickMs?: number;
   idleTickMs?: number;
   /** How long the leased rate outlives its last lease: a page switch releases one and takes another. */
@@ -337,6 +337,12 @@ export const GPU_MEMORY_IDLE_POLL_MS = 10_000;
 /** The battery changes slowly: read every 30 s whatever the rate. */
 export const BATTERY_POLL_MS = 30_000;
 const MACMON_RESTART_MS = 5000;
+/**
+ * macmon counts as silent after this many fallback intervals in a row without a line (a restarted
+ * one's first line takes one interval and its start-up). Counted in timer fires, not wall time, so
+ * a wake from sleep is no silence.
+ */
+const SILENT_INTERVALS = 3;
 const LINGER_MS = 3000;
 const FRESH_TIMEOUT_MS = 3000;
 
@@ -352,13 +358,14 @@ export interface SensorSchedule {
   macmonMs: number | null;
   gpuMemoryMs: number | null;
   batteryMs: number;
-  fallbackTickMs: number | null;
+  /** The fallback timer's interval: it runs whenever the source does and ticks only while macmon paces no rows. */
+  fallbackTickMs: number;
 }
 
 /**
  * The live source. `tick` is emitted with a SensorRow each time macmon prints a line (a timer
- * paces the rows only when macmon is absent), so every row is a new reading and none is a
- * repeat of the last; `meta()` is the list for /sensors/meta and grows as sources answer
+ * paces the rows only while macmon is absent or silent), so every row is a new reading and none
+ * is a repeat of the last; `meta()` is the list for /sensors/meta and grows as sources answer
  * (Health.warming until macmon's first sample and the chip's facts).
  *
  * A system monitor must itself be cheap, so the rate follows the readers. While any lease is
@@ -391,6 +398,14 @@ export class MacSensors extends EventEmitter {
   private leasedGeneration = -1;
   private sampleGeneration = -3;
   private freshWaiters: (() => void)[] = [];
+  /** Fallback intervals since macmon last printed a line or was (re)started at a new rate. */
+  private missed = 0;
+  /**
+   * macmon is installed but has printed nothing for SILENT_INTERVALS (a crash loop after an OS
+   * update, a hang): the timer paces the rows, and the last sample stays in the list (fixed per
+   * run) but gives no readings, so a dead value is never sent again as a new one.
+   */
+  private silent = false;
   /** macmon is running and has answered at least once. */
   up = false;
   lastError: string | null = null;
@@ -412,6 +427,8 @@ export class MacSensors extends EventEmitter {
   start() {
     this.started = true;
     this.stopped = false;
+    this.missed = 0;
+    this.silent = false;
     if (this.opts.pollers !== false) {
       this.spawnMacmon();
       this.pollBattery();
@@ -468,17 +485,18 @@ export class MacSensors extends EventEmitter {
       macmonMs: this.opts.macmon === null ? null : this.leased ? LEASED_MS : IDLE_MS,
       gpuMemoryMs: this.gpuMem === null ? null : this.leased ? GPU_MEMORY_POLL_MS : GPU_MEMORY_IDLE_POLL_MS,
       batteryMs: BATTERY_POLL_MS,
-      fallbackTickMs: this.opts.macmon !== null ? null : this.leased ? this.opts.tickMs ?? LEASED_MS : this.opts.idleTickMs ?? IDLE_MS
+      fallbackTickMs: this.leased ? this.opts.tickMs ?? LEASED_MS : this.opts.idleTickMs ?? IDLE_MS
     };
   }
 
   /**
    * Resolves once a sample taken at the leased rate has arrived: at once when the last one
-   * already is, or when there is no macmon to wait for; after the timeout otherwise (macmon slow
-   * to restart). A load run takes its idle reference after this, never from a 5 s-old sample.
+   * already is or when there is no macmon to wait for (absent, or silent); as soon as the
+   * fallback timer finds it silent; after the timeout otherwise (macmon slow to restart). A load
+   * run takes its idle reference after this, never from a 5 s-old sample.
    */
   whenFresh(timeoutMs = FRESH_TIMEOUT_MS): Promise<void> {
-    if (this.opts.macmon === null || this.stopped || (this.leased && this.sampleGeneration === this.leasedGeneration)) return Promise.resolve();
+    if (this.opts.macmon === null || this.stopped || this.silent || (this.leased && this.sampleGeneration === this.leasedGeneration)) return Promise.resolve();
     return new Promise((resolve) => {
       const done = () => {
         clearTimeout(timer);
@@ -495,6 +513,8 @@ export class MacSensors extends EventEmitter {
     this.sample = sample;
     this.sampleGeneration = generation;
     this.up = true;
+    this.missed = 0;
+    this.silent = false;
     this.tick();
     if (this.leased && generation === this.leasedGeneration) this.resolveFresh();
   }
@@ -531,7 +551,8 @@ export class MacSensors extends EventEmitter {
 
   private rebuild() {
     this.built = sensorsOf(this.facts, this.sample, this.gpuMem, this.battery);
-    this.latestRow = { qpc: qpcNow(), values: this.built.values };
+    const values = this.silent ? sensorsOf(this.facts, null, this.gpuMem, this.battery).values : this.built.values;
+    this.latestRow = { qpc: qpcNow(), values };
   }
 
   private tick() {
@@ -576,6 +597,8 @@ export class MacSensors extends EventEmitter {
     old?.kill();
     if (this.restart) clearTimeout(this.restart);
     this.restart = null;
+    // The new process has its first interval and start-up before its silence counts.
+    this.missed = 0;
     if (this.opts.pollers === false) this.nextGeneration();
     else this.spawnMacmon();
   }
@@ -597,12 +620,30 @@ export class MacSensors extends EventEmitter {
     if (ms !== null) this.gpuMemTimer = setInterval(() => this.pollGpuMemory(), ms);
   }
 
-  /** Without macmon nothing prints a line to pace the rows (the battery and GPU memory still change): a timer does, at the same two rates. */
+  /**
+   * Without macmon lines nothing paces the rows (the battery and GPU memory still change): a timer
+   * does, at the same two rates. It runs whether or not macmon is installed, since an installed one
+   * can stop printing (a crash loop after an OS update, a hang); with macmon installed it ticks only
+   * once no line has come for SILENT_INTERVALS of its intervals, so a healthy macmon's rows are
+   * never doubled by it.
+   */
   private armFallback() {
     if (this.fallbackTimer) clearInterval(this.fallbackTimer);
     this.fallbackTimer = null;
-    const ms = this.started && !this.stopped ? this.schedule.fallbackTickMs : null;
-    if (ms !== null) this.fallbackTimer = setInterval(() => this.tick(), ms);
+    if (!this.started || this.stopped) return;
+    const ms = this.schedule.fallbackTickMs;
+    this.fallbackTimer = setInterval(() => this.fallbackTick(ms), ms);
+  }
+
+  private fallbackTick(ms: number) {
+    if (this.opts.macmon !== null && !this.silent) {
+      if (++this.missed < SILENT_INTERVALS) return;
+      this.silent = true;
+      console.warn(`[mac-collector] macmon has printed nothing for ${(SILENT_INTERVALS * ms) / 1000} s; the rows carry the battery and GPU memory only until it does`);
+    }
+    this.tick();
+    // Nothing fresher is coming: a load's idle reference and the LLM benchmark's baseline stop waiting.
+    this.resolveFresh();
   }
 
   private spawnMacmon() {
