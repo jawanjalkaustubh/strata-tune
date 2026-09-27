@@ -389,7 +389,10 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       }
       // Frameless window: without this the default menu's accelerators still
       // work (Ctrl+W closes, Ctrl+R reloads mid-session, F11, Ctrl+Shift+I).
-      Menu.setApplicationMenu(null);
+      // macOS routes Cmd+C/V/X/A/Z and Cmd+Q through the application menu, so
+      // there the menu keeps the app and Edit menus and nothing else: no View
+      // menu, so no reload or DevTools accelerators.
+      Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }]) : null);
       registerIpc();
       registerAdvisorIpc(ipcMain, () => collector);
       registerLlmBenchIpc(ipcMain, () => collector, (channel, payload) => {

@@ -5,8 +5,9 @@ import { join } from 'path';
 import { migrateAcceptance, readAcceptance } from '../electron/legal';
 
 /**
- * The macOS branches of the main process (docs/MACOS.md): where the disclaimer record lives.
- * main.ts imports Electron, so its sources are read, as keep-awake.test.ts does.
+ * The macOS branches of the main process (docs/MACOS.md): where the disclaimer record lives,
+ * the application menu, background throttling and the Monitor's sensor lease. main.ts imports
+ * Electron, so its sources are read, as keep-awake.test.ts does.
  */
 const ROOT = join(__dirname, '..');
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
@@ -37,5 +38,22 @@ describe('the disclaimer record on macOS', () => {
     expect(main).toContain("const acceptance = acceptanceFile(process.platform === 'darwin' ? tuneDataDir() : windowsDataDir);");
     expect(main).toContain("path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune')");
     expect(main).toMatch(/if \(process\.platform === 'darwin'\) migrateAcceptance\(/);
+  });
+});
+
+describe('the main process on macOS', () => {
+  const main = read('electron/main.ts');
+
+  it('keeps an app and an Edit menu on macOS (Cmd+C/V/X/A/Z, Cmd+Q) with no View menu, and none on Windows', () => {
+    expect(main).toContain("Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }]) : null);");
+    expect(main).not.toMatch(/role: '(viewMenu|reload|toggleDevTools|forceReload)'/);
+  });
+
+  it('leaves background throttling on for macOS and takes the Monitor\'s sensor lease with the subscription', () => {
+    const live = main.slice(main.indexOf('function setLiveSession'), main.indexOf('// ------------------------------------------------------------------- IPC'));
+    expect(live).toContain("if (process.platform === 'darwin') return;");
+    expect(main).toContain("ticksLease ??= c.lease('monitor');");
+    const unsubscribe = main.slice(main.indexOf("ipcMain.on('collector:unsubscribe'"), main.indexOf("c.on('status'"));
+    expect(unsubscribe.match(/dropLease\(\)/g)).toHaveLength(2);
   });
 });
