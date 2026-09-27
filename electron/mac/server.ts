@@ -43,6 +43,8 @@ interface SocInfo {
   gpuMaxClockMhz: number | null;
   /** macmon's cluster labels ("S"/"P" on the M5 Pro/Max, "P"/"E" before). */
   coreLabels: { high: string; low: string } | null;
+  /** The line is a full sample as well: the rows' first, before the 5 s idle stream's first line. */
+  sample?: MacmonSample | null;
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
@@ -65,7 +67,7 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
-/** `macmon pipe --soc-info -s 1`: the chip name and its clock table, once at start. */
+/** `macmon pipe --soc-info -s 1`: the chip name and its clock table, once at start, and the sample on the same line. */
 function socInfo(macmon: string | null): Promise<SocInfo> {
   const fallback: SocInfo = { chip: os.cpus()[0]?.model || 'Apple Silicon', maxClockMhz: 0, gpuCores: null, gpuMaxClockMhz: null, coreLabels: null };
   if (!macmon) return Promise.resolve(fallback);
@@ -74,7 +76,7 @@ function socInfo(macmon: string | null): Promise<SocInfo> {
       if (err) return resolve(fallback);
       try {
         const line = String(out).split('\n').find((l) => l.trim().startsWith('{')) ?? '{}';
-        const j = JSON.parse(line) as { soc?: { chip_name?: string; pcpu_freqs?: number[]; ecpu_freqs?: number[]; gpu_freqs?: number[]; gpu_cores?: number; pcpu_label?: string; ecpu_label?: string } };
+        const j = JSON.parse(line) as MacmonSample & { soc?: { chip_name?: string; pcpu_freqs?: number[]; ecpu_freqs?: number[]; gpu_freqs?: number[]; gpu_cores?: number; pcpu_label?: string; ecpu_label?: string } };
         const freqs = [...(j.soc?.pcpu_freqs ?? []), ...(j.soc?.ecpu_freqs ?? [])];
         const gpuFreqs = j.soc?.gpu_freqs ?? [];
         resolve({
@@ -82,7 +84,8 @@ function socInfo(macmon: string | null): Promise<SocInfo> {
           maxClockMhz: freqs.length ? Math.max(...freqs) : 0,
           gpuCores: typeof j.soc?.gpu_cores === 'number' && j.soc.gpu_cores > 0 ? j.soc.gpu_cores : null,
           gpuMaxClockMhz: gpuFreqs.length ? Math.max(...gpuFreqs) : null,
-          coreLabels: j.soc?.pcpu_label && j.soc?.ecpu_label ? { high: j.soc.pcpu_label, low: j.soc.ecpu_label } : null
+          coreLabels: j.soc?.pcpu_label && j.soc?.ecpu_label ? { high: j.soc.pcpu_label, low: j.soc.ecpu_label } : null,
+          sample: typeof j.cpu_power === 'number' ? j : null
         });
       } catch {
         resolve(fallback);
@@ -208,6 +211,7 @@ export class MacCollector {
     this.soc = { ...soc, gpuCores: soc.gpuCores ?? (await gpuCoresFromIoreg()) };
     this.info = info;
     if (this.ownSensors) {
+      if (soc.sample) this.sensors.seed(soc.sample);
       this.sensors.setFacts(info?.device ?? soc.chip, { gpuName: this.gpuName(), coreLabels: this.soc.coreLabels ?? undefined, gpuCores: this.soc.gpuCores }, info ? info.recommendedMaxWorkingSetBytes / 1024 ** 2 : null);
     }
   }

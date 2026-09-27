@@ -382,7 +382,7 @@ export class MacSensors extends EventEmitter {
   /** Bumped at every macmon start; `leasedGeneration` is the process started at the leased interval, `sampleGeneration` the one the last sample came from. */
   private generation = 0;
   private leasedGeneration = -1;
-  private sampleGeneration = -1;
+  private sampleGeneration = -3;
   private freshWaiters: (() => void)[] = [];
   /** macmon is running and has answered at least once. */
   up = false;
@@ -489,6 +489,15 @@ export class MacSensors extends EventEmitter {
     this.up = true;
     this.tick();
     if (this.leased && generation === this.leasedGeneration) this.resolveFresh();
+  }
+
+  /**
+   * A sample from outside the stream (macmon's --soc-info line at start), taken only while the
+   * stream has given none: with no lease its first line comes 5 s after start. It never counts
+   * as fresh for whenFresh().
+   */
+  seed(sample: MacmonSample) {
+    if (this.sample === null) this.feed(sample, -2);
   }
 
   feedBattery(b: BatteryReading | null) {

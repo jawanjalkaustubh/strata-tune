@@ -83,6 +83,29 @@ describe('sensor leases', () => {
     s.stop();
   });
 
+  it('the soc-info line seeds the rows while the 5 s idle stream has given none, and never counts as fresh', async () => {
+    const s = sensors();
+    s.start();
+    s.seed(sample(4));
+    expect(s.value('/apple/cpu/0/power/package')).toBe(4);
+    expect(s.warming).toBe(false);
+    s.feed(sample(6));
+    s.seed(sample(9));
+    expect(s.value('/apple/cpu/0/power/package')).toBe(6);
+    const fresh = sensors();
+    fresh.start();
+    fresh.acquire('llm benchmark');
+    fresh.seed(sample(4));
+    let done = false;
+    const waiting = fresh.whenFresh(1000).then(() => (done = true));
+    await Promise.resolve();
+    expect(done).toBe(false);
+    fresh.feed(sample(5));
+    await waiting;
+    s.stop();
+    fresh.stop();
+  });
+
   it('warms until the chip facts arrive when they are read after the collector listens', () => {
     const s = sensors({ factsPending: true, gpuTotalMiB: null });
     s.feed(sample(5));
