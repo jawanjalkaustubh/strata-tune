@@ -135,8 +135,13 @@ function createWindow() {
  * cadence while the game is in front, so it is lifted only then and restored
  * after (lifecycle audit item 34). A tick subscription (the Monitor page) is
  * what turns it on and off, in registerCollectorIpc.
+ *
+ * macOS has no Capture and no game in front to keep pace with: throttling stays
+ * on, so a minimised or covered Monitor reads as hidden and stops drawing while
+ * its ring buffer keeps filling (src/pages/Monitor.tsx).
  */
 function setLiveSession(on: boolean): void {
+  if (process.platform === 'darwin') return;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(!on);
 }
 
