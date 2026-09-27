@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('strata', {
     // Ticks flow only while a page asks for them (the Monitor, later the Tune view).
     subscribe: () => ipcRenderer.send('collector:subscribe'),
     unsubscribe: () => ipcRenderer.send('collector:unsubscribe'),
+    // macOS: holds the sensors at 2 Hz under a name while a page polls sensorsLatest instead of subscribing (About → Clocks).
+    lease: (reason, held) => ipcRenderer.send('collector:lease', reason, held),
     onTick: on('collector:tick'),
     onStatus: on('collector:status')
   },

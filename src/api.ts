@@ -74,6 +74,12 @@ export interface CollectorApi {
   cancelLoad(): Promise<boolean>;
   subscribe(): void;
   unsubscribe(): void;
+  /**
+   * macOS: holds the sensors at the leased rate (macmon at 2 Hz) under `reason` while `held`, for a
+   * page that polls sensorsLatest rather than subscribing (About → Clocks); a reload of the window
+   * drops it. Nothing on Windows, where the collector samples at its own rate.
+   */
+  lease(reason: string, held: boolean): void;
   onTick(cb: (tick: Tick) => void): () => void;
   onStatus(cb: (state: CollectorState) => void): () => void;
 }

@@ -183,6 +183,8 @@ let collector: CollectorClient | null = null;
 let ticksWanted = false;
 /** macOS: the subscribed page's sensor lease (2 Hz macmon); the sensors drop to 5 s once it goes. Nothing on Windows. */
 let ticksLease: { release: () => void } | null = null;
+/** macOS: leases a page holds by name while it polls the latest row rather than subscribing (About → Clocks); a reload drops them too. */
+const pageLeases = new Map<string, { release: () => void }>();
 
 function sendToRenderer(channel: string, payload: CollectorState | Tick) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
@@ -214,10 +216,24 @@ function registerCollectorIpc(c: CollectorClient) {
     setLiveSession(false);
     dropLease();
   });
+  const dropPageLeases = () => {
+    for (const lease of pageLeases.values()) lease.release();
+    pageLeases.clear();
+  };
+  ipcMain.on('collector:lease', (_e, reason: unknown, held: unknown) => {
+    if (typeof reason !== 'string') return;
+    if (held === true) {
+      if (!pageLeases.has(reason)) pageLeases.set(reason, c.lease(reason));
+      return;
+    }
+    pageLeases.get(reason)?.release();
+    pageLeases.delete(reason);
+  });
   mainWindow?.webContents.on('did-start-loading', () => {
     ticksWanted = false;
     setLiveSession(false);
     dropLease();
+    dropPageLeases();
   });
   c.on('status', (s: CollectorState) => sendToRenderer('collector:status', s));
   c.on('tick', (t: Tick) => {

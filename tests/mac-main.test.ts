@@ -56,4 +56,13 @@ describe('the main process on macOS', () => {
     const unsubscribe = main.slice(main.indexOf("ipcMain.on('collector:unsubscribe'"), main.indexOf("c.on('status'"));
     expect(unsubscribe.match(/dropLease\(\)/g)).toHaveLength(2);
   });
+
+  it('holds a page\'s named sensor lease (About → Clocks polls rather than subscribes) and drops it with a reload or a crash reload', () => {
+    const handler = main.slice(main.indexOf("ipcMain.on('collector:lease'"), main.indexOf("webContents.on('did-start-loading'"));
+    expect(handler).toContain('pageLeases.set(reason, c.lease(reason))');
+    expect(handler).toContain('pageLeases.get(reason)?.release();');
+    const reload = main.slice(main.indexOf("webContents.on('did-start-loading'"), main.indexOf("c.on('status'"));
+    expect(reload).toContain('dropPageLeases();');
+    expect(read('electron/preload.cjs')).toContain("lease: (reason, held) => ipcRenderer.send('collector:lease', reason, held)");
+  });
 });
