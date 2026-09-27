@@ -33,6 +33,23 @@ export function acceptanceFile(dataDir: string): string {
   return path.join(dataDir, 'disclaimer.json');
 }
 
+/**
+ * macOS: earlier builds kept the record under ~/AppData/Local/Strata Tune, the Windows path taken
+ * literally. It moves to the app's data folder so nobody is asked again, and the folders it
+ * leaves behind go if that empties them, up to (never including) `home`.
+ */
+export function migrateAcceptance(from: string, to: string, home: string): void {
+  try {
+    if (fs.existsSync(to) || !fs.existsSync(from)) return;
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
+    fs.unlinkSync(from);
+    for (let dir = path.dirname(from); dir.startsWith(home + path.sep); dir = path.dirname(dir)) fs.rmdirSync(dir);
+  } catch {
+    /* a folder that still holds something else stays; a failed copy leaves the old record where it was */
+  }
+}
+
 export function readAcceptance(file: string): DisclaimerAcceptance | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DisclaimerAcceptance>;

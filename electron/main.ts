@@ -10,9 +10,10 @@ import { registerHistoryIpc } from './history';
 import { CaptureController, registerCaptureIpc } from './capture';
 import { registerTuneIpc } from './tune';
 import { legalFilePaths, registerAboutIpc } from './about';
-import { acceptanceFile, legalStatus, registerLegalIpc } from './legal';
+import { acceptanceFile, legalStatus, migrateAcceptance, registerLegalIpc } from './legal';
 import { GameMode } from './game-mode';
 import { keepAwakeOnMac, releaseAll } from './keepAwake';
+import { tuneDataDir } from './presence';
 import type { CollectorState } from '../src/api';
 import type { LoadKind, Tick } from '../src/collector-types';
 
@@ -408,7 +409,10 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       // Plan section 27a, first launch: the collector waits until DISCLAIMER.md's current
       // version has been accepted once (electron/legal.ts keeps the record beside the handshake).
       const disclaimer = legalFilePaths({ isPackaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath }).disclaimer;
-      const acceptance = acceptanceFile(path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune'));
+      const windowsDataDir = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune');
+      // macOS keeps it with the rest of the app's data; a record an earlier build left under ~/AppData moves there.
+      const acceptance = acceptanceFile(process.platform === 'darwin' ? tuneDataDir() : windowsDataDir);
+      if (process.platform === 'darwin') migrateAcceptance(acceptanceFile(windowsDataDir), acceptance, os.homedir());
       const startCollector = () => collector?.start().catch((e) => console.error('[collector] start failed:', e));
       registerLegalIpc(ipcMain, disclaimer, acceptance, startCollector);
       if (legalStatus(disclaimer, acceptance).ok) startCollector();

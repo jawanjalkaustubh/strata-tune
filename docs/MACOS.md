@@ -72,7 +72,8 @@ first file on 26 and the app then fails with "Electron failed to install correct
 - **Tune routes**: `/tune/state` answers `nvapi.available: false` with the reason; every
   `/tune/*` write is 403. `/timers` answers nulls: macOS has no timer-resolution setting.
 
-Data: `~/Library/Application Support/Strata Tune/` (collector.json, bench.json, sessions);
+Data: `~/Library/Application Support/Strata Tune/` (collector.json, disclaimer.json, bench.json, sessions; a
+disclaimer.json an earlier build wrote under `~/AppData/Local/Strata Tune` is moved here at launch);
 presence files shared with Strata Code and Photo: `~/Library/Application Support/Strata/presence/`.
 
 ## The Apple spec table
