@@ -49,7 +49,8 @@ first file on 26 and the app then fails with "Electron failed to install correct
 - **The rate follows the readers**: a monitor must itself be cheap. The Monitor page, an
   audit load, Measure and the LLM benchmark each hold a sensor lease (`MacSensors.acquire`);
   while any is held macmon samples every 500 ms and the GPU memory is read every 2 s, with none
-  macmon samples every 5 s and the GPU memory is not read. A load run waits for a sample at
+  macmon samples every 5 s and the GPU memory is read every 10 s (the AI Models page reads it
+  once, without a lease, for its "VRAM busy now" hint). A load run waits for a sample at
   the fast rate before it takes its idle reference.
 - **Start-up**: the collector listens at once; macmon's `--soc-info`, the worker's `--info`
   and (only when macmon gives no core count) the AGXAccelerator dump fill the names in behind

@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { BATTERY_POLL_MS, GPU_MEMORY_POLL_MS, IDLE_MS, LEASED_MS, MacSensors, type MacmonSample } from '../electron/mac/sensors';
+import { describe, expect, it, vi } from 'vitest';
+import { BATTERY_POLL_MS, GPU_MEMORY_IDLE_POLL_MS, GPU_MEMORY_POLL_MS, IDLE_MS, LEASED_MS, MacSensors, type MacmonSample } from '../electron/mac/sensors';
 
 /**
  * A system monitor must itself be cheap (electron/mac/sensors.ts): with no reader the macOS
- * collector samples macmon every 5 s and leaves the GPU memory unread; a lease (the Monitor, a
+ * collector samples macmon every 5 s and reads the GPU memory every 10 s; a lease (the Monitor, a
  * load run, Measure, the LLM benchmark) brings it to 500 ms with the 2 s GPU memory read; the
  * battery is read every 30 s either way. Every macmon line is one tick, never a timer's repeat.
  */
@@ -12,11 +12,11 @@ const sensors = (over: Partial<ConstructorParameters<typeof MacSensors>[0]> = {}
   new MacSensors({ macmon: '/opt/homebrew/bin/macmon', chip: 'Apple Test', gpuTotalMiB: 768, pollers: false, lingerMs: 0, ...over });
 
 describe('sensor leases', () => {
-  it('idles at 5 s with no GPU memory read, runs at 500 ms with it while any lease is held, and drops back when the last goes', () => {
+  it('idles at 5 s with a 10 s GPU memory read, runs at 500 ms with a 2 s one while any lease is held, and drops back when the last goes', () => {
     const s = sensors();
     s.start();
     expect(s.rate).toBe('idle');
-    expect(s.schedule).toEqual({ macmonMs: IDLE_MS, gpuMemoryMs: null, batteryMs: BATTERY_POLL_MS, fallbackTickMs: null });
+    expect(s.schedule).toEqual({ macmonMs: IDLE_MS, gpuMemoryMs: GPU_MEMORY_IDLE_POLL_MS, batteryMs: BATTERY_POLL_MS, fallbackTickMs: null });
     const monitor = s.acquire('monitor');
     const load = s.acquire('load heavy');
     expect(s.rate).toBe('leased');
@@ -27,8 +27,38 @@ describe('sensor leases', () => {
     expect(s.rate).toBe('leased');
     load.release();
     expect(s.rate).toBe('idle');
-    expect(s.schedule.gpuMemoryMs).toBeNull();
+    expect(s.schedule.gpuMemoryMs).toBe(GPU_MEMORY_IDLE_POLL_MS);
     s.stop();
+  });
+
+  it('reads the GPU memory at once when armed and when a lease comes, every 10 s with none, and keeps the reading when the lease goes', () => {
+    vi.useFakeTimers();
+    const proto = MacSensors.prototype as unknown as { pollGpuMemory(): void; pollBattery(): void };
+    const poll = vi.spyOn(proto, 'pollGpuMemory').mockImplementation(() => {});
+    vi.spyOn(proto, 'pollBattery').mockImplementation(() => {});
+    try {
+      const s = sensors({ macmon: null, pollers: true });
+      s.start();
+      expect(poll).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(GPU_MEMORY_IDLE_POLL_MS);
+      expect(poll).toHaveBeenCalledTimes(2);
+      const lease = s.acquire('monitor');
+      expect(poll).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(GPU_MEMORY_POLL_MS);
+      expect(poll).toHaveBeenCalledTimes(4);
+      lease.release();
+      expect(poll).toHaveBeenCalledTimes(4);
+      vi.advanceTimersByTime(GPU_MEMORY_IDLE_POLL_MS - 1);
+      expect(poll).toHaveBeenCalledTimes(4);
+      vi.advanceTimersByTime(1);
+      expect(poll).toHaveBeenCalledTimes(5);
+      s.stop();
+      vi.advanceTimersByTime(GPU_MEMORY_IDLE_POLL_MS);
+      expect(poll).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
   });
 
   it('the leased rate lingers briefly after the last lease, so a page switch does not restart macmon twice', async () => {

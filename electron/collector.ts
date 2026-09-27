@@ -297,9 +297,9 @@ export class CollectorClient extends EventEmitter {
 
   /**
    * macOS: holds the in-process collector's sensors at the leased rate (macmon every 500 ms, the
-   * GPU memory read every 2 s) until release(); with no lease they sample every 5 s. `fresh`
-   * resolves once a row at the leased rate has arrived. Windows: the elevated service samples at
-   * its own fixed rate, so this is nothing there.
+   * GPU memory read every 2 s) until release(); with no lease they sample every 5 s and read the
+   * GPU memory every 10 s. `fresh` resolves once a row at the leased rate has arrived. Windows:
+   * the elevated service samples at its own fixed rate, so this is nothing there.
    */
   lease(reason: string): { release: () => void; fresh: Promise<void> } {
     if (process.platform !== 'darwin') return { release: () => {}, fresh: Promise.resolve() };

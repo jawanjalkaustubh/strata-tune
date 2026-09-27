@@ -152,7 +152,7 @@ export class MacCollector {
     return this.sensors.up;
   }
 
-  /** Holds the sensors at the leased rate (macmon at 500 ms, the GPU memory read) until release(). */
+  /** Holds the sensors at the leased rate (macmon at 500 ms, the GPU memory read every 2 s) until release(). */
   acquire(reason: string): SensorLease {
     return this.sensors.acquire(reason);
   }

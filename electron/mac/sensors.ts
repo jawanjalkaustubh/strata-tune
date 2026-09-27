@@ -327,8 +327,13 @@ export interface MacSensorsOptions {
 /** macmon's interval while anything reads the sensors (a lease) and while nothing does. */
 export const LEASED_MS = 500;
 export const IDLE_MS = 5000;
-/** The GPU's memory in use is a 45 KB ioreg dump: read only while leased. */
+/**
+ * The GPU's memory in use is a 45 KB ioreg dump: every 2 s while leased, every 10 s with none. The
+ * AI Models page reads it once without a lease for its "VRAM busy now" hint: the idle read keeps that
+ * figure within about 15 s (a 10 s poll, a 5 s idle row) rather than frozen at the last leased value.
+ */
 export const GPU_MEMORY_POLL_MS = 2000;
+export const GPU_MEMORY_IDLE_POLL_MS = 10_000;
 /** The battery changes slowly: read every 30 s whatever the rate. */
 export const BATTERY_POLL_MS = 30_000;
 const MACMON_RESTART_MS = 5000;
@@ -358,8 +363,8 @@ export interface SensorSchedule {
  *
  * A system monitor must itself be cheap, so the rate follows the readers. While any lease is
  * held (acquire()), macmon samples every 500 ms and the GPU's memory is read every 2 s; with
- * none, macmon samples every 5 s and the GPU's memory is not read. The battery is read every
- * 30 s either way. macmon cannot change its interval while it runs, so a rate change restarts it.
+ * none, macmon samples every 5 s and the GPU's memory is read every 10 s. The battery is read
+ * every 30 s either way. macmon cannot change its interval while it runs, so a rate change restarts it.
  */
 export class MacSensors extends EventEmitter {
   private sample: MacmonSample | null = null;
@@ -377,6 +382,8 @@ export class MacSensors extends EventEmitter {
   private linger: NodeJS.Timeout | null = null;
   private restart: NodeJS.Timeout | null = null;
   private gpuMemTimer: NodeJS.Timeout | null = null;
+  /** The interval gpuMemTimer runs at; null when it does not run. */
+  private gpuMemMs: number | null = null;
   private batteryTimer: NodeJS.Timeout | null = null;
   private fallbackTimer: NodeJS.Timeout | null = null;
   /** Bumped at every macmon start; `leasedGeneration` is the process started at the leased interval, `sampleGeneration` the one the last sample came from. */
@@ -419,6 +426,7 @@ export class MacSensors extends EventEmitter {
     for (const t of [this.linger, this.restart]) if (t) clearTimeout(t);
     for (const t of [this.gpuMemTimer, this.batteryTimer, this.fallbackTimer]) if (t) clearInterval(t);
     this.linger = this.restart = this.gpuMemTimer = this.batteryTimer = this.fallbackTimer = null;
+    this.gpuMemMs = null;
     const child = this.child;
     this.child = null;
     child?.kill();
@@ -458,7 +466,7 @@ export class MacSensors extends EventEmitter {
   get schedule(): SensorSchedule {
     return {
       macmonMs: this.opts.macmon === null ? null : this.leased ? LEASED_MS : IDLE_MS,
-      gpuMemoryMs: this.leased && this.gpuMem !== null ? GPU_MEMORY_POLL_MS : null,
+      gpuMemoryMs: this.gpuMem === null ? null : this.leased ? GPU_MEMORY_POLL_MS : GPU_MEMORY_IDLE_POLL_MS,
       batteryMs: BATTERY_POLL_MS,
       fallbackTickMs: this.opts.macmon !== null ? null : this.leased ? this.opts.tickMs ?? LEASED_MS : this.opts.idleTickMs ?? IDLE_MS
     };
@@ -580,13 +588,13 @@ export class MacSensors extends EventEmitter {
 
   private armGpuMemory() {
     const ms = this.opts.pollers !== false && this.started && !this.stopped ? this.schedule.gpuMemoryMs : null;
-    if (ms !== null && !this.gpuMemTimer) {
-      this.pollGpuMemory();
-      this.gpuMemTimer = setInterval(() => this.pollGpuMemory(), ms);
-    } else if (ms === null && this.gpuMemTimer) {
-      clearInterval(this.gpuMemTimer);
-      this.gpuMemTimer = null;
-    }
+    if (ms === this.gpuMemMs) return;
+    if (this.gpuMemTimer) clearInterval(this.gpuMemTimer);
+    this.gpuMemTimer = null;
+    // A faster rate (the first arming, a lease) reads at once; the drop to the idle rate keeps the last reading.
+    if (ms !== null && (this.gpuMemMs === null || ms < this.gpuMemMs)) this.pollGpuMemory();
+    this.gpuMemMs = ms;
+    if (ms !== null) this.gpuMemTimer = setInterval(() => this.pollGpuMemory(), ms);
   }
 
   /** Without macmon nothing prints a line to pace the rows (the battery and GPU memory still change): a timer does, at the same two rates. */
