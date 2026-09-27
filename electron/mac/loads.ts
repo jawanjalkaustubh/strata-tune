@@ -35,7 +35,11 @@ export class LoadRunner {
 
   constructor(private readonly worker: string, private readonly sensors: MacSensors) {}
 
-  async start(req: Partial<LoadRunRequest>): Promise<LoadRun | StartRefusal> {
+  /**
+   * Answers at once with the running run, so the client has its id (and a Stop reaches it) while
+   * the sensors come up to rate; the idle reference and the worker follow in launch().
+   */
+  start(req: Partial<LoadRunRequest>): LoadRun | StartRefusal {
     const kind = req.kind as LoadKind;
     const seconds = Number(req.seconds);
     if (!KINDS.includes(kind)) return { status: 400, error: `unknown load kind ${String(req.kind)}` };
@@ -44,6 +48,7 @@ export class LoadRunner {
     if (!fs.existsSync(this.worker)) return { status: 500, error: `Worker not built: ${this.worker}. Run scripts/mac/build-collector.sh.` };
 
     const id = `mac-${Date.now().toString(36)}-${this.next++}`;
+    // qpcStart is set again when the worker starts: the steady window (t >= 3 s) counts from the spawn, not from the wait.
     const run: LoadRun = { id, kind, seconds, state: 'running', exitCode: null, qpcStart: qpcNow(), qpcEnd: null, gpuSamples: [], cpuSamples: [], fillRate: null, error: null };
     const live: Live = { run, child: null, lease: null, off: null, stdout: '', stderr: '' };
     this.runs.set(id, live);
@@ -51,8 +56,18 @@ export class LoadRunner {
     // The sensors run at 5 s with no reader: the lease brings them to 2 Hz, and the idle reference
     // waits for a sample taken at that rate rather than one up to 5 s old.
     live.lease = this.sensors.acquire(`load ${kind}`);
-    await this.sensors.whenFresh();
-    if (live.run.state !== 'running') return run;
+    void this.sensors
+      .whenFresh()
+      .then(() => this.launch(live))
+      .catch((e: Error) => this.finish(live, -1, e.message));
+    return run;
+  }
+
+  /** After the wait: nothing when a Stop came meanwhile (the run is already cancelled and its lease gone). */
+  private launch(live: Live) {
+    if (live.run.state !== 'running') return;
+    const { kind, seconds } = live.run;
+    live.run.qpcStart = qpcNow();
     // The first CPU sample is the idle reference, taken before the worker starts (collector-types.ts LoadRun.cpuSamples).
     this.sample(live);
 
@@ -65,21 +80,21 @@ export class LoadRunner {
     const onTick = () => this.sample(live);
     this.sensors.on('tick', onTick);
     live.off = () => this.sensors.off('tick', onTick);
-    const finish = (code: number | null, failure?: string) => {
-      if (live.run.state !== 'running') return;
-      this.end(live);
-      live.run.exitCode = code;
-      if (failure || code !== 0) {
-        live.run.state = 'failed';
-        live.run.error = failure ?? (live.stderr.trim().split('\n')[0] || `the worker exited with code ${code}`);
-      } else {
-        live.run.state = 'done';
-        if (kind === 'fillrate') live.run.fillRate = parseFillRate(live.stdout);
-      }
-    };
-    child.on('error', (e) => finish(-1, e.message));
-    child.on('exit', (code) => finish(code));
-    return run;
+    child.on('error', (e) => this.finish(live, -1, e.message));
+    child.on('exit', (code) => this.finish(live, code));
+  }
+
+  private finish(live: Live, code: number | null, failure?: string) {
+    if (live.run.state !== 'running') return;
+    this.end(live);
+    live.run.exitCode = code;
+    if (failure || code !== 0) {
+      live.run.state = 'failed';
+      live.run.error = failure ?? (live.stderr.trim().split('\n')[0] || `the worker exited with code ${code}`);
+    } else {
+      live.run.state = 'done';
+      if (live.run.kind === 'fillrate') live.run.fillRate = parseFillRate(live.stdout);
+    }
   }
 
   get(id: string): LoadRun | undefined {
@@ -94,6 +109,7 @@ export class LoadRunner {
     this.end(live);
     live.run.state = 'cancelled';
     live.run.exitCode = -1;
+    // No child yet when the Stop lands during the wait for a fresh sample: launch() then starts nothing.
     live.child?.kill();
     return live.run;
   }

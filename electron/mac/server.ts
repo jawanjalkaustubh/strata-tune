@@ -325,7 +325,7 @@ export class MacCollector {
         return json(res, 200, await sampleHogs(seconds, exclude, this.opts.logicalCpus ?? os.cpus().length));
       }
       if (method === 'POST' && p === '/load') {
-        const r = await this.loads!.start((await readBody(req)) as Partial<LoadRunRequest>);
+        const r = this.loads!.start((await readBody(req)) as Partial<LoadRunRequest>);
         return 'status' in r ? json(res, r.status, { error: r.error }) : json(res, 200, r);
       }
       const cancel = /^\/load\/([^/]+)\/cancel$/.exec(p);
