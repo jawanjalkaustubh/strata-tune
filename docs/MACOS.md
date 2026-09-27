@@ -58,12 +58,21 @@ first file on 26 and the app then fails with "Electron failed to install correct
   `df`, `pmset` (the power mode) and Ollama's `/api/ps`. The Apple GPU is listed as a display
   adapter with vendor `apple` and, as its "dedicated" memory, Metal's recommended working set
   (about three quarters of unified memory): what the GPU may hold, the figure a model's fit is judged by.
-- **The worker** (`collector/mac`, Swift, Metal + MPS): `--bench --json` prints the same line
-  as the Windows worker (stream-copy GB/s, fp32 and fp16-storage matmul TFLOPS) plus, on macOS 26,
-  `matmulTopsInt8` and `matmulTflopsFp16tensor` from Metal 4 tensor ops (MetalPerformancePrimitives
-  `matmul2d`, 128 x 64 tiles, int8 with int32 accumulate: the precision a PC's "AI TOPS" quotes,
-  measured dense rather than a vendor's sparse peak); `--load light|heavy|cpu|fillrate` are the
-  audit's kernels; `--info` the device facts. On the M5 Max 40-core: 549 GB/s, 15 / 65 TFLOPS, 122 int8 TOPS.
+- **The worker** (`collector/mac`, Swift, Metal + MPS): `--bench --json` prints the Windows
+  worker's line (stream-copy GB/s, fp32 matmul TFLOPS) with the fp16 MPS matmul under its own key,
+  `matmulTflopsFp16mps` (MPS does that matmul's maths in half precision, on the M5 through the GPU's
+  matrix units, about 4x its fp32; the PC's `matmulTflopsFp16storage` is half storage with float
+  maths, and the card labels the two apart), plus, on macOS 26, `matmulTopsInt8` and
+  `matmulTflopsFp16tensor` from Metal 4 tensor ops (MetalPerformancePrimitives `matmul2d`, 128 x 64
+  tiles, int8 with int32 accumulate: the precision a PC's "AI TOPS" quotes, measured dense rather
+  than a vendor's sparse peak). The matrices hold small non-zero values exact in their type, each
+  figure is the median of five command buffers of about 100 ms after about a second of warm-up, and
+  one output element is checked against the CPU's sum (`matmulVerified`; a tensor figure that fails
+  the check is left out). `--load light|heavy|cpu|fillrate` are the audit's kernels (the heavy load
+  multiplies the same kind of non-zero data; the all-core load runs eight SIMD4 chains per thread at
+  user-initiated QoS); `--info` the device facts, with no shader compiled. On the M5 Max 40-core,
+  on battery with the GPU cool: 554 GB/s, 15.1 / 64 TFLOPS, 122 int8 TOPS (two more runs back to
+  back fell to 56 fp16 and 108 int8 as it heated).
 - **Time base**: microseconds from the Mach monotonic clock (`Health.qpcFrequency` = 1e6).
 - **No sleeping mid-run**: Measure, the audit's loads, the LLM benchmark and llama-benchy
   hold the Mac awake while they run (`electron/keepAwake.ts`, a `prevent-app-suspension`

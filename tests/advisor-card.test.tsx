@@ -126,6 +126,9 @@ describe('thisCard: the driver over the table (plan section 10)', () => {
     expect(thisCard(fe, 512, null)).toMatchObject({ tdpW: 575, sliderMaxW: 600 });
     const html = render(thisCard(fe, 512, null));
     expect(html).toContain('slider up to 600 W · reference 575 W');
+    // The PC worker's fp16 is half storage with float maths, and says so (the Mac's MPS figure is labelled apart).
+    expect(html).toContain('Matmul, shader cores');
+    expect(html).toContain('FP16 storage');
     // A snapshot from before the field, or a card answering NOT_SUPPORTED, falls back to the slider top.
     expect(thisCard({ ...gpu(), powerDefaultLimitMw: 0 }, 512, null)).toMatchObject({ tdpW: 600, sliderMaxW: null });
   });

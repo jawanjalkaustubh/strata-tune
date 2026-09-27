@@ -23,7 +23,12 @@ export interface GpuBench {
   bufferBytes: number | null;
   matmulN: number | null;
   matmulTflopsFp32: number;
-  /** The worker's matmulTflopsFp16storage: half storage with float arithmetic, not tensor-core FP16. */
+  /**
+   * Windows: the worker's matmulTflopsFp16storage, half storage with float arithmetic, not
+   * tensor-core FP16. macOS: matmulTflopsFp16mps, an MPS matmul that does its maths in half
+   * precision (on the M5 through the GPU's matrix units); bench.json files from before the Mac
+   * worker named it carry it under the storage key.
+   */
   matmulTflopsFp16: number | null;
   /**
    * macOS only (collector/mac): the GPU's matrix path through Metal 4 tensor ops at int8 with int32
@@ -150,7 +155,7 @@ function parseBenchLine(stdout: string, driver: string | null): GpuBench | null 
         bufferBytes: num(j.bufferBytes),
         matmulN: num(j.matmulN),
         matmulTflopsFp32: fp32,
-        matmulTflopsFp16: num(j.matmulTflopsFp16storage),
+        matmulTflopsFp16: num(j.matmulTflopsFp16storage) ?? num(j.matmulTflopsFp16mps),
         matmulTopsInt8: num(j.matmulTopsInt8),
         matmulTflopsFp16tensor: num(j.matmulTflopsFp16tensor),
         elapsedMs: num(j.elapsedMs),

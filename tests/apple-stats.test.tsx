@@ -72,6 +72,11 @@ describe('Apple Silicon on the AI stats card', () => {
     expect(html).toContain('Neural Engine');
     expect(html).not.toContain('PSU');
     expect(html).not.toContain('0 W');
+    // MPS does the fp16 matmul's maths in half precision on an Apple GPU: never labelled the PC's half-storage figure.
+    expect(html).toContain('Matmul, Metal Performance Shaders');
+    expect(html).toContain('MPS, half-precision maths, this GPU');
+    expect(html).not.toContain('FP16 storage');
+    expect(html).not.toContain('float maths on the shader cores');
   });
 
   it('before Measure the headline says what to do rather than showing a dash or a made-up figure', () => {
