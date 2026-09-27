@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { chmodSync, mkdtempSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CollectorClient } from '../electron/collector';
 import { MacCollector, NOT_ON_APPLE_SILICON } from '../electron/mac/server';
-import { MacSensors } from '../electron/mac/sensors';
-import type { Handshake, Health, SensorMeta, StaticSnapshot, Tick, TuneStatus } from '../src/collector-types';
+import { MacSensors, qpcNow } from '../electron/mac/sensors';
+import type { Handshake, Health, LoadRun, SensorMeta, StaticSnapshot, Tick, TuneStatus } from '../src/collector-types';
 
 /**
  * The macOS collector over the real wire, driven by the real CollectorClient: the routes, the
@@ -38,6 +38,7 @@ describe('the macOS collector over the wire', () => {
   let dir: string;
   let mac: MacCollector;
   let h: Handshake;
+  let sensors: MacSensors;
   const client = () => {
     const c = new CollectorClient();
     Object.assign(c, { handshake: h });
@@ -50,7 +51,7 @@ describe('the macOS collector over the wire', () => {
     const worker = join(dir, 'fake-worker.sh');
     writeFileSync(worker, '#!/bin/sh\n[ "$1" = "--info" ] && { echo \'{"device":"Apple Test","luid":"1","unified":true,"recommendedMaxWorkingSetBytes":805306368,"maxBufferBytes":1}\'; exit 0; }\nsleep "$4"\n');
     chmodSync(worker, 0o755);
-    const sensors = new MacSensors({ macmon: null, chip: 'Apple Test', gpuTotalMiB: 768, pollers: false, tickMs: 20 });
+    sensors = new MacSensors({ macmon: null, chip: 'Apple Test', gpuTotalMiB: 768, pollers: false, tickMs: 20, idleTickMs: 50 });
     mac = new MacCollector({ version: 'test', dataDir: dir, workerPath: worker, macmonPath: null, sensors, snapshot: () => Promise.resolve(SNAPSHOT), logicalCpus: 4 });
     h = await mac.start();
     mac.feed(sample);
@@ -114,6 +115,8 @@ describe('the macOS collector over the wire', () => {
     expect(run.exitCode).toBe(0);
     expect(run.cpuSamples.length).toBeGreaterThanOrEqual(2);
     expect(run.cpuSamples[0].packageW).toBe(5);
+    // The run held the sensors at the leased rate and let them go when it ended.
+    expect(sensors.leaseReasons).toEqual([]);
   });
 
   it('refuses a bad load request and a second run while one is going', async () => {
@@ -140,5 +143,69 @@ describe('the macOS collector over the wire', () => {
     expect(await c.shutdown()).toBe(true);
     await tick(50);
     expect(mac.handshake).toBeNull();
+  });
+});
+
+describe('a macOS load run while the sensors come up to the leased rate', () => {
+  let dir: string;
+  let mac: MacCollector;
+  let h: Handshake;
+  let sensors: MacSensors;
+  const spawned = () => join(dir, 'spawned');
+  const client = () => {
+    const c = new CollectorClient();
+    Object.assign(c, { handshake: h });
+    c.state = { status: 'connected', message: 'test' };
+    return c;
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'strata-tune-mac-fresh-'));
+    const worker = join(dir, 'fake-worker.sh');
+    // Each worker start leaves its kind in a file, so a run that never started shows.
+    writeFileSync(worker, `#!/bin/sh\n[ "$1" = "--info" ] && exit 1\necho "$2" >> "${spawned()}"\nsleep "$4"\n`);
+    chmodSync(worker, 0o755);
+    // macmon counts as installed but its lines are fed by hand: a run waits for one taken at the leased rate.
+    sensors = new MacSensors({ macmon: '/opt/homebrew/bin/macmon', chip: 'Apple Test', gpuTotalMiB: 768, pollers: false, lingerMs: 0 });
+    mac = new MacCollector({ version: 'test', dataDir: dir, workerPath: worker, macmonPath: null, sensors, snapshot: () => Promise.resolve(SNAPSHOT), logicalCpus: 4 });
+    h = await mac.start();
+    mac.feed(sample);
+  });
+  afterAll(() => mac.stop());
+
+  it('answers POST /load before the wait, so a Stop during it cancels the run and no worker starts', async () => {
+    const monitor = sensors.acquire('monitor');
+    const c = client();
+    const pending = c.load('heavy', 5);
+    await tick(100);
+    expect(await c.cancelLoad()).toBe(true);
+    // The fresh line lands after the Stop: the run stays cancelled and nothing is spawned.
+    mac.feed(sample);
+    const run = await pending;
+    expect(run.state).toBe('cancelled');
+    expect(run.gpuSamples).toEqual([]);
+    await tick(100);
+    expect(existsSync(spawned())).toBe(false);
+    monitor.release();
+    expect(sensors.leaseReasons).toEqual([]);
+  });
+
+  it('starts the clock at the spawn, after the fresh sample, with the idle reference taken there', async () => {
+    const c = client();
+    // Not 409: the cancelled run let go.
+    let run = await c.post<LoadRun>('/load', { kind: 'cpu', seconds: 1 });
+    expect(run.state).toBe('running');
+    await tick(100);
+    expect(existsSync(spawned())).toBe(false);
+    const fedAt = qpcNow();
+    mac.feed(sample);
+    while (run.state === 'running') {
+      await tick(100);
+      run = await c.get<LoadRun>(`/load/${run.id}`);
+    }
+    expect(run.state).toBe('done');
+    expect(run.qpcStart).toBeGreaterThanOrEqual(fedAt);
+    expect(run.cpuSamples[0].qpc).toBeGreaterThanOrEqual(run.qpcStart);
+    expect(readFileSync(spawned(), 'utf8').trim()).toBe('cpu');
   });
 });

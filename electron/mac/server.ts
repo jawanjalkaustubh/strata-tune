@@ -16,12 +16,11 @@ import type { AddressInfo } from 'net';
 import type { GpuFacts, Handshake, Health, LoadRunRequest, StaticSnapshot, Tick, Timers, TuneStatus } from '../../src/collector-types';
 import { LoadRunner } from './loads';
 import { sampleHogs } from './hogs';
-import { MacSensors, QPC_FREQUENCY, parseBattery, qpcNow, type BatteryReading, type MacmonSample } from './sensors';
+import { MacSensors, QPC_FREQUENCY, parseBattery, type BatteryReading, type MacmonSample, type SensorLease } from './sensors';
 import { macSnapshot, type WorkerInfo } from './snapshot';
 
 export const NOT_ON_APPLE_SILICON = 'The headroom hunt drives NVIDIA clock offsets through NVAPI. Apple Silicon GPUs have no user clock control, so there is nothing to hunt on this Mac.';
 
-const TICK_MS = 500;
 const KEEP_ALIVE_MS = 10_000;
 const SNAPSHOT_CACHE_MS = 30_000;
 
@@ -44,6 +43,8 @@ interface SocInfo {
   gpuMaxClockMhz: number | null;
   /** macmon's cluster labels ("S"/"P" on the M5 Pro/Max, "P"/"E" before). */
   coreLabels: { high: string; low: string } | null;
+  /** The line is a full sample as well: the rows' first, before the 5 s idle stream's first line. */
+  sample?: MacmonSample | null;
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
@@ -66,7 +67,7 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
-/** `macmon pipe --soc-info -s 1`: the chip name and its clock table, once at start. */
+/** `macmon pipe --soc-info -s 1`: the chip name and its clock table, once at start, and the sample on the same line. */
 function socInfo(macmon: string | null): Promise<SocInfo> {
   const fallback: SocInfo = { chip: os.cpus()[0]?.model || 'Apple Silicon', maxClockMhz: 0, gpuCores: null, gpuMaxClockMhz: null, coreLabels: null };
   if (!macmon) return Promise.resolve(fallback);
@@ -75,7 +76,7 @@ function socInfo(macmon: string | null): Promise<SocInfo> {
       if (err) return resolve(fallback);
       try {
         const line = String(out).split('\n').find((l) => l.trim().startsWith('{')) ?? '{}';
-        const j = JSON.parse(line) as { soc?: { chip_name?: string; pcpu_freqs?: number[]; ecpu_freqs?: number[]; gpu_freqs?: number[]; gpu_cores?: number; pcpu_label?: string; ecpu_label?: string } };
+        const j = JSON.parse(line) as MacmonSample & { soc?: { chip_name?: string; pcpu_freqs?: number[]; ecpu_freqs?: number[]; gpu_freqs?: number[]; gpu_cores?: number; pcpu_label?: string; ecpu_label?: string } };
         const freqs = [...(j.soc?.pcpu_freqs ?? []), ...(j.soc?.ecpu_freqs ?? [])];
         const gpuFreqs = j.soc?.gpu_freqs ?? [];
         resolve({
@@ -83,7 +84,8 @@ function socInfo(macmon: string | null): Promise<SocInfo> {
           maxClockMhz: freqs.length ? Math.max(...freqs) : 0,
           gpuCores: typeof j.soc?.gpu_cores === 'number' && j.soc.gpu_cores > 0 ? j.soc.gpu_cores : null,
           gpuMaxClockMhz: gpuFreqs.length ? Math.max(...gpuFreqs) : null,
-          coreLabels: j.soc?.pcpu_label && j.soc?.ecpu_label ? { high: j.soc.pcpu_label, low: j.soc.ecpu_label } : null
+          coreLabels: j.soc?.pcpu_label && j.soc?.ecpu_label ? { high: j.soc.pcpu_label, low: j.soc.ecpu_label } : null,
+          sample: typeof j.cpu_power === 'number' ? j : null
         });
       } catch {
         resolve(fallback);
@@ -125,20 +127,39 @@ function batteryNow(): Promise<BatteryReading | null> {
 export class MacCollector {
   handshake: Handshake | null = null;
   private server: http.Server | null = null;
-  private sensors: MacSensors | null = null;
+  private readonly sensors: MacSensors;
+  /** The sensors were built here (not injected by a test), so the chip's facts are ours to fill in. */
+  private readonly ownSensors: boolean;
   private loads: LoadRunner | null = null;
   private clients = new Set<http.ServerResponse>();
   private keepAlive: NodeJS.Timeout | null = null;
   private readonly startedAt = new Date();
-  private soc: SocInfo = { chip: 'Apple Silicon', maxClockMhz: 0, gpuCores: null, gpuMaxClockMhz: null, coreLabels: null };
+  private soc: SocInfo = { chip: os.cpus()[0]?.model || 'Apple Silicon', maxClockMhz: 0, gpuCores: null, gpuMaxClockMhz: null, coreLabels: null };
   private info: WorkerInfo | null = null;
   private snapshotCache: { at: number; value: Promise<StaticSnapshot> } | null = null;
+  /** macmon's soc info, the worker's --info and the GPU core count, read after the server listens; the snapshot waits for them. */
+  private facts: Promise<void> = Promise.resolve();
 
-  constructor(private readonly opts: MacCollectorOptions) {}
+  constructor(private readonly opts: MacCollectorOptions) {
+    // Built at once, before start(), so a lease taken early (the Monitor, a load) holds from the first sample.
+    this.ownSensors = !opts.sensors;
+    this.sensors = opts.sensors ?? new MacSensors({ macmon: opts.macmonPath, chip: this.soc.chip, gpuTotalMiB: null, factsPending: true });
+    this.sensors.on('tick', (row: { qpc: number; values: Record<string, number> }) => this.broadcast(row));
+  }
 
   /** macmon is streaming; false means only the IOKit rows (battery, GPU memory) exist. */
   get sensorsUp(): boolean {
-    return !!this.sensors?.up;
+    return this.sensors.up;
+  }
+
+  /** Holds the sensors at the leased rate (macmon at 500 ms, the GPU memory read every 2 s) until release(). */
+  acquire(reason: string): SensorLease {
+    return this.sensors.acquire(reason);
+  }
+
+  /** Resolves once a row sampled at the leased rate has arrived (at once when the last one is). */
+  whenFresh(timeoutMs?: number): Promise<void> {
+    return this.sensors.whenFresh(timeoutMs);
   }
 
   get macmonInstalled(): boolean {
@@ -147,19 +168,11 @@ export class MacCollector {
 
   async start(): Promise<Handshake> {
     if (this.handshake) return this.handshake;
-    const [soc, info, ioregCores] = await Promise.all([socInfo(this.opts.macmonPath), workerInfo(this.opts.workerPath), gpuCoresFromIoreg()]);
-    this.soc = { ...soc, gpuCores: soc.gpuCores ?? ioregCores };
-    this.info = info;
-    this.sensors =
-      this.opts.sensors ??
-      new MacSensors({
-        macmon: this.opts.macmonPath,
-        chip: info?.device ?? soc.chip,
-        facts: { gpuName: this.gpuName(), coreLabels: this.soc.coreLabels ?? undefined, gpuCores: this.soc.gpuCores },
-        gpuTotalMiB: info ? info.recommendedMaxWorkingSetBytes / 1024 ** 2 : null
-      });
+    // Listen first. The chip's facts (macmon's soc info, the worker's --info, the GPU core count)
+    // take a few hundred milliseconds to seconds and only the names and the snapshot need them:
+    // rows flow meanwhile behind Health.warming, and /snapshot waits for the facts.
+    this.facts = this.readFacts();
     this.loads = new LoadRunner(this.opts.workerPath, this.sensors);
-    this.sensors.on('tick', (row: { qpc: number; values: Record<string, number> }) => this.broadcast(row));
     this.sensors.start();
     this.server = http.createServer((req, res) => void this.handle(req, res));
     const port = await new Promise<number>((resolve, reject) => {
@@ -178,7 +191,7 @@ export class MacCollector {
     if (this.keepAlive) clearInterval(this.keepAlive);
     this.keepAlive = null;
     this.loads?.stopAll();
-    this.sensors?.stop();
+    this.sensors.stop();
     for (const c of this.clients) c.end();
     this.clients.clear();
     const server = this.server;
@@ -192,6 +205,17 @@ export class MacCollector {
     this.handshake = null;
   }
 
+  private async readFacts(): Promise<void> {
+    const [soc, info] = await Promise.all([socInfo(this.opts.macmonPath), workerInfo(this.opts.workerPath)]);
+    // The 45 KB AGXAccelerator dump only when macmon has not named the core count.
+    this.soc = { ...soc, gpuCores: soc.gpuCores ?? (await gpuCoresFromIoreg()) };
+    this.info = info;
+    if (this.ownSensors) {
+      if (soc.sample) this.sensors.seed(soc.sample);
+      this.sensors.setFacts(info?.device ?? soc.chip, { gpuName: this.gpuName(), coreLabels: this.soc.coreLabels ?? undefined, gpuCores: this.soc.gpuCores }, info ? info.recommendedMaxWorkingSetBytes / 1024 ** 2 : null);
+    }
+  }
+
   /** "Apple M5 Max (40-core GPU)": the adapter name in the snapshot and the GPU node's name in the sensor rows; two M5 Max parts share a chip name. */
   private gpuName(): string {
     const chip = this.info?.device ?? this.soc.chip;
@@ -200,7 +224,7 @@ export class MacCollector {
 
   /** Tests feed macmon samples straight in. */
   feed(sample: MacmonSample) {
-    this.sensors?.feed(sample);
+    this.sensors.feed(sample);
   }
 
   private writeHandshake(h: Handshake) {
@@ -224,7 +248,7 @@ export class MacCollector {
       qpcFrequency: QPC_FREQUENCY,
       startedAt: this.startedAt.toISOString(),
       uptime: (Date.now() - this.startedAt.getTime()) / 1000,
-      warming: !!this.sensors?.warming,
+      warming: this.sensors.warming,
       tune: null
     };
   }
@@ -265,7 +289,7 @@ export class MacCollector {
     if (this.opts.snapshot) return this.opts.snapshot();
     const now = Date.now();
     if (this.snapshotCache && now - this.snapshotCache.at < SNAPSHOT_CACHE_MS) return this.snapshotCache.value;
-    const value = macSnapshot({ workerInfo: () => Promise.resolve(this.info), battery: batteryNow, maxClockMhz: () => this.soc.maxClockMhz, gpu: () => ({ name: this.gpuName(), cores: this.soc.gpuCores, maxClockMhz: this.soc.gpuMaxClockMhz }) });
+    const value = this.facts.then(() => macSnapshot({ workerInfo: () => Promise.resolve(this.info), battery: batteryNow, maxClockMhz: () => this.soc.maxClockMhz, gpu: () => ({ name: this.gpuName(), cores: this.soc.gpuCores, maxClockMhz: this.soc.gpuMaxClockMhz }) }));
     this.snapshotCache = { at: now, value };
     value.catch(() => (this.snapshotCache = null));
     return value;
@@ -273,7 +297,7 @@ export class MacCollector {
 
   private broadcast(row: { qpc: number; values: Record<string, number> }) {
     if (this.clients.size === 0) return;
-    const tick: Tick = { qpc: row.qpc, sensors: row.values, gpu: [], warming: !!this.sensors?.warming };
+    const tick: Tick = { qpc: row.qpc, sensors: row.values, gpu: [], warming: this.sensors.warming };
     const frame = `event: tick\ndata: ${JSON.stringify(tick)}\n\n`;
     for (const c of this.clients) c.write(frame);
   }
@@ -288,11 +312,11 @@ export class MacCollector {
     try {
       if (method === 'GET' && p === '/health') return json(res, 200, this.health());
       if (method === 'GET' && p === '/snapshot') return json(res, 200, await this.snapshot());
-      if (method === 'GET' && p === '/sensors/meta') return json(res, 200, this.sensors?.meta() ?? []);
-      if (method === 'GET' && p === '/sensors/latest') return json(res, 200, this.sensors?.latest() ?? { qpc: qpcNow(), values: {} });
+      if (method === 'GET' && p === '/sensors/meta') return json(res, 200, this.sensors.meta());
+      if (method === 'GET' && p === '/sensors/latest') return json(res, 200, this.sensors.latest());
       if (method === 'GET' && p === '/sensors/window') {
         const seconds = Math.max(1, Math.min(4 * 3600, Number(url.searchParams.get('seconds')) || 60));
-        return json(res, 200, this.sensors?.ring.window(seconds) ?? { seconds, qpcNow: qpcNow(), rows: [], summaries: [] });
+        return json(res, 200, this.sensors.ring.window(seconds));
       }
       if (method === 'GET' && p === '/gpu') return json(res, 200, [] as GpuFacts[]);
       if (method === 'GET' && (p === '/procs/hogs' || p === '/hogs')) {

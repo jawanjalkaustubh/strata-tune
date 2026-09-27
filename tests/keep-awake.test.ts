@@ -1,6 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { powerSaveBlocker } from 'electron';
+import { awakeDuring, hold, holding, releaseAll } from '../electron/keepAwake';
+
+vi.mock('electron', () => {
+  const started = new Set<number>();
+  let next = 0;
+  return {
+    powerSaveBlocker: {
+      start: vi.fn(() => (started.add(++next), next)),
+      stop: vi.fn((id: number) => started.delete(id)),
+      isStarted: (id: number) => started.has(id)
+    }
+  };
+});
 
 /**
  * Plan section 17c, 'No sleeping mid-run' (phase 8 follow-up item 12): the collector holds
@@ -50,5 +64,42 @@ describe('keep-awake during runs', () => {
     const set = capture.slice(capture.indexOf('private set(patch: Partial<CaptureState>)'), capture.indexOf('private get busy()'));
     expect(set).toContain("if (this.state.status === 'capturing' || this.state.status === 'saving') hold('capture');");
     expect(set).toContain("else release('capture');");
+  });
+});
+
+describe('keep-awake on macOS, where the runs live in the app', () => {
+  const main = read('electron/main.ts');
+  it('holds the Mac awake for the audit loads, Measure, the LLM benchmark and llama-benchy, and lets go at quit', () => {
+    expect(main).toContain("keepAwakeOnMac(`load ${kind}`, () => c.load(kind, seconds))");
+    expect(main).toMatch(/if \(process\.platform === 'darwin'\) releaseAll\(\);/);
+    expect(read('electron/bench.ts')).toContain("keepAwakeOnMac('measure', () => doBenchGpu(driver, collector))");
+    const llm = read('electron/llm-bench.ts');
+    expect(llm).toContain("keepAwakeOnMac('llm benchmark', () => run(");
+    expect(llm).toContain("keepAwakeOnMac('llama-benchy', () => runBenchy(");
+    const awake = read('electron/keepAwake.ts');
+    expect(awake).toContain("return process.platform === 'darwin' ? awakeDuring(name, work) : work();");
+    // Released however the work ends.
+    expect(awake.slice(awake.indexOf('export async function awakeDuring'))).toMatch(/finally \{[\s\S]*release\(name\)/);
+  });
+});
+
+describe('awakeDuring', () => {
+  it('overlapping runs under one name share one blocker, the last to end releases it, and a throw releases too', async () => {
+    const start = vi.mocked(powerSaveBlocker.start);
+    start.mockClear();
+    let finishA!: () => void;
+    const a = awakeDuring('llm benchmark', () => new Promise<void>((r) => (finishA = r)));
+    const b = awakeDuring('llm benchmark', () => Promise.resolve('b'));
+    expect(await b).toBe('b');
+    expect(holding('llm benchmark')).toBe(true);
+    finishA();
+    await a;
+    expect(holding('llm benchmark')).toBe(false);
+    expect(start).toHaveBeenCalledTimes(1);
+    await expect(awakeDuring('measure', () => Promise.reject(new Error('worker died')))).rejects.toThrow('worker died');
+    expect(holding('measure')).toBe(false);
+    hold('capture');
+    releaseAll();
+    expect(holding('capture')).toBe(false);
   });
 });

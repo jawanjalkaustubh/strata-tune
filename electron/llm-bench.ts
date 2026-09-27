@@ -1,11 +1,12 @@
 /**
  * The LLM benchmark runner (plan section 10c, the cross-machine comparison; the pure half is
  * src/analysis/llm-bench.ts): evicts the model, reads the collector idle for two seconds,
- * then runs the fixed prompt through Ollama at each context depth N times at temperature 0
- * with a fixed seed and a fixed length, sampling the collector's power and memory readings
- * while each generation is in flight. Results live in llm-bench.json beside bench.json;
- * Export writes them to a file the other machine's Import reads, so a PC row and a Mac row
- * sit in one table.
+ * loads the model cold at the sweep's one context window with a warm-up generation that is
+ * discarded, then runs the fixed prompt through Ollama at each context depth N times at
+ * temperature 0 with a fixed seed and a fixed length, sampling the collector's power and memory
+ * readings, each stamped, while each generation is in flight. Results live in llm-bench.json
+ * beside bench.json; Export writes them to a file the other machine's Import reads, so a PC row
+ * and a Mac row sit in one table.
  *
  * The same file runs llama-benchy (eugr/llama-benchy, the community table) through `uvx`
  * against Ollama's OpenAI endpoint and keeps its JSON beside the card's own rows.
@@ -14,13 +15,15 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { spawn, execFileSync, type ChildProcess } from 'child_process';
+import { spawn, execFile, execFileSync, type ChildProcess } from 'child_process';
 import { app, dialog, BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from 'electron';
 import type { CollectorClient } from './collector';
 import { KEEP_ALIVE, OLLAMA, ollamaError, ollamaJson, type BenchError } from './bench';
-import type { GpuFacts, SensorMeta } from '../src/collector-types';
+import { keepAwakeOnMac } from './keepAwake';
+import { powerModeOf } from './mac/snapshot';
+import type { GpuFacts, SensorMeta, Tick } from '../src/collector-types';
 import {
-  DEFAULT_RUNS, DEPTHS, IDLE_SECONDS, NUM_CTX, PREDICT_TOKENS, SAMPLE_MS, SEED, numCtxFor, promptForRun, parseBenchFile, parseBenchyJson, summarise, supersede, validBenchy, validResult,
+  DEFAULT_RUNS, DEPTHS, IDLE_SECONDS, PREDICT_TOKENS, SAMPLE_MS, SEED, promptForRun, parseBenchFile, parseBenchyJson, summarise, supersede, sweepPlan, validBenchy, validResult,
   type BenchyResult, type LlmBenchFile, type LlmBenchResult, type LlmMachine, type LlmModel, type LlmRun, type LlmSample
 } from '../src/analysis/llm-bench';
 
@@ -31,7 +34,7 @@ export interface LlmBenchRequest {
   machine: Omit<LlmMachine, 'hostname' | 'os'>;
 }
 
-/** Pushed on 'llm:progress' while a run goes: the phase and, inside the runs, which one at which depth. */
+/** Pushed on 'llm:progress' while a run goes: the phase and, inside the runs, which one at which depth. 'load' is the cold load with its discarded warm-up. */
 export interface LlmProgress {
   model: string;
   phase: 'evict' | 'idle' | 'load' | 'run' | 'done';
@@ -125,7 +128,12 @@ export function resolveIds(meta: SensorMeta[], gpuName = ''): Ids {
 class Sampler {
   private ids: Ids = {};
   private timer: NodeJS.Timeout | null = null;
-  samples: LlmSample[] = [];
+  private offTick: (() => void) | null = null;
+  /**
+   * macOS: every row the collector ticks (one per macmon line, 2 Hz while the run holds its
+   * sensor lease) rather than a 250 ms poll, which read each half-second row twice or once.
+   */
+  private readonly fromTicks = process.platform === 'darwin';
   constructor(private readonly collector: CollectorClient | null, private readonly gpuName: string) {}
 
   get connected() {
@@ -141,17 +149,18 @@ class Sampler {
     }
   }
 
-  /** One reading now: the sensor rows first, NVML's own facts (a PC's board power and VRAM) where a row is missing. */
-  private async read(): Promise<LlmSample | null> {
+  private fromValues(values: Record<string, number>, t: number): LlmSample {
+    const v = (id?: string) => (id !== undefined && Number.isFinite(values[id]) ? values[id] : null);
+    return { t, gpuW: v(this.ids.gpuW), cpuW: v(this.ids.cpuW), systemW: v(this.ids.systemW), gpuMemMiB: v(this.ids.gpuMemMiB) };
+  }
+
+  /** One reading now, stamped `t`: the sensor rows first, NVML's own facts (a PC's board power and VRAM) where a row is missing. */
+  private async read(t: number): Promise<LlmSample | null> {
     if (!this.connected) return null;
-    const sample: LlmSample = { gpuW: null, cpuW: null, systemW: null, gpuMemMiB: null };
+    let sample: LlmSample = { t, gpuW: null, cpuW: null, systemW: null, gpuMemMiB: null };
     try {
       const row = await this.collector!.sensorsLatest();
-      const v = (id?: string) => (id !== undefined && Number.isFinite(row.values[id]) ? row.values[id] : null);
-      sample.gpuW = v(this.ids.gpuW);
-      sample.cpuW = v(this.ids.cpuW);
-      sample.systemW = v(this.ids.systemW);
-      sample.gpuMemMiB = v(this.ids.gpuMemMiB);
+      sample = this.fromValues(row.values, t);
     } catch {
       /* the collector went away for a tick */
     }
@@ -169,17 +178,27 @@ class Sampler {
     return sample;
   }
 
-  start(into: LlmSample[]) {
+  /** Readings into `into`, each stamped with the milliseconds since `origin` (when the request was sent). */
+  start(into: LlmSample[], origin = Date.now()) {
     this.stop();
     if (!this.connected) return;
+    if (this.fromTicks) {
+      const c = this.collector!;
+      const onTick = (tick: Tick) => into.push(this.fromValues(tick.sensors, Date.now() - origin));
+      c.on('tick', onTick);
+      this.offTick = () => c.off('tick', onTick);
+      return;
+    }
     this.timer = setInterval(() => {
-      this.read().then((s) => s && into.push(s));
+      this.read(Date.now() - origin).then((s) => s && into.push(s));
     }, SAMPLE_MS);
   }
 
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.offTick?.();
+    this.offTick = null;
   }
 }
 
@@ -196,6 +215,14 @@ interface Generate {
 
 interface Show {
   details?: { parameter_size?: string; quantization_level?: string; family?: string };
+  /** GGUF metadata; "<arch>.context_length" is the model's trained window. */
+  model_info?: Record<string, unknown>;
+}
+
+/** The model's trained context window from /api/show, null when the metadata does not say. */
+export function contextLengthOf(show: Show): number | null {
+  for (const [key, value] of Object.entries(show.model_info ?? {})) if (key.endsWith('.context_length') && typeof value === 'number' && value > 0) return value;
+  return null;
 }
 
 interface Tags {
@@ -220,16 +247,56 @@ const osName = (): LlmMachine['os'] => (process.platform === 'darwin' ? 'macOS' 
 const hostname = () => os.hostname().replace(/\.local$/, '');
 const machineOf = (m: LlmBenchRequest['machine']): LlmMachine => ({ ...m, hostname: hostname(), os: osName() });
 
+const output = (cmd: string, args: string[]) => new Promise<string>((resolve) => execFile(cmd, args, { timeout: 5000 }, (err, out) => resolve(err ? '' : String(out))));
+
+/** `pmset -g batt`: "Now drawing from 'AC Power'" or "'Battery Power'"; null when it says neither. */
+export function powerSourceOf(pmsetBatt: string): 'ac' | 'battery' | null {
+  const m = /drawing from '([^']+)'/.exec(pmsetBatt);
+  return !m ? null : /battery/i.test(m[1]) ? 'battery' : /ac/i.test(m[1]) ? 'ac' : null;
+}
+
+/** `pmset -g`: Low Power Mode is lowpowermode 1 on most Macs and powermode 1 where a High Power mode exists (the 14" and 16" Max). */
+export function lowPowerModeOf(pmset: string): boolean | null {
+  const m = /\blowpowermode\s+(\d)/.exec(pmset) ?? /\bpowermode\s+(\d)/.exec(pmset);
+  return m ? m[1] === '1' : null;
+}
+
+/** An Ollama setting as the daemon sees it: this process's environment, else launchd's (the Ollama app reads `launchctl setenv`). */
+async function ollamaEnv(name: string): Promise<string | null> {
+  const own = process.env[name]?.trim();
+  if (own) return own;
+  return (await output('launchctl', ['getenv', name])).trim() || null;
+}
+
+/**
+ * macOS: the settings that move the figures without changing the hardware, into the machine
+ * record. Windows keeps its record as it was.
+ */
+async function machineExtras(): Promise<Partial<LlmMachine>> {
+  if (process.platform !== 'darwin') return {};
+  const [version, flashAttention, kvCacheType, batt, pmset] = await Promise.all([
+    ollamaJson<{ version?: string }>('/api/version').then((v) => v.version ?? null, () => null),
+    ollamaEnv('OLLAMA_FLASH_ATTENTION'),
+    ollamaEnv('OLLAMA_KV_CACHE_TYPE'),
+    output('pmset', ['-g', 'batt']),
+    output('pmset', ['-g'])
+  ]);
+  const mode = powerModeOf(pmset).name;
+  return { ollamaVersion: version, flashAttention, kvCacheType, powerSource: powerSourceOf(batt), lowPowerMode: lowPowerModeOf(pmset), powerMode: mode === 'Unknown' ? null : mode };
+}
+
 async function run(req: LlmBenchRequest, collector: CollectorClient | null, progress: (p: LlmProgress) => void): Promise<LlmBenchResult | BenchError> {
   const runs = Math.max(1, Math.min(9, Math.round(req.runs ?? DEFAULT_RUNS)));
   const controller = new AbortController();
   current = controller;
   const signal = controller.signal;
   const sampler = new Sampler(collector, req.machine.gpuName);
+  // macOS: the sensors at 2 Hz for the whole run (nothing on Windows).
+  const lease = collector?.lease('llm benchmark') ?? null;
   const report = (phase: LlmProgress['phase'], runIndex = 0, depth = 0) => progress({ model: req.model, phase, run: runIndex, runs, depth });
   try {
     // The model's own description and size, so the row says what was timed (a 27B at Q4 is not a 27B at Q8).
-    const [show, tags] = await Promise.all([ollamaJson<Show>('/api/show', { model: req.model }), ollamaJson<Tags>('/api/tags')]);
+    const [show, tags, extras] = await Promise.all([ollamaJson<Show>('/api/show', { model: req.model }), ollamaJson<Tags>('/api/tags'), machineExtras()]);
     const tag = (tags.models ?? []).find((m) => m.name === req.model);
     const model: LlmModel = {
       name: req.model,
@@ -238,38 +305,47 @@ async function run(req: LlmBenchRequest, collector: CollectorClient | null, prog
       family: show.details?.family ?? '',
       sizeBytes: tag?.size ?? 0
     };
-    // Evict so run 1 is a cold load: the figure Ollama's verbose output calls load duration.
+    // One window for every request, so Ollama loads the model once; a depth that does not fit it is skipped.
+    const plan = sweepPlan(contextLengthOf(show));
+    // Evict so the first request is a cold load: the figure Ollama's verbose output calls load duration.
     report('evict');
     await ollamaJson('/api/generate', { model: req.model, keep_alive: 0 }, 10_000, signal);
+    // The sensor list and the idle baseline from rows at the leased rate, not the last 5 s sample.
+    await lease?.fresh;
     await sampler.prepare();
     report('idle');
     const idle: LlmSample[] = [];
     sampler.start(idle);
     await sleep(IDLE_SECONDS * 1000, signal).finally(() => sampler.stop());
+    const generate = async (prompt: string, into: LlmSample[]): Promise<{ g: Generate; wallMs: number }> => {
+      const sent = Date.now();
+      sampler.start(into, sent);
+      try {
+        const g = await ollamaJson<Generate>(
+          '/api/generate',
+          { model: req.model, prompt, stream: false, keep_alive: KEEP_ALIVE, options: { num_predict: PREDICT_TOKENS, num_ctx: plan.numCtx, temperature: 0, seed: SEED } },
+          GENERATE_TIMEOUT_MS,
+          signal
+        );
+        return { g, wallMs: Date.now() - sent };
+      } finally {
+        sampler.stop();
+      }
+    };
+    // The cold load and one warm-up generation in the same request: the load is timed, the
+    // generation (weights paging in, kernels built on first use) is discarded.
+    report('load');
+    const warm = await generate(promptForRun(0, runs, 0), []);
+    if (!warm.g.eval_count || !warm.g.eval_duration) return { error: `${req.model} generated nothing to time in the warm-up` };
     const busy: LlmSample[] = [];
     const results: LlmRun[] = [];
-    for (const depth of DEPTHS) {
+    for (const depth of plan.depths) {
       for (let i = 1; i <= runs; i++) {
-        report(depth === 0 && i === 1 ? 'load' : 'run', i, depth);
-        sampler.start(busy);
-        let g: Generate;
-        try {
-          g = await ollamaJson<Generate>(
-            '/api/generate',
-            {
-              model: req.model,
-              prompt: promptForRun(i, runs, depth),
-              stream: false,
-              keep_alive: KEEP_ALIVE,
-              options: { num_predict: PREDICT_TOKENS, num_ctx: numCtxFor(depth), temperature: 0, seed: SEED }
-            },
-            GENERATE_TIMEOUT_MS,
-            signal
-          );
-        } finally {
-          sampler.stop();
-        }
+        report('run', i, depth);
+        const samples: LlmSample[] = [];
+        const { g, wallMs } = await generate(promptForRun(i, runs, depth), samples);
         if (!g.eval_count || !g.eval_duration) return { error: `${req.model} generated nothing to time at depth ${depth}` };
+        busy.push(...samples);
         results.push({
           depth,
           promptEvalCount: g.prompt_eval_count ?? 0,
@@ -277,7 +353,9 @@ async function run(req: LlmBenchRequest, collector: CollectorClient | null, prog
           evalCount: g.eval_count,
           evalMs: g.eval_duration / 1e6,
           loadMs: (g.load_duration ?? 0) / 1e6,
-          totalMs: (g.total_duration ?? 0) / 1e6
+          totalMs: (g.total_duration ?? 0) / 1e6,
+          wallMs,
+          samples
         });
       }
     }
@@ -292,13 +370,15 @@ async function run(req: LlmBenchRequest, collector: CollectorClient | null, prog
     const result = summarise({
       id: randomUUID(),
       measuredAt: new Date().toISOString(),
-      machine: machineOf(req.machine),
+      machine: { ...machineOf(req.machine), ...extras },
       model,
       runs: results,
       idle,
       busy,
       residentBytes,
-      numCtx: NUM_CTX
+      numCtx: plan.numCtx,
+      loadMs: (warm.g.load_duration ?? 0) / 1e6,
+      warmupRuns: 1
     });
     const store = readAll();
     writeAll({ ...store, results: supersede(store.results, result, (r) => r.model.name) });
@@ -307,6 +387,7 @@ async function run(req: LlmBenchRequest, collector: CollectorClient | null, prog
     return ollamaError(e);
   } finally {
     sampler.stop();
+    lease?.release();
     if (current === controller) current = null;
   }
 }
@@ -533,7 +614,7 @@ export function registerLlmBenchIpc(ipcMain: IpcMain, collector: () => Collector
   ipcMain.handle('llm:list', () => readAll());
   ipcMain.handle('llm:run', (_e, req: LlmBenchRequest) => {
     // A second Run while one goes joins it: two generations on the card at once would time each other.
-    if (!inFlight) inFlight = run(req, collector(), (p) => send('llm:progress', p)).finally(() => (inFlight = null));
+    if (!inFlight) inFlight = keepAwakeOnMac('llm benchmark', () => run(req, collector(), (p) => send('llm:progress', p))).finally(() => (inFlight = null));
     return inFlight;
   });
   ipcMain.handle('llm:cancel', () => cancel());
@@ -547,7 +628,7 @@ export function registerLlmBenchIpc(ipcMain: IpcMain, collector: () => Collector
   ipcMain.handle('llm:import', (e) => importResults(e));
   ipcMain.handle('llm:benchyStatus', () => benchyStatus());
   ipcMain.handle('llm:benchy', (_e, req: LlmBenchRequest) => {
-    if (!benchyInFlight) benchyInFlight = runBenchy(req, (p) => send('llm:benchyProgress', p)).finally(() => (benchyInFlight = null));
+    if (!benchyInFlight) benchyInFlight = keepAwakeOnMac('llama-benchy', () => runBenchy(req, (p) => send('llm:benchyProgress', p))).finally(() => (benchyInFlight = null));
     return benchyInFlight;
   });
   ipcMain.handle('llm:benchyCancel', () => cancelBenchy());

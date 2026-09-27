@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Download, Play, Square, Trash2, Upload } from 'lucide-react';
 import type { BenchyProgress, BenchyStatus, LlmProgress, OllamaInstalled } from '../../api';
-import { COLUMNS, TABLE_COLUMNS, atDepth, bestBenchy, bestOf, groupBenchy, groupByModel, machineLabel, type BenchyResult, type LlmBenchResult, type Stat } from '../../analysis/llm-bench';
+import { COLUMNS, TABLE_COLUMNS, atDepth, bestBenchy, bestOf, groupBenchy, groupByModel, isCurrentProtocol, machineLabel, type BenchyResult, type LlmBenchResult, type LlmMachine, type Stat } from '../../analysis/llm-bench';
 import { Card } from './Card';
 import { Tag } from './Tag';
 import { gib, tokS } from './format';
@@ -60,7 +60,7 @@ const kilo = (n: number) => (n >= 1024 ? `${Math.round(n / 1024)}k` : String(n))
 const PHASE: Record<LlmProgress['phase'], string> = {
   evict: 'unloading the model so run 1 loads cold',
   idle: 'reading idle power',
-  load: 'loading and generating (run 1: the cold load)',
+  load: 'loading cold, then a warm-up generation that is discarded',
   run: 'generating',
   done: 'writing the result'
 };
@@ -80,15 +80,35 @@ const StatCell: React.FC<{ s: Stat | null; digits?: (v: number) => string; win?:
   </td>
 );
 
+/** Ollama's version and settings, the power source and the energy mode, where the row recorded them (a Mac, current protocol). */
+function runtimeLine(m: LlmMachine): string {
+  const parts = [
+    m.ollamaVersion ? `Ollama ${m.ollamaVersion}` : '',
+    m.flashAttention !== undefined ? `flash attention ${m.flashAttention ?? 'unset'}` : '',
+    m.kvCacheType !== undefined ? `KV cache ${m.kvCacheType ?? 'unset (f16)'}` : '',
+    m.powerSource ? (m.powerSource === 'ac' ? 'on AC power' : 'on battery') : '',
+    m.powerMode ? `energy mode ${m.powerMode}` : m.lowPowerMode ? 'Low Power Mode' : ''
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+const OLD_PROTOCOL = 'Measured under the first protocol: the context window grew with the depth (Ollama reloaded the model at each), run 1 was timed straight after the load, and watts were the mean over the whole request. Shown, never ranked against current rows; rerun it to compare.';
+
 /** The host on one line and the GPU under it, so nine figures fit beside them; the full machine in the tooltip. */
-const MachineCell: React.FC<{ r: { machine: LlmBenchResult['machine']; imported: boolean }; detail?: string }> = ({ r, detail }) => {
+const MachineCell: React.FC<{ r: { machine: LlmBenchResult['machine']; imported: boolean }; detail?: string; old?: boolean }> = ({ r, detail, old }) => {
   const m = r.machine;
-  const title = `${machineLabel(m)} · ${m.os}${m.cpuName ? ` · ${m.cpuName}` : ''} · ${gib(m.ramBytes, 0)} RAM${m.unified ? ' (unified)' : ` · ${gib(m.vramBytes, 0)} VRAM`}${m.driver ? ` · driver ${m.driver}` : ''}${detail ? `\n${detail}` : ''}`;
+  const runtime = runtimeLine(m);
+  const title = `${machineLabel(m)} · ${m.os}${m.cpuName ? ` · ${m.cpuName}` : ''} · ${gib(m.ramBytes, 0)} RAM${m.unified ? ' (unified)' : ` · ${gib(m.vramBytes, 0)} VRAM`}${m.driver ? ` · driver ${m.driver}` : ''}${runtime ? `\n${runtime}` : ''}${detail ? `\n${detail}` : ''}`;
   return (
     <span className="inline-flex flex-col leading-tight" title={title}>
       <span className="flex items-center gap-1.5">
         <span className={r.imported ? 'text-studio-muted' : 'text-studio-text'}>{m.hostname}</span>
         {r.imported ? <Tag kind="measured" title="Imported from the other machine's export" /> : <Tag kind="you" title="Measured on this machine" />}
+        {old && (
+          <span className="text-[10px] text-amber-300/80" title={OLD_PROTOCOL}>
+            old protocol
+          </span>
+        )}
       </span>
       <span className="text-[10px] text-studio-subtle">
         {m.gpuName} · {m.os}
@@ -145,7 +165,7 @@ export const LlmBenchCard: React.FC<Props> = (p) => {
               <Square size={11} /> Stop
             </button>
           ) : (
-            <button className={BTN} disabled={!canRun} onClick={() => chosen && p.onRun(chosen)} title={canRun ? 'Three runs of the fixed prompt at each context depth (0, 4k, 16k); a few minutes on a large model' : 'Needs Ollama with a model installed'}>
+            <button className={BTN} disabled={!canRun} onClick={() => chosen && p.onRun(chosen)} title={canRun ? 'A cold load and a discarded warm-up, then three runs of the fixed prompt at each context depth (0, 4k, 16k) in one 32k window; a few minutes on a large model' : 'Needs Ollama with a model installed'}>
               <Play size={11} /> Run
             </button>
           )}
@@ -167,7 +187,7 @@ export const LlmBenchCard: React.FC<Props> = (p) => {
       }
     >
       <p className="text-mini text-studio-muted">
-        The same model, the same thousand-token prompt, 256 tokens at temperature 0, three runs at each context depth, timed by Ollama's own counters; the collector's watts and memory read alongside.
+        The same model, the same thousand-token prompt, 256 tokens at temperature 0, one 32k context window, a discarded warm-up after the cold load, then three runs at each context depth, timed by Ollama's own counters; the collector's watts are read over each run's decode.
         Run it here, press Export, then Import that file on the other machine and the two rows sit together. A PC's advertised TOPS and a Mac's measured matmul never compare; tokens per second on one quantised model do.
       </p>
       {!p.available && <p className="text-mini text-studio-muted">The benchmark needs the app: the plain browser cannot reach Ollama.</p>}
@@ -225,7 +245,7 @@ export const LlmBenchCard: React.FC<Props> = (p) => {
                         <React.Fragment key={r.id}>
                           <tr className="border-t border-studio-border">
                             <td className="py-1 pr-2 whitespace-nowrap align-top">
-                              <MachineCell r={r} />
+                              <MachineCell r={r} old={!isCurrentProtocol(r)} />
                             </td>
                             {columns.map((c) => {
                               const v = c.of(r);
@@ -264,6 +284,12 @@ export const LlmBenchCard: React.FC<Props> = (p) => {
                                       </span>
                                       {' prefill · first token '}
                                       {seconds(d.firstTokenMs)}
+                                      {d.tokPerSecPerGpuW != null && (
+                                        <span title={`Generation tok/s per GPU watt over the decode window (${watts(d.decodeGpuW ?? null)})`}>
+                                          {' · '}
+                                          {perW(d.tokPerSecPerGpuW)} tok/s per GPU W
+                                        </span>
+                                      )}
                                     </span>
                                   );
                                 })}
@@ -368,7 +394,7 @@ export const LlmBenchCard: React.FC<Props> = (p) => {
       )}
       {p.results.length > 0 && (
         <p className="text-[10px] text-studio-subtle">
-          GPU power is the board figure on a PC (NVML) and the GPU core on Apple Silicon; system power is the SMC's whole-machine reading, which a PC has no sensor for. Resident is Ollama's own figure for the model in GPU memory: VRAM on a PC, the unified pool on a Mac. ± is the sample spread over the runs.
+          GPU power is the board figure on a PC (NVML) and the GPU core on Apple Silicon, read over the decode (the readings inside each run's eval time, its first half second left out); system power is the SMC's whole-machine reading, which a PC has no sensor for. Resident is Ollama's own figure for the model in GPU memory: VRAM on a PC, the unified pool on a Mac. ± is the sample spread over the runs.
         </p>
       )}
     </Card>
@@ -379,12 +405,12 @@ const COLUMN_HELP: Record<string, string> = {
   gen: 'Tokens per second while generating (Ollama eval_count / eval_duration), median ± spread of the runs at zero depth',
   prefill: 'Prompt tokens per second (prompt_eval_count / prompt_eval_duration), median ± spread of the runs at zero depth',
   first: 'Time to the first token once the model is resident: the prompt evaluation, median of the runs',
-  load: 'Run 1 loads the model from nothing (it is evicted first): Ollama\'s load_duration',
+  load: 'The model is evicted first, so the first request loads it from nothing: Ollama\'s load_duration (that request\'s generation is the warm-up, discarded)',
   memory: 'What Ollama holds resident for the model after the run (/api/ps): VRAM on a PC, the unified pool on a Mac',
-  gpuW: 'Mean GPU power while a generation was in flight, every depth included; the peak is in the tooltip',
-  systemW: 'Mean whole-machine power while a generation was in flight (Apple SMC); a PC has no such sensor',
-  perGpuW: 'Generation tokens per second per mean GPU watt: what the GPU pays for its speed',
-  perSystemW: 'Generation tokens per second per mean system watt'
+  gpuW: 'GPU power over the decode window of the zero-depth runs (median of the runs); old-protocol rows: the mean over the whole request. The in-flight mean and the peak are in the tooltip',
+  systemW: 'Whole-machine power over the decode window (Apple SMC); a PC has no such sensor',
+  perGpuW: 'Generation tokens per second per decode-window GPU watt: what the GPU pays for its speed',
+  perSystemW: 'Generation tokens per second per decode-window system watt'
 };
 
 function cell(key: string, v: number): string {
@@ -412,9 +438,9 @@ function cellTitle(key: string, r: LlmBenchResult): string | undefined {
     case 'prefill':
       return `${r.settings.promptTokens} prompt tokens; runs: ${r.runs.map((x) => (x.promptEvalMs > 0 ? tokS(x.promptEvalCount / (x.promptEvalMs / 1000)) : '?')).join(', ')} tok/s`;
     case 'gpuW':
-      return r.power.gpuAvgW === null ? undefined : `Idle ${watts(r.power.gpuIdleW)}, peak ${watts(r.power.gpuPeakW)}${r.power.cpuAvgW !== null ? `; CPU package ${watts(r.power.cpuAvgW)} mean` : ''}`;
+      return r.power.gpuAvgW === null ? undefined : `Idle ${watts(r.power.gpuIdleW)}, in-flight mean ${watts(r.power.gpuAvgW)}, peak ${watts(r.power.gpuPeakW)}${r.power.cpuAvgW !== null ? `; CPU package ${watts(r.power.cpuDecodeW ?? r.power.cpuAvgW)}${r.power.cpuDecodeW != null ? ' over the decode' : ' mean'}` : ''}`;
     case 'systemW':
-      return r.power.systemAvgW === null ? undefined : `Idle ${watts(r.power.systemIdleW)}, peak ${watts(r.power.systemPeakW)}`;
+      return r.power.systemAvgW === null ? undefined : `Idle ${watts(r.power.systemIdleW)}, in-flight mean ${watts(r.power.systemAvgW)}, peak ${watts(r.power.systemPeakW)}`;
     case 'memory':
       return r.memory.gpuUsedPeakMiB === null ? undefined : `GPU memory in use peaked at ${gib(r.memory.gpuUsedPeakMiB * 1024 ** 2)}${r.memory.gpuUsedIdleMiB !== null ? ` from ${gib(r.memory.gpuUsedIdleMiB * 1024 ** 2)} idle` : ''}`;
     default:

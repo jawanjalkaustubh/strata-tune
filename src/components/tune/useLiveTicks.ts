@@ -3,6 +3,7 @@ import { api, ipcErrorMessage } from '../../api';
 import type { StaticSnapshot, Tick } from '../../collector-types';
 import { SensorIndex } from '../monitor/sensors';
 import { Ring } from '../monitor/history';
+import { tickPainter, windowVisibility } from '../monitor/paint';
 import { cachedSensorMeta, cachedSnapshot, refreshSensorMeta } from '../monitor/cache';
 
 export interface LiveTicks {
@@ -46,10 +47,12 @@ export function useLiveTicks(connected: boolean): LiveTicks {
     c.subscribe();
     let widest = -1;
     let warmed = false;
+    // macOS: a covered or minimised window keeps filling the ring and draws the last tick when it shows again (paint.ts).
+    const painter = tickPainter(setTick, api.platform, api.platform === 'darwin' ? windowVisibility(api.onMinimized) : undefined);
     const off = c.onTick((t) => {
       ring.push(t);
       if (!live) return;
-      setTick(t);
+      painter.tick(t);
       if (warmed) return;
       const width = Object.keys(t.sensors).length;
       if (t.warming && width <= widest) return;
@@ -60,6 +63,7 @@ export function useLiveTicks(connected: boolean): LiveTicks {
     return () => {
       live = false;
       off();
+      painter.dispose();
       c.unsubscribe();
     };
   }, [connected, ring]);

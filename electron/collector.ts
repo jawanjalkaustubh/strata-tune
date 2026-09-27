@@ -275,20 +275,37 @@ export class CollectorClient extends EventEmitter {
   private async startMac(): Promise<CollectorState> {
     this.set('starting', 'Starting the macOS collector…');
     try {
-      if (!this.mac) {
-        this.mac = new MacCollector({
-          version: app.getVersion(),
-          dataDir: dataDir(),
-          workerPath: macWorkerPath(app.getAppPath(), app.isPackaged, process.resourcesPath),
-          macmonPath: macmonPath()
-        });
-      }
-      const h = await this.mac.start();
-      this.adopt(h, this.mac.macmonInstalled ? 'Connected' : 'Connected · install macmon (brew install macmon) for CPU, GPU, fan and power sensors');
+      const h = await this.macCollector().start();
+      this.adopt(h, this.macCollector().macmonInstalled ? 'Connected' : 'Connected · install macmon (brew install macmon) for CPU, GPU, fan and power sensors');
     } catch (e) {
       this.set('error', `The macOS collector could not start: ${(e as Error).message}`);
     }
     return this.state;
+  }
+
+  private macCollector(): MacCollector {
+    if (!this.mac) {
+      this.mac = new MacCollector({
+        version: app.getVersion(),
+        dataDir: dataDir(),
+        workerPath: macWorkerPath(app.getAppPath(), app.isPackaged, process.resourcesPath),
+        macmonPath: macmonPath()
+      });
+    }
+    return this.mac;
+  }
+
+  /**
+   * macOS: holds the in-process collector's sensors at the leased rate (macmon every 500 ms, the
+   * GPU memory read every 2 s) until release(); with no lease they sample every 5 s and read the
+   * GPU memory every 10 s. `fresh` resolves once a row at the leased rate has arrived. Windows:
+   * the elevated service samples at its own fixed rate, so this is nothing there.
+   */
+  lease(reason: string): { release: () => void; fresh: Promise<void> } {
+    if (process.platform !== 'darwin') return { release: () => {}, fresh: Promise.resolve() };
+    const mac = this.macCollector();
+    const lease = mac.acquire(reason);
+    return { release: () => lease.release(), fresh: mac.whenFresh() };
   }
 
   /** 'refused' is nothing listening on the port (ECONNREFUSED); 'failed' is a timeout, a bad status or another pid answering. */

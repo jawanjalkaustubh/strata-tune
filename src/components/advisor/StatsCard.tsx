@@ -432,7 +432,7 @@ export const StatsCard: React.FC<Props> = (p) => {
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                 <Stat label="int8" value={measured?.matmulTopsInt8 != null ? tops(measured.matmulTopsInt8) : 'press Measure'} unit={measured?.matmulTopsInt8 != null ? 'TOPS' : undefined} kind={measured?.matmulTopsInt8 != null ? 'measured' : undefined} muted={measured?.matmulTopsInt8 == null} note="dense, int32 accumulate · Metal 4 tensor ops" />
                 <Stat label="fp16 tensor" value={measured?.matmulTflopsFp16tensor != null ? tops(measured.matmulTflopsFp16tensor) : 'press Measure'} unit={measured?.matmulTflopsFp16tensor != null ? 'TFLOPS' : undefined} kind={measured?.matmulTflopsFp16tensor != null ? 'measured' : undefined} muted={measured?.matmulTflopsFp16tensor == null} note="dense, fp32 accumulate · Metal 4 tensor ops" />
-                <Stat label="fp16 matmul" value={measured?.matmulTflopsFp16 != null ? tops(measured.matmulTflopsFp16) : 'press Measure'} unit={measured?.matmulTflopsFp16 != null ? 'TFLOPS' : undefined} kind={measured?.matmulTflopsFp16 != null ? 'measured' : undefined} muted={measured?.matmulTflopsFp16 == null} note="half-precision storage, this GPU" />
+                <Stat label="fp16 matmul" value={measured?.matmulTflopsFp16 != null ? tops(measured.matmulTflopsFp16) : 'press Measure'} unit={measured?.matmulTflopsFp16 != null ? 'TFLOPS' : undefined} kind={measured?.matmulTflopsFp16 != null ? 'measured' : undefined} muted={measured?.matmulTflopsFp16 == null} note="MPS, half-precision maths, this GPU" />
                 <Stat label="fp32 matmul" value={measured ? tops(measured.matmulTflopsFp32) : 'press Measure'} unit={measured ? 'TFLOPS' : undefined} kind={measured ? 'measured' : undefined} muted={!measured} note="single precision, this GPU" />
                 {p.spec.fp32Tflops > 0 && <Stat label="FP32 shader" value={tops(p.spec.fp32Tflops)} unit="TFLOPS" kind="derived" note={`${grouped(t!.shadingUnits)} ALUs × 2 × ${t!.boostMhz} MHz · not a tensor figure`} />}
                 {p.spec.neuralEngineCores !== null && <Stat label="Neural Engine" value={`${p.spec.neuralEngineCores}`} unit="cores" note="no vendor throughput figure" />}
@@ -516,7 +516,7 @@ export const StatsCard: React.FC<Props> = (p) => {
           )}
         </Section>
 
-        <Section title="Matmul, shader cores">
+        <Section title={p.spec?.unified ? 'Matmul, Metal Performance Shaders' : 'Matmul, shader cores'}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2">
             <Stat
               label="FP32"
@@ -539,12 +539,17 @@ export const StatsCard: React.FC<Props> = (p) => {
               }
             />
             <Stat
-              label="FP16 storage"
+              label={p.spec?.unified ? 'FP16' : 'FP16 storage'}
               value={measured?.matmulTflopsFp16 != null ? tops(measured.matmulTflopsFp16) : 'not measured'}
               unit={measured?.matmulTflopsFp16 != null ? 'TFLOPS' : undefined}
               kind={measured?.matmulTflopsFp16 != null ? 'measured' : undefined}
               muted={measured?.matmulTflopsFp16 == null}
-              note="half storage, float maths on the shader cores: not a tensor-core figure, so the tensor figures above do not apply"
+              note={
+                // An Apple GPU's MPS matmul does its maths in half precision (the M5's matrix units: about 4x its fp32); the PC worker's fp16 is half storage with float maths.
+                p.spec?.unified
+                  ? 'MPS matmul in half precision: on the M5 it runs on the GPU\'s matrix units, about four times the fp32 figure'
+                  : 'half storage, float maths on the shader cores: not a tensor-core figure, so the tensor figures above do not apply'
+              }
             />
           </div>
         </Section>

@@ -12,6 +12,7 @@ import * as path from 'path';
 import { app, type IpcMain } from 'electron';
 import type { CollectorClient } from './collector';
 import { macWorkerPath } from './mac/paths';
+import { keepAwakeOnMac } from './keepAwake';
 
 /** One --bench --json line from the worker plus what the cache needs to decide reuse. */
 export interface GpuBench {
@@ -22,7 +23,12 @@ export interface GpuBench {
   bufferBytes: number | null;
   matmulN: number | null;
   matmulTflopsFp32: number;
-  /** The worker's matmulTflopsFp16storage: half storage with float arithmetic, not tensor-core FP16. */
+  /**
+   * Windows: the worker's matmulTflopsFp16storage, half storage with float arithmetic, not
+   * tensor-core FP16. macOS: matmulTflopsFp16mps, an MPS matmul that does its maths in half
+   * precision (on the M5 through the GPU's matrix units); bench.json files from before the Mac
+   * worker named it carry it under the storage key.
+   */
   matmulTflopsFp16: number | null;
   /**
    * macOS only (collector/mac): the GPU's matrix path through Metal 4 tensor ops at int8 with int32
@@ -149,7 +155,7 @@ function parseBenchLine(stdout: string, driver: string | null): GpuBench | null 
         bufferBytes: num(j.bufferBytes),
         matmulN: num(j.matmulN),
         matmulTflopsFp32: fp32,
-        matmulTflopsFp16: num(j.matmulTflopsFp16storage),
+        matmulTflopsFp16: num(j.matmulTflopsFp16storage) ?? num(j.matmulTflopsFp16mps),
         matmulTopsInt8: num(j.matmulTopsInt8),
         matmulTflopsFp16tensor: num(j.matmulTflopsFp16tensor),
         elapsedMs: num(j.elapsedMs),
@@ -204,7 +210,7 @@ let inFlight: Promise<GpuBench | BenchError> | null = null;
 
 /** A second Measure while one runs joins it: two kernels on the card at once would measure each other. */
 function benchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
-  if (!inFlight) inFlight = doBenchGpu(driver, collector).finally(() => (inFlight = null));
+  if (!inFlight) inFlight = keepAwakeOnMac('measure', () => doBenchGpu(driver, collector)).finally(() => (inFlight = null));
   return inFlight;
 }
 
@@ -233,8 +239,10 @@ async function heldDuring<T>(collector: CollectorClient | null, until: Promise<T
 async function doBenchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
   const exe = workerExe();
   if (!fs.existsSync(exe)) return { error: `Worker not built: ${exe}. Run ${process.platform === 'darwin' ? 'scripts/mac/build-collector.sh' : 'dotnet build collector\\StrataTune.sln -c Release'}.` };
+  // macOS: the sensors at 2 Hz while the worker runs, so the Monitor and the ring see the sweep (nothing on Windows).
+  const lease = collector?.lease('measure');
   const running = runWorker(exe);
-  const held = await heldDuring(collector, running);
+  const held = await heldDuring(collector, running).finally(() => lease?.release());
   const run = await running;
   if (run.cancelled) return { error: 'Measurement stopped', code: 'cancelled' };
   if (run.timedOut) return { error: `The GPU benchmark did not finish within ${BENCH_TIMEOUT_MS / 1000} s` };

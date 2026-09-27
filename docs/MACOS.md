@@ -8,7 +8,7 @@ same loopback HTTP + SSE contract (`src/collector-types.ts`), so the pages are u
 | Page | On macOS |
 |---|---|
 | **Tune** | The audit has its own macOS rule set (`src/analysis/audit-mac.ts`): the energy mode (pmset), the unified memory and the GPU's working set, the startup disk, GPU thermal headroom from a 20 s heavy Metal load, the CPU under the all-core load (no parts table, no invented limits), background programs with Login Items advice, a resident Ollama model; one card says what a Mac has no equivalent of (BIOS, EXPO, ReBAR, PCIe link, Windows power plan, GPU driver age, timer resolution). The Headroom hunt is not shown: it drives NVIDIA clock offsets and Apple GPUs have no user clock control. |
-| **Monitor** | Live: the CPU chip diagram with Apple's own cluster names (super and performance cores on the M5 Pro/Max), the GPU's SoC diagram (one cell per GPU core, the Neural Engine, the unified memory the GPU works from), core clocks and load, package power and temperature, GPU clock, load, power, temperature and memory in use, fans, system / memory / Neural Engine power, unified memory, the battery. No board rails, no 12V-2x6 pins, no PCIe link: those sensors do not exist here and the panels collapse as they do on a laptop. |
+| **Monitor** | Live: the CPU chip diagram with Apple's own cluster names (super and performance cores on the M5 Pro/Max), the GPU's SoC diagram (one cell per GPU core, the Neural Engine, the unified memory the GPU works from), core clocks and load, package power and temperature, GPU clock, load, power, temperature and memory in use, fans, system / memory / Neural Engine power, unified memory, the battery. No board rails, no 12V-2x6 pins, no PCIe link: those sensors do not exist here and the panels collapse as they do on a laptop. Minimised or covered, the page stops drawing (Chromium's background throttling stays on: there is no game in front to keep pace with) while its history keeps filling, and shows the latest reading when it comes back. |
 | **AI Models** | Everything: the Apple GPU is the card (its Metal working set is the memory a model is judged against), the spec tiles come from `src/data/apple-gpus.json` (Apple's core counts and bandwidth, the per-core unit counts, the machine's own clock), **Measure** runs the Metal worker (stream-copy bandwidth, fp32 and fp16 matmul TFLOPS, and on macOS 26 the GPU's matrix path through Metal 4 tensor ops at int8 and fp16) and leads the card with the measured int8 TOPS because Apple advertises no TOPS figure, Ollama timings and pulls work as on Windows. |
 | **Capture** | Not shown. Frame capture needs PresentMon's ETW session, which has no macOS counterpart. |
 
@@ -40,26 +40,53 @@ first file on 26 and the app then fails with "Electron failed to install correct
 
 - **macmon** (`brew install macmon`, sudo-less) streams per-core frequency and active
   ratio for the P and E clusters, CPU / GPU / ANE / memory / system power, GPU frequency and
-  active ratio, fan speeds, memory and the average CPU and GPU temperatures at 2 Hz.
+  active ratio, fan speeds, memory and the average CPU and GPU temperatures.
   `electron/mac/sensors.ts` shapes them into LibreHardwareMonitor's names so the Monitor's
-  layouts match unchanged. Without macmon the status pill says so and only the IOKit rows exist.
+  layouts match unchanged, and each macmon line is one tick (no timer re-sending the last
+  row). Without macmon the status pill says so and only the IOKit rows exist. An installed macmon
+  that stops printing (a crash loop after an OS update, a hang) counts as absent after three of
+  its intervals: a timer paces the IOKit rows again, and its last sample gives no readings until
+  a line comes.
 - **IOKit through ioreg**: the GPU's memory in use (`IOAccelerator`) and the battery
-  (`AppleSmartBattery`), polled every 2 s.
+  (`AppleSmartBattery`, every 30 s).
+- **The rate follows the readers**: a monitor must itself be cheap. The Monitor page, an
+  audit load, Measure and the LLM benchmark each hold a sensor lease (`MacSensors.acquire`);
+  while any is held macmon samples every 500 ms and the GPU memory is read every 2 s, with none
+  macmon samples every 5 s and the GPU memory is read every 10 s (the AI Models page reads it
+  once, without a lease, for its "VRAM busy now" hint). A load run waits for a sample at
+  the fast rate before it takes its idle reference.
+- **Start-up**: the collector listens at once; macmon's `--soc-info`, the worker's `--info`
+  and (only when macmon gives no core count) the AGXAccelerator dump fill the names in behind
+  `Health.warming`, and `/snapshot` waits for them.
 - **The snapshot** (`electron/mac/snapshot.ts`): `sysctl`, `system_profiler`, `diskutil`,
   `df`, `pmset` (the power mode) and Ollama's `/api/ps`. The Apple GPU is listed as a display
   adapter with vendor `apple` and, as its "dedicated" memory, Metal's recommended working set
   (about three quarters of unified memory): what the GPU may hold, the figure a model's fit is judged by.
-- **The worker** (`collector/mac`, Swift, Metal + MPS): `--bench --json` prints the same line
-  as the Windows worker (stream-copy GB/s, fp32 and fp16-storage matmul TFLOPS) plus, on macOS 26,
-  `matmulTopsInt8` and `matmulTflopsFp16tensor` from Metal 4 tensor ops (MetalPerformancePrimitives
-  `matmul2d`, 128 x 64 tiles, int8 with int32 accumulate: the precision a PC's "AI TOPS" quotes,
-  measured dense rather than a vendor's sparse peak); `--load light|heavy|cpu|fillrate` are the
-  audit's kernels; `--info` the device facts. On the M5 Max 40-core: 549 GB/s, 15 / 65 TFLOPS, 122 int8 TOPS.
+- **The worker** (`collector/mac`, Swift, Metal + MPS): `--bench --json` prints the Windows
+  worker's line (stream-copy GB/s, fp32 matmul TFLOPS) with the fp16 MPS matmul under its own key,
+  `matmulTflopsFp16mps` (MPS does that matmul's maths in half precision, on the M5 through the GPU's
+  matrix units, about 4x its fp32; the PC's `matmulTflopsFp16storage` is half storage with float
+  maths, and the card labels the two apart), plus, on macOS 26, `matmulTopsInt8` and
+  `matmulTflopsFp16tensor` from Metal 4 tensor ops (MetalPerformancePrimitives `matmul2d`, 128 x 64
+  tiles, int8 with int32 accumulate: the precision a PC's "AI TOPS" quotes, measured dense rather
+  than a vendor's sparse peak). The matrices hold small non-zero values exact in their type, each
+  figure is the median of five command buffers of about 100 ms after about a second of warm-up, and
+  one output element is checked against the CPU's sum (`matmulVerified`; a tensor figure that fails
+  the check is left out). `--load light|heavy|cpu|fillrate` are the audit's kernels (the heavy load
+  multiplies the same kind of non-zero data; the all-core load runs eight SIMD4 chains per thread at
+  user-initiated QoS); `--info` the device facts, with no shader compiled. On the M5 Max 40-core,
+  on battery with the GPU cool: 554 GB/s, 15.1 / 64 TFLOPS, 122 int8 TOPS (two more runs back to
+  back fell to 56 fp16 and 108 int8 as it heated).
 - **Time base**: microseconds from the Mach monotonic clock (`Health.qpcFrequency` = 1e6).
+- **No sleeping mid-run**: Measure, the audit's loads, the LLM benchmark and llama-benchy
+  hold the Mac awake while they run (`electron/keepAwake.ts`, a `prevent-app-suspension`
+  power-save blocker: the display may still sleep), released when the run ends, fails or
+  the app quits.
 - **Tune routes**: `/tune/state` answers `nvapi.available: false` with the reason; every
   `/tune/*` write is 403. `/timers` answers nulls: macOS has no timer-resolution setting.
 
-Data: `~/Library/Application Support/Strata Tune/` (collector.json, bench.json, sessions);
+Data: `~/Library/Application Support/Strata Tune/` (collector.json, disclaimer.json, bench.json, sessions; a
+disclaimer.json an earlier build wrote under `~/AppData/Local/Strata Tune` is moved here at launch);
 presence files shared with Strata Code and Photo: `~/Library/Application Support/Strata/presence/`.
 
 ## The Apple spec table
@@ -116,10 +143,17 @@ the Mac's is what the GPU achieved on a real matmul, so a measured PC would land
 - `electron/llm-bench.ts`, `src/analysis/llm-bench.ts`, `src/components/advisor/LlmBenchCard.tsx`:
   the LLM benchmark on the AI Models page, the one comparison that holds between a PC and a
   Mac. The same Ollama model, the same thousand-token prompt, 256 tokens at temperature 0
-  with a fixed seed, three runs at each context depth (0, 4k, 16k; run 1 loads cold), timed
-  by Ollama's own counters; the collector's GPU watts (the GPU core on Apple Silicon, the
-  board on NVIDIA), the SMC's whole-system watts (Apple only) and the model's resident memory
-  read alongside. Rows live in `~/Library/Application Support/strata-tune/llm-bench.json`;
+  with a fixed seed, one context window for the whole sweep (32768, the family's pinned
+  value, so Ollama loads the model once; a depth that does not fit is skipped), a cold load
+  whose generation is a discarded warm-up, then three runs at each context depth (0, 4k,
+  16k), timed by Ollama's own counters (protocol `strata-llm-2`). The collector's GPU watts
+  (the GPU core on Apple Silicon, the board on NVIDIA) and the SMC's whole-system watts
+  (Apple only) are stamped per reading and read over each run's decode window (the last
+  eval_duration of the request, its first half second left out), so tok/s per watt is the
+  decode's own, per depth; the model's resident memory is read after. On a Mac the row also
+  records Ollama's version, OLLAMA_FLASH_ATTENTION and OLLAMA_KV_CACHE_TYPE (the process
+  environment or `launchctl getenv`), AC or battery, and the energy mode. Rows of the first
+  protocol still import and show, marked old protocol and never ranked against current ones. Rows live in `~/Library/Application Support/strata-tune/llm-bench.json`;
   Export writes them to a JSON file, Import on the other machine reads it, and both rows sit
   under the model tag with the best figure per column marked and the ± spread beside each
   median. A PC's advertised AI TOPS (fp4, sparse) and the Mac's measured dense int8 never

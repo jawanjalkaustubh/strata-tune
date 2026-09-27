@@ -10,8 +10,10 @@ import { registerHistoryIpc } from './history';
 import { CaptureController, registerCaptureIpc } from './capture';
 import { registerTuneIpc } from './tune';
 import { legalFilePaths, registerAboutIpc } from './about';
-import { acceptanceFile, legalStatus, registerLegalIpc } from './legal';
+import { acceptanceFile, legalStatus, migrateAcceptance, registerLegalIpc } from './legal';
 import { GameMode } from './game-mode';
+import { keepAwakeOnMac, releaseAll } from './keepAwake';
+import { tuneDataDir } from './presence';
 import type { CollectorState } from '../src/api';
 import type { LoadKind, Tick } from '../src/collector-types';
 
@@ -123,6 +125,13 @@ function createWindow() {
     : win.loadFile(path.join(__dirname, '../dist/index.html'));
   load.finally(() => (initialLoadSettled = true)).catch((e) => fatal('The interface failed to load', e));
 
+  // macOS: Chromium marks a covered page hidden but not a minimised one, so the
+  // page is told; the Monitor holds its renders while either is so (paint.ts).
+  if (process.platform === 'darwin') {
+    win.on('minimize', () => win.webContents.send('window:minimized', true));
+    win.on('restore', () => win.webContents.send('window:minimized', false));
+  }
+
   // Windows logoff / shutdown: before-quit is not emitted (Electron documents
   // it); this is the one place to flush state and tell the collector.
   win.on('session-end', () => void shutdown());
@@ -135,8 +144,13 @@ function createWindow() {
  * cadence while the game is in front, so it is lifted only then and restored
  * after (lifecycle audit item 34). A tick subscription (the Monitor page) is
  * what turns it on and off, in registerCollectorIpc.
+ *
+ * macOS has no Capture and no game in front to keep pace with: throttling stays
+ * on, so a minimised or covered Monitor reads as hidden and stops drawing while
+ * its ring buffer keeps filling (src/pages/Monitor.tsx).
  */
 function setLiveSession(on: boolean): void {
+  if (process.platform === 'darwin') return;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(!on);
 }
 
@@ -167,6 +181,10 @@ let collector: CollectorClient | null = null;
 // Audit page and an idle app cost nothing. Single window, so a flag suffices;
 // a reload of the renderer starts it over unsubscribed.
 let ticksWanted = false;
+/** macOS: the subscribed page's sensor lease (2 Hz macmon); the sensors drop to 5 s once it goes. Nothing on Windows. */
+let ticksLease: { release: () => void } | null = null;
+/** macOS: leases a page holds by name while it polls the latest row rather than subscribing (About → Clocks); a reload drops them too. */
+const pageLeases = new Map<string, { release: () => void }>();
 
 function sendToRenderer(channel: string, payload: CollectorState | Tick) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
@@ -181,20 +199,41 @@ function registerCollectorIpc(c: CollectorClient) {
   ipcMain.handle('collector:sensorsWindow', (_e, seconds: number) => c.sensorsWindow(seconds));
   ipcMain.handle('collector:gpu', () => c.gpu());
   ipcMain.handle('collector:hogs', (_e, seconds: number) => c.hogs(seconds));
-  ipcMain.handle('collector:load', (_e, kind: LoadKind, seconds: number) => c.load(kind, seconds));
+  ipcMain.handle('collector:load', (_e, kind: LoadKind, seconds: number) => keepAwakeOnMac(`load ${kind}`, () => c.load(kind, seconds)));
   ipcMain.handle('collector:cancelLoad', () => c.cancelLoad());
   // A tick subscriber is a live session: the Monitor must keep its 2 Hz while a game is in front.
+  const dropLease = () => {
+    ticksLease?.release();
+    ticksLease = null;
+  };
   ipcMain.on('collector:subscribe', () => {
     ticksWanted = true;
     setLiveSession(true);
+    ticksLease ??= c.lease('monitor');
   });
   ipcMain.on('collector:unsubscribe', () => {
     ticksWanted = false;
     setLiveSession(false);
+    dropLease();
+  });
+  const dropPageLeases = () => {
+    for (const lease of pageLeases.values()) lease.release();
+    pageLeases.clear();
+  };
+  ipcMain.on('collector:lease', (_e, reason: unknown, held: unknown) => {
+    if (typeof reason !== 'string') return;
+    if (held === true) {
+      if (!pageLeases.has(reason)) pageLeases.set(reason, c.lease(reason));
+      return;
+    }
+    pageLeases.get(reason)?.release();
+    pageLeases.delete(reason);
   });
   mainWindow?.webContents.on('did-start-loading', () => {
     ticksWanted = false;
     setLiveSession(false);
+    dropLease();
+    dropPageLeases();
   });
   c.on('status', (s: CollectorState) => sendToRenderer('collector:status', s));
   c.on('tick', (t: Tick) => {
@@ -373,7 +412,10 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       }
       // Frameless window: without this the default menu's accelerators still
       // work (Ctrl+W closes, Ctrl+R reloads mid-session, F11, Ctrl+Shift+I).
-      Menu.setApplicationMenu(null);
+      // macOS routes Cmd+C/V/X/A/Z and Cmd+Q through the application menu, so
+      // there the menu keeps the app and Edit menus and nothing else: no View
+      // menu, so no reload or DevTools accelerators.
+      Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }]) : null);
       registerIpc();
       registerAdvisorIpc(ipcMain, () => collector);
       registerLlmBenchIpc(ipcMain, () => collector, (channel, payload) => {
@@ -393,7 +435,10 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
       // Plan section 27a, first launch: the collector waits until DISCLAIMER.md's current
       // version has been accepted once (electron/legal.ts keeps the record beside the handshake).
       const disclaimer = legalFilePaths({ isPackaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath }).disclaimer;
-      const acceptance = acceptanceFile(path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune'));
+      const windowsDataDir = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata Tune');
+      // macOS keeps it with the rest of the app's data; a record an earlier build left under ~/AppData moves there.
+      const acceptance = acceptanceFile(process.platform === 'darwin' ? tuneDataDir() : windowsDataDir);
+      if (process.platform === 'darwin') migrateAcceptance(acceptanceFile(windowsDataDir), acceptance, os.homedir());
       const startCollector = () => collector?.start().catch((e) => console.error('[collector] start failed:', e));
       registerLegalIpc(ipcMain, disclaimer, acceptance, startCollector);
       if (legalStatus(disclaimer, acceptance).ok) startCollector();
@@ -404,6 +449,8 @@ if (!SELFTEST && !app.requestSingleInstanceLock()) {
   app.on('before-quit', (e) => {
     if (quitting) return;
     quitting = true;
+    // macOS: whatever run is still in flight lets the Mac sleep again (Windows' holds live in the collector and the capture).
+    if (process.platform === 'darwin') releaseAll();
     e.preventDefault();
     Promise.race([shutdown(), delay(5000)]).finally(() => app.quit());
   });

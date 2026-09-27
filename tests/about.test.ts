@@ -5,7 +5,7 @@ import { LEGAL_FILE_NAMES, describeWindows, legalFilePaths, parseDxdiag, parseRe
 import { PRIVACY_SECTION, inline, legalText, parseMarkdown, sectionOf } from '../src/components/about/legalText';
 import { EXPORT_FOOTER, REDACTED, buildSystemReport, hardwareSummary, redact, redactText } from '../src/components/about/systemReport';
 import { directXLine } from '../src/components/about/Facts';
-import { clocksText, coreRows } from '../src/components/about/ClocksTool';
+import { clocksText, coreRows, holdSensors } from '../src/components/about/ClocksTool';
 import { backgroundBusy, thermalDrift } from '../src/components/about/ValidationTool';
 import type { AboutSystem } from '../electron/about';
 import type { SensorMeta, SensorRow, Timers } from '../src/collector-types';
@@ -213,6 +213,17 @@ describe('Clocks and Validation helpers', () => {
     const text = clocksText('AMD Ryzen 9 9950X', rows, devbox().gpus);
     expect(text).toContain('Core #1       5480 /   212  20 %');
     expect(text).toContain('SM 1275 MHz');
+  });
+
+  it('the clock table holds a sensor lease while open on a Mac (2 Hz, not 5 s macmon averages) and asks for nothing on Windows', () => {
+    const lease = vi.fn();
+    const release = holdSensors({ lease }, 'darwin');
+    expect(lease.mock.calls).toEqual([['clocks', true]]);
+    release();
+    expect(lease.mock.calls).toEqual([['clocks', true], ['clocks', false]]);
+    const windows = vi.fn();
+    holdSensors({ lease: windows }, 'win32')();
+    expect(windows).not.toHaveBeenCalled();
   });
 
   it('thermal drift trips only when the card was still warming at the end; background busy names the process', () => {

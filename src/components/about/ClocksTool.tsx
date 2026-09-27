@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
-import { api, ipcErrorMessage } from '../../api';
+import { api, ipcErrorMessage, type CollectorApi } from '../../api';
 import type { GpuFacts, SensorRow, StaticSnapshot } from '../../collector-types';
 import { SensorIndex } from '../monitor/sensors';
 import { cpuLayout, type CoreIds } from '../monitor/cpuLayout';
@@ -11,6 +11,17 @@ import { memGbpsOf, nvmlMemOffsetMhz } from '../advisor/thisCard';
 
 /** The table polls the collector's latest row rather than subscribing to ticks, so opening it over the Monitor page cannot end that page's subscription (the main process keeps one flag). */
 const POLL_MS = 500;
+
+/**
+ * On a Mac the latest row is a 5 s macmon average unless something holds the sensors at 2 Hz
+ * (electron/mac/sensors.ts), so the table holds a lease of its own while it is open; answers the
+ * release. Nothing on Windows.
+ */
+export function holdSensors(c: Pick<CollectorApi, 'lease'>, platform: string): () => void {
+  if (platform !== 'darwin') return () => {};
+  c.lease('clocks', true);
+  return () => c.lease('clocks', false);
+}
 
 interface Props {
   connected: boolean;
@@ -79,6 +90,7 @@ export const ClocksTool: React.FC<Props> = ({ connected }) => {
         /* the core count falls back to the sensor tree */
       });
     const c = api.collector;
+    const release = holdSensors(c, api.platform);
     let busy = false;
     const poll = async () => {
       if (busy) return;
@@ -100,6 +112,7 @@ export const ClocksTool: React.FC<Props> = ({ connected }) => {
     return () => {
       live = false;
       clearInterval(id);
+      release();
     };
   }, [connected]);
 

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  COLUMNS, DEPTHS, LLM_PROTOCOL, PROMPT_BODY, atDepth, bestBenchy, bestOf, fillerForDepth, groupBenchy, groupByModel, median, numCtxFor, parseBenchFile, parseBenchyJson, promptForRun, std, summarise, supersede, validBenchy, validResult,
+  COLUMNS, DECODE_EDGE_MS, DEPTHS, LLM_PROTOCOL, LLM_PROTOCOL_V1, NUM_CTX, PROMPT_BODY, atDepth, bestBenchy, bestOf, decodeSamples, fillerForDepth, groupBenchy, groupByModel, isCurrentProtocol, median, parseBenchFile, parseBenchyJson, promptForRun, promptTokenBudget, std, summarise, supersede, sweepPlan, validBenchy, validResult,
   type BenchyResult,
-  type LlmBenchResult, type LlmMachine, type LlmModel, type LlmRun
+  type LlmBenchResult, type LlmMachine, type LlmModel, type LlmRun, type LlmSample
 } from '../src/analysis/llm-bench';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { resolveIds, tokenizerFor } from '../electron/llm-bench';
+import { contextLengthOf, lowPowerModeOf, powerSourceOf, resolveIds, tokenizerFor } from '../electron/llm-bench';
 import { sensorsOf, type MacmonSample } from '../electron/mac/sensors';
 import { devboxMeta } from './fixtures';
 
@@ -70,8 +70,10 @@ describe('summarise', () => {
     expect(r.prefillTokPerSec).toBeCloseTo(5000, 5);
     expect(r.loadMs).toBe(3200);
     expect(r.firstTokenMs).toBeCloseTo(200, 5);
-    expect(r.settings).toEqual({ promptTokens: 1000, predictTokens: 256, numCtx: 4096, runs: 3 });
+    expect(r.settings).toEqual({ promptTokens: 1000, predictTokens: 256, numCtx: NUM_CTX, runs: 3, warmupRuns: 0 });
     expect(r.power.gpuAvgW).toBe(420);
+    // No timestamps (no decode window to read): the in-flight mean stands in for the efficiency.
+    expect(r.power.gpuDecodeW).toBeNull();
     expect(r.power.gpuPeakW).toBe(440);
     expect(r.power.gpuIdleW).toBe(40);
     expect(r.power.cpuAvgW).toBe(22);
@@ -88,7 +90,7 @@ describe('summarise', () => {
   it('without a collector every watt and memory figure is null and the tokens still stand', () => {
     const r = summarise({ id: 'x', measuredAt: '2026-09-20T10:00:00Z', machine: mac, model: qwen, runs: [run(30, 600)], idle: [], busy: [], residentBytes: null });
     expect(r.genTokPerSec).toBeCloseTo(30, 5);
-    expect(r.power).toEqual({ gpuIdleW: null, gpuAvgW: null, gpuPeakW: null, cpuAvgW: null, systemIdleW: null, systemAvgW: null, systemPeakW: null });
+    expect(r.power).toEqual({ gpuIdleW: null, gpuAvgW: null, gpuPeakW: null, cpuAvgW: null, systemIdleW: null, systemAvgW: null, systemPeakW: null, gpuDecodeW: null, cpuDecodeW: null, systemDecodeW: null });
     expect(r.efficiency).toEqual({ tokPerSecPerGpuW: null, tokPerSecPerSystemW: null });
     expect(r.memory.residentBytes).toBeNull();
   });
@@ -130,6 +132,7 @@ describe('the comparison', () => {
   it('validates rows and reads an export file, marking its rows imported and refusing anything else', () => {
     expect(validResult(a)).toBe(true);
     expect(validResult({ ...a, protocol: 'other' })).toBe(false);
+    expect(validResult({ ...a, protocol: LLM_PROTOCOL_V1 })).toBe(true);
     expect(validResult({ ...a, genTokPerSec: 'fast' })).toBe(false);
     expect(validResult(null)).toBe(false);
     const file = JSON.stringify({ strataLlmBench: 1, exportedAt: 'x', results: [a, { junk: true }] });
@@ -173,7 +176,7 @@ describe('the sensor ids the run samples', () => {
 });
 
 describe('the context-depth sweep', () => {
-  it('sizes the filler by depth, keeps the prefix first so the cache cannot answer it, and widens the window by the depth', () => {
+  it('sizes the filler by depth and keeps the prefix first so the cache cannot answer it', () => {
     expect(DEPTHS).toEqual([0, 4096, 16384]);
     expect(fillerForDepth(0)).toBe('');
     const f4k = fillerForDepth(4096);
@@ -190,8 +193,6 @@ describe('the context-depth sweep', () => {
     expect(deep.endsWith(PROMPT_BODY)).toBe(true);
     expect(deep).toContain(f4k);
     expect(promptForRun(1, 3, 0)).not.toContain('Background notes');
-    expect(numCtxFor(0)).toBe(4096);
-    expect(numCtxFor(16384)).toBe(20480);
     expect(std([100, 110])).toBeCloseTo(7.071, 2);
     expect(std([5])).toBe(0);
   });
@@ -273,5 +274,76 @@ describe('llama-benchy', () => {
     expect(parsed.results).toEqual([]);
     expect(parsed.benchy).toHaveLength(1);
     expect(parsed.benchy[0].imported).toBe(true);
+  });
+});
+
+describe('protocol 2: one window, a warm-up, decode-window watts', () => {
+  it('runs the whole sweep at one window (the family\'s 32k), smaller only for a model trained on less, skipping depths that do not fit', () => {
+    expect(LLM_PROTOCOL).toBe('strata-llm-2');
+    expect(NUM_CTX).toBe(32768);
+    expect(sweepPlan(null)).toEqual({ numCtx: 32768, depths: DEPTHS });
+    expect(sweepPlan(131072)).toEqual({ numCtx: 32768, depths: DEPTHS });
+    // An 8k model: 4k of context and the prompt fit, 16k does not.
+    expect(sweepPlan(8192)).toEqual({ numCtx: 8192, depths: [0, 4096] });
+    expect(sweepPlan(2048).depths).toEqual([0]);
+    expect(promptTokenBudget(16384) + 256).toBeLessThan(32768);
+    expect(promptTokenBudget(0)).toBeGreaterThan(PROMPT_BODY.length / 4.7);
+    expect(contextLengthOf({ model_info: { 'general.architecture': 'qwen3', 'qwen3.context_length': 40960 } })).toBe(40960);
+    expect(contextLengthOf({})).toBeNull();
+  });
+
+  it('reads decode watts from the samples inside [end − eval, end], less the first half second, and ranks tok/s per decode watt per depth', () => {
+    // A 10 s request: 4 s of prefill at 30 W, then 6 s of decode at 60 W. Samples every 500 ms.
+    const samples = (prefillW: number, decodeW: number): LlmSample[] =>
+      Array.from({ length: 20 }, (_, k) => {
+        const t = (k + 1) * 500;
+        return { t, gpuW: t <= 4000 ? prefillW : decodeW, cpuW: 10, systemW: (t <= 4000 ? prefillW : decodeW) + 40, gpuMemMiB: 18_000 };
+      });
+    const timed = (depth: number, gen: number, prefillW: number, decodeW: number): LlmRun => ({ ...run(gen, 5000, { depth, evalMs: 6000, evalCount: gen * 6 }), wallMs: 10_000, samples: samples(prefillW, decodeW) });
+    const window = decodeSamples(timed(0, 100, 30, 60));
+    expect(window.every((s) => s.t! >= 4000 + DECODE_EDGE_MS && s.t! <= 10_000)).toBe(true);
+    expect(window.map((s) => s.gpuW)).toEqual(new Array(window.length).fill(60));
+    // A run without timestamps has no window.
+    expect(decodeSamples(run(100, 5000))).toEqual([]);
+    const r = summarise({
+      id: 'p2', measuredAt: '2026-09-26T10:00:00Z', machine: mac, model: qwen, loadMs: 4200, warmupRuns: 1,
+      runs: [timed(0, 100, 30, 60), timed(0, 100, 30, 62), timed(0, 100, 30, 58), timed(4096, 80, 40, 64), timed(4096, 80, 40, 64)],
+      idle: [], busy: [...samples(30, 60), ...samples(30, 60)], residentBytes: null
+    });
+    expect(r.loadMs).toBe(4200);
+    expect(r.settings.warmupRuns).toBe(1);
+    expect(r.power.gpuDecodeW).toBe(60);
+    // The whole-request mean carries the prefill and would flatter the efficiency.
+    expect(r.power.gpuAvgW).toBeCloseTo(48, 5);
+    expect(r.efficiency.tokPerSecPerGpuW).toBeCloseTo(100 / 60, 6);
+    expect(r.efficiency.tokPerSecPerSystemW).toBeCloseTo(100 / 100, 6);
+    expect(atDepth(r, 4096)?.decodeGpuW).toBe(64);
+    expect(atDepth(r, 4096)?.tokPerSecPerGpuW).toBeCloseTo(80 / 64, 6);
+    expect(r.runs[0].decodeGpuW).toBe(60);
+    expect(COLUMNS.find((c) => c.key === 'gpuW')?.of(r)).toBe(60);
+  });
+
+  it('old-protocol rows import and validate, are marked, and never take a mark from a current row', () => {
+    const current = result(pc, 100, 5000, 420, null, 'new');
+    const old: LlmBenchResult = { ...result(mac, 300, 9000, 20, 60, 'old'), protocol: LLM_PROTOCOL_V1 };
+    expect(isCurrentProtocol(current)).toBe(true);
+    expect(isCurrentProtocol(old)).toBe(false);
+    const parsed = parseBenchFile(JSON.stringify({ strataLlmBench: 1, exportedAt: 'x', results: [old, current] }));
+    if ('error' in parsed) throw new Error(parsed.error);
+    expect(parsed.results.map((r) => r.id)).toEqual(['old', 'new']);
+    const best = bestOf([current, old]);
+    expect(best.gen).toBeUndefined();
+    // Among old rows alone they still rank each other.
+    expect(bestOf([old, { ...old, id: 'old2', genTokPerSec: 1 }]).gen.has('old')).toBe(true);
+  });
+
+  it('reads the power source and Low Power Mode from pmset on a Mac', () => {
+    expect(powerSourceOf("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged")).toBe('ac');
+    expect(powerSourceOf("Now drawing from 'Battery Power'\n")).toBe('battery');
+    expect(powerSourceOf('')).toBeNull();
+    expect(lowPowerModeOf(' lowpowermode         1\n')).toBe(true);
+    expect(lowPowerModeOf(' powermode            0\n')).toBe(false);
+    expect(lowPowerModeOf(' powermode            2\n')).toBe(false);
+    expect(lowPowerModeOf('')).toBeNull();
   });
 });

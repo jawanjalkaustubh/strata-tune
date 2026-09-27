@@ -8,6 +8,7 @@ import { updateSettings, useSettings } from '../components/useSettings';
 import { takeIntent } from '../components/navigate';
 import { SensorIndex } from '../components/monitor/sensors';
 import { Ring } from '../components/monitor/history';
+import { tickPainter, windowVisibility } from '../components/monitor/paint';
 import { cachedSensorMeta, cachedSnapshot, clearStaticCache, refreshSensorMeta, rememberedSnapshot } from '../components/monitor/cache';
 import { CpuPanel, cpuKey } from '../components/monitor/CpuPanel';
 import { GpuPanel, gpuKey } from '../components/monitor/GpuPanel';
@@ -119,10 +120,12 @@ export const Monitor: React.FC = () => {
     c.subscribe();
     let widest = -1;
     let warmed = false;
+    // macOS: a covered or minimised window keeps filling the ring and draws the last tick when it shows again (paint.ts).
+    const painter = tickPainter(setTick, api.platform, api.platform === 'darwin' ? windowVisibility(api.onMinimized) : undefined);
     const off = c.onTick((t) => {
       ring.push(t);
       if (!live) return;
-      setTick(t);
+      painter.tick(t);
       if (warmed) return;
       const width = Object.keys(t.sensors).length;
       if (t.warming && width <= widest) return;
@@ -133,6 +136,7 @@ export const Monitor: React.FC = () => {
     return () => {
       live = false;
       off();
+      painter.dispose();
       c.unsubscribe();
     };
   }, [connected, ring]);
