@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('strata', {
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
+  // macOS: the window was minimised (true) or restored (false); Chromium there marks a covered page hidden but not a minimised one.
+  onMinimized: on('window:minimized'),
 
   collector: {
     status: () => ipcRenderer.invoke('collector:status'),

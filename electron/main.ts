@@ -125,6 +125,13 @@ function createWindow() {
     : win.loadFile(path.join(__dirname, '../dist/index.html'));
   load.finally(() => (initialLoadSettled = true)).catch((e) => fatal('The interface failed to load', e));
 
+  // macOS: Chromium marks a covered page hidden but not a minimised one, so the
+  // page is told; the Monitor holds its renders while either is so (paint.ts).
+  if (process.platform === 'darwin') {
+    win.on('minimize', () => win.webContents.send('window:minimized', true));
+    win.on('restore', () => win.webContents.send('window:minimized', false));
+  }
+
   // Windows logoff / shutdown: before-quit is not emitted (Electron documents
   // it); this is the one place to flush state and tell the collector.
   win.on('session-end', () => void shutdown());

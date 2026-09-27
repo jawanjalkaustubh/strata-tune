@@ -177,6 +177,8 @@ export interface StrataApi {
   minimize(): void;
   maximize(): void;
   close(): void;
+  /** macOS only (electron/main.ts sends it): the window was minimised (true) or restored (false). */
+  onMinimized?(cb: (minimized: boolean) => void): () => void;
 
   collector: CollectorApi;
   advisor: AdvisorApi;
