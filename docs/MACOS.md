@@ -125,10 +125,17 @@ the Mac's is what the GPU achieved on a real matmul, so a measured PC would land
 - `electron/llm-bench.ts`, `src/analysis/llm-bench.ts`, `src/components/advisor/LlmBenchCard.tsx`:
   the LLM benchmark on the AI Models page, the one comparison that holds between a PC and a
   Mac. The same Ollama model, the same thousand-token prompt, 256 tokens at temperature 0
-  with a fixed seed, three runs at each context depth (0, 4k, 16k; run 1 loads cold), timed
-  by Ollama's own counters; the collector's GPU watts (the GPU core on Apple Silicon, the
-  board on NVIDIA), the SMC's whole-system watts (Apple only) and the model's resident memory
-  read alongside. Rows live in `~/Library/Application Support/strata-tune/llm-bench.json`;
+  with a fixed seed, one context window for the whole sweep (32768, the family's pinned
+  value, so Ollama loads the model once; a depth that does not fit is skipped), a cold load
+  whose generation is a discarded warm-up, then three runs at each context depth (0, 4k,
+  16k), timed by Ollama's own counters (protocol `strata-llm-2`). The collector's GPU watts
+  (the GPU core on Apple Silicon, the board on NVIDIA) and the SMC's whole-system watts
+  (Apple only) are stamped per reading and read over each run's decode window (the last
+  eval_duration of the request, its first half second left out), so tok/s per watt is the
+  decode's own, per depth; the model's resident memory is read after. On a Mac the row also
+  records Ollama's version, OLLAMA_FLASH_ATTENTION and OLLAMA_KV_CACHE_TYPE (the process
+  environment or `launchctl getenv`), AC or battery, and the energy mode. Rows of the first
+  protocol still import and show, marked old protocol and never ranked against current ones. Rows live in `~/Library/Application Support/strata-tune/llm-bench.json`;
   Export writes them to a JSON file, Import on the other machine reads it, and both rows sit
   under the model tag with the best figure per column marked and the ± spread beside each
   median. A PC's advertised AI TOPS (fp4, sparse) and the Mac's measured dense int8 never

@@ -9,10 +9,23 @@
  * Pure: the Electron runner (electron/llm-bench.ts) and the card both import from here.
  */
 
-export const LLM_PROTOCOL = 'strata-llm-1';
+/**
+ * strata-llm-2 (2026-09-26): one context window for the whole sweep, a discarded warm-up after
+ * the cold load, and watts read over each run's decode window. Rows of strata-llm-1 (num_ctx
+ * grew with the depth, so Ollama reloaded the model at every depth; run 1 was timed straight
+ * after the load; watts were the mean over the whole request) still import and show, marked as
+ * the old protocol, and are never ranked against current rows.
+ */
+export const LLM_PROTOCOL = 'strata-llm-2';
+export const LLM_PROTOCOL_V1 = 'strata-llm-1';
+export type LlmProtocol = typeof LLM_PROTOCOL | typeof LLM_PROTOCOL_V1;
 export const PREDICT_TOKENS = 256;
-/** The context window above the depth: room for the prompt, the answer and the chat template. */
-export const NUM_CTX = 4096;
+/**
+ * The context window for every request of the sweep: the Strata family's pinned 32768 (or the
+ * model's own when it is smaller). A window that changes between requests makes Ollama reload
+ * the model, which strata-llm-1 did at every depth.
+ */
+export const NUM_CTX = 32768;
 export const DEFAULT_RUNS = 3;
 export const SEED = 7;
 /**
@@ -24,10 +37,18 @@ export const SEED = 7;
 export const DEPTHS = [0, 4096, 16384];
 /** English prose through a modern tokenizer: the filler is sized by this, and the run records the count the server saw. */
 export const CHARS_PER_TOKEN = 4.7;
-export const numCtxFor = (depth: number) => depth + NUM_CTX;
-/** How often the collector is read while a generation runs, and for how long the idle baseline is read before it. */
+/**
+ * How often a PC's collector is read while a generation runs (a Mac takes every macmon row, about
+ * 2 Hz, from the collector's ticks instead), and for how long the idle baseline is read before it.
+ */
 export const SAMPLE_MS = 250;
 export const IDLE_SECONDS = 2;
+/**
+ * A reading averages the half second or so before it (macmon's interval; NVML's power figure is
+ * itself a trailing average), so the first half second of a decode window is left out: readings
+ * there still carry the prefill.
+ */
+export const DECODE_EDGE_MS = 500;
 
 /**
  * About a thousand tokens, the same text on every machine so the prefill figure means the
@@ -100,6 +121,18 @@ export function fillerForDepth(depth: number): string {
 export const promptForRun = (run: number, runs: number, depth = 0) =>
   `Benchmark run ${run} of ${runs} at depth ${depth}.\n\n` + (depth > 0 ? `Background notes, for context only; do not summarise them.\n\n${fillerForDepth(depth)}\n\n` : '') + PROMPT_BODY;
 
+/** The prompt's tokens at a depth by the character rule, with 15% to spare for a tokenizer that packs fewer characters per token. */
+export const promptTokenBudget = (depth: number) => Math.ceil((promptForRun(9, 9, depth).length / CHARS_PER_TOKEN) * 1.15);
+
+/**
+ * The window the sweep runs at, one for every request (the family's 32k, or the model's trained
+ * context when smaller), and the depths whose prompt and answer fit in it; the rest are skipped.
+ */
+export function sweepPlan(modelContext: number | null): { numCtx: number; depths: number[] } {
+  const numCtx = modelContext !== null && modelContext > 0 ? Math.min(NUM_CTX, modelContext) : NUM_CTX;
+  return { numCtx, depths: DEPTHS.filter((d) => promptTokenBudget(d) + PREDICT_TOKENS <= numCtx) };
+}
+
 export interface LlmRun {
   /** Context depth the run was made at (DEPTHS); absent in rows from before the sweep, which were all at zero. */
   depth?: number;
@@ -110,9 +143,18 @@ export interface LlmRun {
   evalMs: number;
   loadMs: number;
   totalMs: number;
+  /** Current protocol: the request's wall time (sent to answered), ms, and the readings taken while it ran, each at `t` ms after it was sent. */
+  wallMs?: number;
+  samples?: LlmSample[];
+  /** Mean watts over the decode window, [wallMs − evalMs, wallMs] less DECODE_EDGE_MS at its start; null when no reading fell in it. Filled by summarise. */
+  decodeGpuW?: number | null;
+  decodeCpuW?: number | null;
+  decodeSystemW?: number | null;
 }
 
 export interface LlmSample {
+  /** Milliseconds after the request was sent (the idle baseline: after it began); absent in old-protocol rows. */
+  t?: number;
   gpuW: number | null;
   cpuW: number | null;
   systemW: number | null;
@@ -129,6 +171,18 @@ export interface LlmMachine {
   /** One memory pool (Apple Silicon): the model's resident bytes come out of the same RAM. */
   unified: boolean;
   driver: string | null;
+  /**
+   * What shapes the figures beyond the hardware, recorded on a Mac from the current protocol on
+   * (absent elsewhere and in older rows): Ollama's version, the flash-attention and KV-cache
+   * settings it was started with (null when unset), whether the machine ran on AC or battery,
+   * and the energy mode (pmset: Low Power, Automatic, High Power).
+   */
+  ollamaVersion?: string | null;
+  flashAttention?: string | null;
+  kvCacheType?: string | null;
+  powerSource?: 'ac' | 'battery' | null;
+  lowPowerMode?: boolean | null;
+  powerMode?: string | null;
 }
 
 export interface LlmModel {
@@ -150,16 +204,22 @@ export interface LlmDepth {
   genStd: number;
   firstTokenMs: number;
   runs: LlmRun[];
+  /** Current protocol: the median of the runs' decode-window watts at this depth, and generation tok/s per those watts. */
+  decodeGpuW?: number | null;
+  decodeSystemW?: number | null;
+  tokPerSecPerGpuW?: number | null;
+  tokPerSecPerSystemW?: number | null;
 }
 
 export interface LlmBenchResult {
   id: string;
-  protocol: typeof LLM_PROTOCOL;
+  protocol: LlmProtocol;
   measuredAt: string;
   machine: LlmMachine;
   model: LlmModel;
-  settings: { promptTokens: number; predictTokens: number; numCtx: number; runs: number };
-  /** Run 1 loads the model from nothing (it is evicted first): the load figure the host watches in Ollama's verbose output. */
+  /** `warmupRuns`: generations run after the cold load and discarded (current protocol: one). */
+  settings: { promptTokens: number; predictTokens: number; numCtx: number; runs: number; warmupRuns?: number };
+  /** The model is evicted first, so the first request loads it from nothing: the load figure the host watches in Ollama's verbose output. */
   loadMs: number;
   /** Medians over the runs. */
   prefillTokPerSec: number;
@@ -178,14 +238,23 @@ export interface LlmBenchResult {
   };
   power: {
     gpuIdleW: number | null;
+    /** The mean over every reading while a generation was in flight, prefill included. */
     gpuAvgW: number | null;
     gpuPeakW: number | null;
     cpuAvgW: number | null;
     systemIdleW: number | null;
     systemAvgW: number | null;
     systemPeakW: number | null;
+    /** Current protocol: the zero-depth runs' decode-window watts (median over the runs); what the efficiency figures divide by. */
+    gpuDecodeW?: number | null;
+    cpuDecodeW?: number | null;
+    systemDecodeW?: number | null;
   };
-  /** Generation tokens per second per average GPU watt, and per system watt where the machine reports one. */
+  /**
+   * Zero-depth generation tokens per second per decode-window GPU watt, and per system watt where
+   * the machine reports one; the in-flight mean stands in only when no reading fell in a decode
+   * window (and in old-protocol rows, which had nothing else).
+   */
   efficiency: { tokPerSecPerGpuW: number | null; tokPerSecPerSystemW: number | null };
   /** Came in through Import: another machine's result, kept beside this one's. */
   imported: boolean;
@@ -210,16 +279,43 @@ const max = (xs: number[]): number | null => (xs.length ? Math.max(...xs) : null
 const pick = (samples: LlmSample[], key: keyof LlmSample): number[] => samples.map((s) => s[key]).filter((v): v is number => v !== null && Number.isFinite(v));
 
 const perSec = (count: number, ms: number) => (count > 0 && ms > 0 ? count / (ms / 1000) : 0);
+const medianOrNull = (xs: (number | null | undefined)[]): number | null => {
+  const v = xs.filter((x): x is number => typeof x === 'number' && Number.isFinite(x));
+  return v.length ? median(v) : null;
+};
+const ratio = (a: number, b: number | null) => (b ? a / b : null);
+
+/**
+ * The readings that belong to a run's decode: those inside [wallMs − evalMs, wallMs], less the
+ * first DECODE_EDGE_MS (a reading there still averages the prefill). A decode too short to keep
+ * any falls back to every reading inside the window; a run with no timestamps has none.
+ */
+export function decodeSamples(run: LlmRun): LlmSample[] {
+  if (!run.samples?.length || !run.wallMs || !(run.evalMs > 0)) return [];
+  const end = run.wallMs;
+  const start = Math.max(0, end - run.evalMs);
+  const inWindow = (from: number) => run.samples!.filter((s) => s.t !== undefined && s.t >= from && s.t <= end);
+  const trimmed = inWindow(start + DECODE_EDGE_MS);
+  return trimmed.length ? trimmed : inWindow(start);
+}
+
+/** The run with its decode-window watts filled in. */
+function withDecodeWatts(run: LlmRun): LlmRun {
+  if (!run.samples) return run;
+  const window = decodeSamples(run);
+  return { ...run, decodeGpuW: mean(pick(window, 'gpuW')), decodeCpuW: mean(pick(window, 'cpuW')), decodeSystemW: mean(pick(window, 'systemW')) };
+}
 
 /**
  * Folds the runs and the sampled readings into one result. `idle` is what the collector read
- * before the model was loaded; `busy` every reading while a generation was in flight.
+ * before the model was loaded; `busy` every reading while a measured generation was in flight.
+ * `loadMs` is the cold load (the warm-up request's load_duration); without it, run 1's.
  */
 export function summarise(
-  input: { id: string; measuredAt: string; machine: LlmMachine; model: LlmModel; runs: LlmRun[]; idle: LlmSample[]; busy: LlmSample[]; residentBytes: number | null; numCtx?: number; predictTokens?: number }
+  input: { id: string; measuredAt: string; machine: LlmMachine; model: LlmModel; runs: LlmRun[]; idle: LlmSample[]; busy: LlmSample[]; residentBytes: number | null; numCtx?: number; predictTokens?: number; loadMs?: number; warmupRuns?: number }
 ): LlmBenchResult {
   const byDepth = new Map<number, LlmRun[]>();
-  for (const r of input.runs) {
+  for (const r of input.runs.map(withDecodeWatts)) {
     const d = r.depth ?? 0;
     byDepth.set(d, [...(byDepth.get(d) ?? []), r]);
   }
@@ -228,21 +324,30 @@ export function summarise(
     .map(([depth, rs]) => {
       const pp = rs.map((r) => perSec(r.promptEvalCount, r.promptEvalMs));
       const tg = rs.map((r) => perSec(r.evalCount, r.evalMs));
+      const genTokPerSec = median(tg);
+      const decodeGpuW = medianOrNull(rs.map((r) => r.decodeGpuW));
+      const decodeSystemW = medianOrNull(rs.map((r) => r.decodeSystemW));
       return {
         depth,
         promptTokens: Math.round(median(rs.map((r) => r.promptEvalCount))),
         prefillTokPerSec: median(pp),
         prefillStd: std(pp),
-        genTokPerSec: median(tg),
+        genTokPerSec,
         genStd: std(tg),
         firstTokenMs: median(rs.map((r) => r.promptEvalMs)),
-        runs: rs
+        runs: rs,
+        decodeGpuW,
+        decodeSystemW,
+        tokPerSecPerGpuW: ratio(genTokPerSec, decodeGpuW),
+        tokPerSecPerSystemW: ratio(genTokPerSec, decodeSystemW)
       };
     });
   const zero = depths.find((d) => d.depth === 0) ?? depths[0];
   const runs = zero?.runs ?? [];
   const gpuAvgW = mean(pick(input.busy, 'gpuW'));
   const systemAvgW = mean(pick(input.busy, 'systemW'));
+  const gpuDecodeW = zero?.decodeGpuW ?? null;
+  const systemDecodeW = zero?.decodeSystemW ?? null;
   const gen = zero?.genTokPerSec ?? 0;
   return {
     id: input.id,
@@ -250,8 +355,8 @@ export function summarise(
     measuredAt: input.measuredAt,
     machine: input.machine,
     model: input.model,
-    settings: { promptTokens: zero?.promptTokens ?? 0, predictTokens: input.predictTokens ?? PREDICT_TOKENS, numCtx: input.numCtx ?? NUM_CTX, runs: runs.length },
-    loadMs: runs[0]?.loadMs ?? 0,
+    settings: { promptTokens: zero?.promptTokens ?? 0, predictTokens: input.predictTokens ?? PREDICT_TOKENS, numCtx: input.numCtx ?? NUM_CTX, runs: runs.length, warmupRuns: input.warmupRuns ?? 0 },
+    loadMs: input.loadMs ?? runs[0]?.loadMs ?? 0,
     prefillTokPerSec: zero?.prefillTokPerSec ?? 0,
     genTokPerSec: gen,
     firstTokenMs: zero?.firstTokenMs ?? 0,
@@ -265,12 +370,18 @@ export function summarise(
       cpuAvgW: mean(pick(input.busy, 'cpuW')),
       systemIdleW: mean(pick(input.idle, 'systemW')),
       systemAvgW,
-      systemPeakW: max(pick(input.busy, 'systemW'))
+      systemPeakW: max(pick(input.busy, 'systemW')),
+      gpuDecodeW,
+      cpuDecodeW: medianOrNull(runs.map((r) => r.decodeCpuW)),
+      systemDecodeW
     },
-    efficiency: { tokPerSecPerGpuW: gpuAvgW ? gen / gpuAvgW : null, tokPerSecPerSystemW: systemAvgW ? gen / systemAvgW : null },
+    efficiency: { tokPerSecPerGpuW: ratio(gen, gpuDecodeW ?? gpuAvgW), tokPerSecPerSystemW: ratio(gen, systemDecodeW ?? systemAvgW) },
     imported: false
   };
 }
+
+/** A row measured under the protocol this build runs; an old-protocol row is shown but never ranked against one. */
+export const isCurrentProtocol = (r: LlmBenchResult) => r.protocol === LLM_PROTOCOL;
 
 // ------------------------------------------------------------ llama-benchy
 
@@ -411,7 +522,7 @@ export function validResult(v: unknown): v is LlmBenchResult {
   const power = r.power as Record<string, unknown> | undefined;
   return (
     typeof r.id === 'string' &&
-    r.protocol === LLM_PROTOCOL &&
+    (r.protocol === LLM_PROTOCOL || r.protocol === LLM_PROTOCOL_V1) &&
     typeof r.measuredAt === 'string' &&
     !!machine && typeof machine.hostname === 'string' && typeof machine.gpuName === 'string' && typeof machine.os === 'string' &&
     !!model && typeof model.name === 'string' && isNum(model.sizeBytes) &&
@@ -480,17 +591,22 @@ export const COLUMNS: { key: string; label: string; higher: boolean; of: (r: Llm
   { key: 'first', label: 'First token', higher: false, of: (r) => r.firstTokenMs },
   { key: 'load', label: 'Load', higher: false, of: (r) => r.loadMs },
   { key: 'memory', label: 'Model resident', higher: false, of: (r) => r.memory.residentBytes },
-  { key: 'gpuW', label: 'GPU power', higher: false, of: (r) => r.power.gpuAvgW },
-  { key: 'systemW', label: 'System power', higher: false, of: (r) => r.power.systemAvgW },
+  { key: 'gpuW', label: 'GPU power', higher: false, of: (r) => r.power.gpuDecodeW ?? r.power.gpuAvgW },
+  { key: 'systemW', label: 'System power', higher: false, of: (r) => r.power.systemDecodeW ?? r.power.systemAvgW },
   { key: 'perGpuW', label: 'tok/s per GPU W', higher: true, of: (r) => r.efficiency.tokPerSecPerGpuW },
   { key: 'perSystemW', label: 'tok/s per system W', higher: true, of: (r) => r.efficiency.tokPerSecPerSystemW }
 ];
 
-/** Which result wins each column within a group; a column no result reports has no winner. Ties give every tied row the mark. */
+/**
+ * Which result wins each column within a group; a column no result reports has no winner. Ties
+ * give every tied row the mark. Old-protocol rows compete only among themselves, when the group
+ * holds no current row: their figures were measured differently.
+ */
 export function bestOf(results: LlmBenchResult[]): Record<string, Set<string>> {
   const best: Record<string, Set<string>> = {};
+  const pool = results.some(isCurrentProtocol) ? results.filter(isCurrentProtocol) : results;
   for (const col of COLUMNS) {
-    const values = results.map((r) => [r.id, col.of(r)] as const).filter((x): x is readonly [string, number] => x[1] !== null);
+    const values = pool.map((r) => [r.id, col.of(r)] as const).filter((x): x is readonly [string, number] => x[1] !== null);
     if (values.length < 2) continue;
     const target = col.higher ? Math.max(...values.map((v) => v[1])) : Math.min(...values.map((v) => v[1]));
     best[col.key] = new Set(values.filter((v) => v[1] === target).map((v) => v[0]));
