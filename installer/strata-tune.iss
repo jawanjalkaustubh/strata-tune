@@ -88,11 +88,15 @@ Name: "{group}\Uninstall Strata Tune"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Strata Tune"; Filename: "{app}\Strata Tune.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-; net.exe exits 2 when the account is already a member; that is fine and never fails the install.
-; {username} is the account whose token runs this elevated setup. On a PC where a standard
-; user elevates with another administrator's credentials, that is the administrator, not the
-; person who will run Capture; the app then still offers "Add my account" on the Capture page.
-Filename: "{sys}\net.exe"; Parameters: "localgroup ""Performance Log Users"" ""{username}"" /add"; Flags: runhidden; StatusMsg: "Adding your account to Performance Log Users..."; Tasks: perflog
+; Group and account both go in as SIDs: the group's display name is localised
+; ("Leistungsprotokollbenutzer" on German Windows), so the English name fails here - silently,
+; under runhidden - while the app's own membership check (electron/presentmon.ts) matches
+; S-1-5-32-559, leaving Capture unreachable for ever on a non-English Windows. Already a member
+; is not an error and never fails the install. The member is the account whose token runs this
+; elevated setup. On a PC where a standard user elevates with another administrator's
+; credentials, that is the administrator, not the person who will run Capture; the app then
+; still offers "Add my account" on the Capture page.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Add-LocalGroupMember -SID S-1-5-32-559 -Member ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -ErrorAction SilentlyContinue"""; Flags: runhidden; StatusMsg: "Adding your account to Performance Log Users..."; Tasks: perflog
 Filename: "{app}\Strata Tune.exe"; Description: "&Launch Strata Tune"; Flags: nowait postinstall skipifsilent
 
 [Code]

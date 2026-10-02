@@ -104,6 +104,40 @@ function unlinkHandshake() {
 /** PowerShell single-quoted literal. */
 const psq = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
+/**
+ * The handshake and log paths carry their own double quotes into the one raw
+ * command line Start-Process builds (see launchElevated), and the data dir they
+ * come from is STRATA_TUNE_DATA (presence.ts), which anything running as this
+ * user can set. A quote in it would close ours and append argv of its own to an
+ * ELEVATED collector - '--trust-local-peers' among them, which is the switch
+ * that turns off the peer check guarding the token. There is no legitimate
+ * quote in a Windows path, so such a dir is refused rather than escaped.
+ */
+function quotedDataDir(dir: string): boolean {
+  // Only the double quote: psq doubles an apostrophe, so it stays inside the literal, and
+  // C:\Users\O'Brien\AppData\Local is an ordinary profile path we must not refuse to start in.
+  return dir.includes('"');
+}
+
+/**
+ * Where the collector may live (collector/README.md, "Where the collector may be
+ * installed"): only a directory a standard user cannot write. An elevated process
+ * loads DLLs from its own directory first, and SetDefaultDllDirectories cannot
+ * cover Ftd2xx.dll and ControlLib.dll because LibreHardwareMonitorLib asks for
+ * them by bare name, so a writable collector folder turns the UAC prompt the user
+ * clicks Yes on into that user's code running as administrator. The admin-only
+ * roots are taken by path, not by ACL: a subfolder of %ProgramData% inherits
+ * Users:(WD,AD) unless someone restricts it, so Program Files is the only place a
+ * path alone can vouch for.
+ */
+function adminOnlyLocation(exe: string): boolean {
+  const roots = [process.env.ProgramW6432, process.env.ProgramFiles, process.env['ProgramFiles(x86)']]
+    .filter((r): r is string => !!r)
+    .map((r) => path.resolve(r).toLowerCase() + path.sep);
+  const dir = path.resolve(path.dirname(exe)).toLowerCase() + path.sep;
+  return roots.some((r) => dir.startsWith(r));
+}
+
 interface Launch {
   exit: number | null;
   stderr: string;
@@ -223,6 +257,20 @@ export class CollectorClient extends EventEmitter {
     const collector = this.collectorExe();
     if (!fs.existsSync(collector)) {
       this.set('error', `Collector not built: ${collector}. Run dotnet build collector\\StrataTune.sln -c Release.`);
+      return this.state;
+    }
+    const dir = dataDir();
+    if (quotedDataDir(dir)) {
+      this.set('error', `Refusing to elevate: the data folder contains a quote character (${dir}). Clear or correct STRATA_TUNE_DATA.`);
+      return this.state;
+    }
+    // Only a packaged build is checked: a dev build runs from the solution tree, which is
+    // writable by design, and the rule is about where a release is installed.
+    if (app.isPackaged && !adminOnlyLocation(collector)) {
+      this.set(
+        'error',
+        `Refusing to elevate a collector a standard user can write: ${path.dirname(collector)}. Strata Tune must live under ${process.env.ProgramFiles || 'C:\\Program Files'} (run Strata-Tune-Setup-x64.exe, or move the unzipped folder there), because an elevated process loads DLLs from its own folder first.`
+      );
       return this.state;
     }
     this.set('elevating', 'Waiting for permission (UAC)…');

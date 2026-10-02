@@ -86,6 +86,9 @@ export interface TraceAccess {
 const PERFORMANCE_LOG_USERS_SID = 'S-1-5-32-559';
 export const PERFORMANCE_LOG_USERS = 'Performance Log Users';
 
+/** PowerShell single-quoted literal, the same rule the collector's elevated launch uses. */
+const psq = (s: string) => `'${s.replace(/'/g, "''")}'`;
+
 export function traceAccess(): Promise<TraceAccess> {
   return new Promise((resolve) => {
     execFile('whoami', ['/groups', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 }, (err, stdout) => {
@@ -114,13 +117,22 @@ export function grantTraceAccess(): Promise<{ ok: boolean; message: string }> {
   const user = process.env.USERNAME ?? '';
   if (!user) return Promise.resolve({ ok: false, message: 'Could not read the account name from the environment.' });
   // PowerShell's Start-Process -Verb RunAs is the shell's own elevation; -Wait returns the exit code net.exe gave.
-  const script = `$p = Start-Process -FilePath net.exe -ArgumentList 'localgroup','"${PERFORMANCE_LOG_USERS}"','"${user.replace(/"/g, '')}"','/add' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode`;
+  // Each argument goes through psq rather than into the command text: an account name holding an
+  // apostrophe (O'Brien) would otherwise close the literal and the rest of the name would be parsed
+  // as PowerShell, so whoever can set USERNAME would choose what the UAC prompt elevates. The inner
+  // double quotes stay because -ArgumentList is joined into one raw command line without quoting and
+  // both the group and the account name can contain spaces.
+  // Add-LocalGroupMember -SID, not `net localgroup "Performance Log Users"`: the group is named
+  // S-1-5-32-559 on every language, and traceAccess() above checks that same SID, so a localized
+  // Windows no longer offers this button for ever because the English name never matched.
+  const add = `Add-LocalGroupMember -SID ${psq(PERFORMANCE_LOG_USERS_SID)} -Member ${psq(user)} -ErrorAction Stop`;
+  const script = `$p = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-Command',${psq(add)} -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode`;
   return new Promise((resolve) => {
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, timeout: 120_000 }, (err) => {
       if (err) {
         const code = (err as { code?: number | string }).code;
         // 1223 is the UAC prompt declined; 2 is net.exe's "already a member" (NET HELPMSG 1378 spelled as exit 2).
-        const message = code === 1223 || /canceled|cancelled/i.test(err.message) ? 'The prompt was declined; nothing changed.' : code === 2 ? `The account is already in ${PERFORMANCE_LOG_USERS}: sign out and back in for Windows to apply it.` : `Windows did not add the account (${err.message.trim().split('\n')[0]}). You can do it by hand: run "net localgroup \\"${PERFORMANCE_LOG_USERS}\\" ${user} /add" as administrator, then sign out and back in.`;
+        const message = code === 1223 || /canceled|cancelled/i.test(err.message) ? 'The prompt was declined; nothing changed.' : code === 2 ? `The account is already in ${PERFORMANCE_LOG_USERS}: sign out and back in for Windows to apply it.` : `Windows did not add the account (${err.message.trim().split('\n')[0]}). You can do it by hand: run "Add-LocalGroupMember -SID ${PERFORMANCE_LOG_USERS_SID} -Member ${user}" in an administrator PowerShell, then sign out and back in.`;
         resolve({ ok: code === 2, message });
         return;
       }

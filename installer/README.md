@@ -10,8 +10,11 @@ same release also has `Strata-Tune-Setup-x64.exe`, which does steps 1 and 2 for 
 Files, a Start Menu entry, a desktop shortcut if you tick it, the PawnIO driver fetched from its
 official release, your account into *Performance Log Users* for Capture, and a launch at the end).
 
-1. Unzip this folder anywhere you like (for example `C:\Program Files\Strata Tune` or your
-   Desktop).
+1. Unzip this folder into a place a standard user cannot write: `C:\Program Files\Strata Tune`.
+   Not your Desktop, Downloads or anywhere else under your own profile. The sensor service runs
+   as administrator and loads its libraries from its own folder, so anything able to write that
+   folder could run code as administrator; the app refuses to start the service from a folder
+   outside `C:\Program Files` and says so.
 2. Install the **PawnIO** driver if you don't have it: <https://pawnio.eu>. It is a small,
    signed kernel driver that LibreHardwareMonitor uses to read CPU, board and memory sensors.
    Without it the sensor service cannot read your CPU and the Monitor's CPU panel says so.

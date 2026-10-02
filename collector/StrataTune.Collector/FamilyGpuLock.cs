@@ -22,10 +22,36 @@ internal static class FamilyGpuLock
     private static readonly string LockPath = Path.Combine(
         Environment.GetEnvironmentVariable("STRATA_AI_DEV") ?? @"C:\AI_dev", "Claude", ".strata", "gpu.lock");
 
+    /// <summary>A reparse point anywhere in the lock's path, or null when the chain is real.
+    /// C:\AI_dev is writable by any authenticated user, so a standard user can plant a junction
+    /// there and have this elevated process create and delete files wherever it points. Same walk
+    /// as the bench's GpuLock.Redirected; a chain we cannot inspect counts as redirected.</summary>
+    private static string? Redirected()
+    {
+        try
+        {
+            for (DirectoryInfo? dir = new(Path.GetDirectoryName(LockPath)!); dir is not null; dir = dir.Parent)
+            {
+                if (dir.Exists && dir.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    return dir.FullName;
+            }
+            FileInfo file = new(LockPath);
+            return file.Exists && file.Attributes.HasFlag(FileAttributes.ReparsePoint) ? file.FullName : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return LockPath;
+        }
+    }
+
     /// <summary>Who holds the GPU as a plain sentence, or null when it is free. A lock whose
-    /// pid is gone is a crash leftover and is cleared so nobody waits on a ghost.</summary>
+    /// pid is gone is a crash leftover and is cleared so nobody waits on a ghost. A redirected
+    /// path reads as held, so a run refuses rather than writing through the link.</summary>
     public static string? HeldBy()
     {
+        if (Redirected() is string redirect)
+            return $"{redirect} is a link, not a real folder; Strata Tune will not write the family's gpu.lock through it.";
+
         var entry = Read();
         if (entry is null)
             return null;
@@ -41,6 +67,8 @@ internal static class FamilyGpuLock
 
     public static void Take()
     {
+        if (Redirected() is not null)
+            return;
         Directory.CreateDirectory(Path.GetDirectoryName(LockPath)!);
         File.WriteAllText(LockPath, JsonSerializer.Serialize(new GpuLockEntry(Owner, Environment.ProcessId, DateTime.UtcNow.ToString("o")), GpuLockJson.Default.GpuLockEntry));
     }
@@ -66,6 +94,8 @@ internal static class FamilyGpuLock
 
     private static void TryDelete()
     {
+        if (Redirected() is not null)
+            return;
         try
         {
             File.Delete(LockPath);

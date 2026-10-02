@@ -24,7 +24,8 @@ internal static class AdminOnly
     /// <summary>The state folder and its file: repaired to the restricted DACL when anyone
     /// else could write them (an installer, an older build or a standard user may have
     /// created the folder first, with ProgramData's inheritance intact), and the reason when
-    /// even the repair fails, which is when Tune must refuse to trust the file.</summary>
+    /// the repair fails or came too late to trust what the folder already held, which is
+    /// when Tune must refuse to trust the file.</summary>
     public static string? EnforceFolder(string dir, string? file, Action<string> log)
     {
         try
@@ -39,14 +40,39 @@ internal static class AdminOnly
                 return null;
             log($"tune: {problem}; restricting it to administrators");
             info.SetAccessControl(Restricted());
-            if (file is not null && File.Exists(file))
-                new FileInfo(file).SetAccessControl(Restrict(new FileSecurity(), InheritanceFlags.None));
-            return Problem(info.GetAccessControl(), dir, WriteRights)
-                ?? (file is not null && File.Exists(file) ? Problem(new FileInfo(file).GetAccessControl(), file, WriteRights) : null);
+            if (Problem(info.GetAccessControl(), dir, WriteRights) is { } unrepaired)
+                return unrepaired;
+            if (file is null || !File.Exists(file))
+                return null;
+            // A file that was already there when the repair ran was authored while someone
+            // other than administrators could write it — a standard user may have planted it
+            // before the first elevated start, choosing the baseline this collector would put
+            // on the card — and repairing its ACL would only make that content look
+            // administrator-authored. It goes aside instead, so this start reports a problem
+            // and reads nothing from it, and the next one begins from an empty state.
+            if (MoveAside(file))
+                return $"{file} was writable by someone other than administrators before this start; it is kept as {file}.untrusted and nothing in it is applied";
+            new FileInfo(file).SetAccessControl(Restrict(new FileSecurity(), InheritanceFlags.None));
+            return $"{file} was writable by someone other than administrators before this start and could not be moved aside";
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             return $"the ACL of {dir} could not be repaired: {e.Message}";
+        }
+    }
+
+    // False when the file could not be put aside (something holds it open), so the caller
+    // falls back to restricting it in place and still reports it as not to be trusted.
+    private static bool MoveAside(string file)
+    {
+        try
+        {
+            File.Move(file, $"{file}.untrusted", overwrite: true);
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 

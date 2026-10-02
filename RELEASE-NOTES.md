@@ -1,6 +1,6 @@
 PC tuning and diagnostics: what is wrong with this machine, what it costs, and how to fix it. Free, no accounts, no telemetry, no cloud calls.
 
-**Install (Windows):** unzip anywhere and run `Strata Tune.exe`. Install the **PawnIO** driver from <https://pawnio.eu> if you don't have it — without it the sensor service cannot read CPU, board and memory sensors. First launch shows the disclaimer, then Windows asks once (UAC) to start the elevated sensor service, which listens only on `127.0.0.1` with a per-launch secret and exits with the app. Not code-signed: *More info → Run anyway*.
+**Install (Windows):** unzip to `C:\Program Files\Strata Tune` (any folder a standard user cannot write) and run `Strata Tune.exe` — the elevated sensor service loads its libraries from its own folder, so the app refuses to start it from the Desktop, Downloads or anywhere else under your profile. Install the **PawnIO** driver from <https://pawnio.eu> if you don't have it — without it the sensor service cannot read CPU, board and memory sensors. First launch shows the disclaimer, then Windows asks once (UAC) to start the elevated sensor service, which listens only on `127.0.0.1` with a per-launch secret and exits with the app. Not code-signed: *More info → Run anyway*.
 
 ## What's new in 0.2.0
 
