@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { CollectorClient } from './collector';
 import { registerAdvisorIpc } from './bench';
 import { registerLlmBenchIpc } from './llm-bench';
@@ -91,6 +91,28 @@ function createWindow() {
     if (/^https:\/\/\S+$/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  // The preload is a webPreferences property, so it runs for whatever document
+  // the frame ends up showing: a page the frame is navigated to - an HTML file
+  // dropped on the frameless window, a location change - would inherit the
+  // whole window.strata bridge (grantTrace's UAC prompt, the tune clock
+  // writes, saveFile). Only the page we loaded ourselves may navigate; hash
+  // and query are ignored because Chromium does not emit these for in-page
+  // navigation anyway.
+  const appUrl = process.env.VITE_DEV_SERVER_URL || pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
+  const blockNavigation = (e: { preventDefault: () => void }, url: string) => {
+    try {
+      const to = new URL(url);
+      const own = new URL(appUrl);
+      if (to.origin === own.origin && to.pathname === own.pathname) return;
+    } catch {
+      /* not a URL we can compare: block it */
+    }
+    e.preventDefault();
+    console.error(`[nav] blocked a navigation to ${url}`);
+  };
+  win.webContents.on('will-navigate', (details) => blockNavigation(details, details.url));
+  win.webContents.on('will-frame-navigate', (details) => blockNavigation(details, details.url));
 
   // A renderer crash would otherwise leave a frameless window with nothing in
   // it and no title bar to close it with. Every reason reloads, 'killed' (End

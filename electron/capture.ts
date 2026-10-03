@@ -77,6 +77,8 @@ const HOGS_SAMPLE_S = 5;
 const BENCH_EXIT_WAIT_MS = 5000;
 /** A bench that exits before presenting (lock held, no adapter) never trips PresentMon's proc-exit rule; it is stopped after this. */
 const BENCH_GRACE_MS = 1500;
+/** Presents from another swapchain are dropped, but a chain silent for this many of them was recreated (a mode change), so the newcomer becomes the run's. */
+const SWAPCHAIN_GONE_ROWS = 150;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -162,6 +164,13 @@ interface Run {
   qpcFirst: number | null;
   qpcLast: number | null;
   recent: { ms: number; sum: number }[];
+  /** The swapchain the frame times are of: a capture by image name carries every process of that name on one stream, and two chains interleaved read as double the frame rate. */
+  swapChain: string | null;
+  /** Rows left out as another swapchain's, and how many of those have arrived since the run's chain last presented. */
+  swapChainDropped: number;
+  swapChainQuiet: number;
+  /** The session-file failure already reported, so it is said once and not at 2 Hz. */
+  writeFailure: string | null;
   notes: string[];
   snapshot: Promise<StaticSnapshot | null>;
   hogs: Promise<HogsResult | null>;
@@ -312,6 +321,10 @@ export class CaptureController extends EventEmitter {
       qpcFirst: null,
       qpcLast: null,
       recent: [],
+      swapChain: null,
+      swapChainDropped: 0,
+      swapChainQuiet: 0,
+      writeFailure: null,
       notes: [],
       snapshot: Promise.resolve(null),
       hogs: Promise.resolve(null),
@@ -366,9 +379,31 @@ export class CaptureController extends EventEmitter {
 
   // --------------------------------------------------------- streams
 
-  private frames(rows: FrameRow[]): void {
+  /**
+   * One swapchain's presents, so a merged stream is not read as a frame rate. The first row's
+   * swapchain is the run's; the rest are counted out, except that a chain which has gone quiet
+   * was recreated rather than replaced, and the newcomer takes over.
+   */
+  private oneSwapChain(run: Run, rows: FrameRow[]): FrameRow[] {
+    const kept: FrameRow[] = [];
+    for (const r of rows) {
+      run.swapChain ??= r.swapChainAddress;
+      if (r.swapChainAddress !== run.swapChain && ++run.swapChainQuiet <= SWAPCHAIN_GONE_ROWS) {
+        run.swapChainDropped++;
+        continue;
+      }
+      run.swapChain = r.swapChainAddress;
+      run.swapChainQuiet = 0;
+      kept.push(r);
+    }
+    return kept;
+  }
+
+  private frames(all: FrameRow[]): void {
     const run = this.run;
-    if (!run || rows.length === 0) return;
+    if (!run || all.length === 0) return;
+    const rows = this.oneSwapChain(run, all);
+    if (rows.length === 0) return;
     run.writer.writeFrames(rows);
     run.frames += rows.length;
     run.qpcFirst ??= rows[0].timeInQpc;
@@ -388,6 +423,13 @@ export class CaptureController extends EventEmitter {
     const frames: CaptureFrames = { count: run.frames, recentMs: run.recent.map((r) => r.ms) };
     this.state = { ...this.state, frames: run.frames };
     this.emit('frames', frames);
+    // A dead session file (the volume full, a removable drive pulled) is said while the capture runs, not minutes later at the save.
+    const failure = run.writer.failed;
+    if (failure && !run.writeFailure) {
+      run.writeFailure = failure;
+      run.notes.push(`the session files could not be written: ${failure}`);
+      this.set({ message: `The session files could not be written: ${failure}` });
+    }
   }
 
   /** The collector is optional: without it the session has frames only (sensorWindow null). */
@@ -456,6 +498,7 @@ export class CaptureController extends EventEmitter {
         exit = { ...exit, message: bench.message };
       } else if (bench.summary?.completed === false) run.notes.push('The bench was ended early, so its script did not play to the end');
     }
+    if (run.swapChainDropped > 0) run.notes.push(`${run.swapChainDropped} presents of another swapchain were left out, so the frame times are one swapchain's`);
 
     // The last slice covers everything since the previous one, plus a margin for the collector's own lag.
     const elapsedS = Math.ceil((Date.now() - run.startedAt.getTime()) / 1000);

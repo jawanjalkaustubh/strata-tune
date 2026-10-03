@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { app, type IpcMain } from 'electron';
+import { lockHolder } from './bench-run';
 import type { CollectorClient } from './collector';
 import { macWorkerPath } from './mac/paths';
 
@@ -230,9 +231,29 @@ async function heldDuring<T>(collector: CollectorClient | null, until: Promise<T
   return held;
 }
 
+/** Models Ollama holds on the card right now; empty when it is not running or does not answer. */
+async function residentModels(): Promise<string[]> {
+  interface Ps {
+    models?: { name: string }[];
+  }
+  try {
+    const ps = await ollamaJson<Ps>('/api/ps', undefined, 5_000);
+    return (ps.models ?? []).map((m) => m.name).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 async function doBenchGpu(driver: string | null, collector: CollectorClient | null): Promise<GpuBench | BenchError> {
   const exe = workerExe();
   if (!fs.existsSync(exe)) return { error: `Worker not built: ${exe}. Run ${process.platform === 'darwin' ? 'scripts/mac/build-collector.sh' : 'dotnet build collector\\StrataTune.sln -c Release'}.` };
+  // Plan section 20, the rule the stutter bench already keeps: a sweep taken while another Strata app or a
+  // resident model has the card measures that too, and writeCache() then speaks for the card until the
+  // driver changes, so it is refused with the reason rather than cached as the truth.
+  const holder = lockHolder();
+  if (holder) return { error: holder };
+  const resident = await residentModels();
+  if (resident.length > 0) return { error: `Ollama has ${resident.join(', ')} in video memory; the sweep would measure it too. Free VRAM first, then measure.` };
   const running = runWorker(exe);
   const held = await heldDuring(collector, running);
   const run = await running;

@@ -19,8 +19,13 @@ internal static class FamilyGpuLock
 {
     public const string Owner = "strata-tune";
 
-    private static readonly string LockPath = Path.Combine(
-        Environment.GetEnvironmentVariable("STRATA_AI_DEV") ?? @"C:\AI_dev", "Claude", ".strata", "gpu.lock");
+    /// <summary>Threat: this process is elevated by Start-Process -Verb RunAs from the user's
+    /// own shell, so it inherits the user session's environment. An STRATA_AI_DEV the family's
+    /// unelevated side honours would let a medium-integrity process point an administrator's
+    /// create, write and delete at any path, a UNC share included — the same medium-to-high
+    /// crossing AppPaths.ReparsePointIn guards. The elevated side therefore pins the root; the
+    /// bench and the Electron side keep the dev override.</summary>
+    private static readonly string LockPath = Path.Combine(@"C:\AI_dev", "Claude", ".strata", "gpu.lock");
 
     /// <summary>A reparse point anywhere in the lock's path, or null when the chain is real.
     /// C:\AI_dev is writable by any authenticated user, so a standard user can plant a junction

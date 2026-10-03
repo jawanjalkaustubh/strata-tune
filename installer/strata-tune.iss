@@ -13,7 +13,7 @@
 ;      package); skipped when already installed, and a failed download is one message, never a
 ;      failed install (the app runs without it and says so on the Monitor page);
 ;    - the account into Performance Log Users, so Capture can open PresentMon's trace session
-;      without elevation (a checkbox; takes effect at the next sign-in);
+;      without elevation (a checkbox, off by default; takes effect at the next sign-in);
 ;    - uninstall removes the app and asks about the sessions, logs and settings; PawnIO stays,
 ;      because other tools share it.
 ;  The setup is not code-signed: SmartScreen shows "Windows protected your PC" (More info, Run anyway).
@@ -49,6 +49,10 @@ AppPublisherURL=https://github.com/jawanjalkaustubh/strata-tune
 AppSupportURL=https://github.com/jawanjalkaustubh/strata-tune/issues
 AppUpdatesURL=https://github.com/jawanjalkaustubh/strata-tune/releases
 DefaultDirName={autopf}\Strata Tune
+; {autopf} is the only destination: retargeted to a folder a standard user can write, the install
+; would hand him the elevated collector's exe, the very thing PrivilegesRequired=admin is here to
+; prevent (collector\README.md "Where the collector may be installed").
+DisableDirPage=yes
 DefaultGroupName=Strata Tune
 DisableProgramGroupPage=yes
 ; An administrator install by design: the collector's folder must not be writable by a standard user.
@@ -77,7 +81,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"
 Name: "pawnio"; Description: "Install the &PawnIO driver {#PawnIoVersion} (CPU and board sensors need it; downloaded from its official release, about 3 MB)"; GroupDescription: "Sensors:"; Check: not PawnIoInstalled
-Name: "perflog"; Description: "Let Capture record &frame times without an administrator prompt (adds your account to the Performance Log Users group; takes effect after you sign out and back in)"; GroupDescription: "Capture:"
+; Unticked: Performance Log Users is a lasting privilege grant and the uninstaller cannot take it
+; back, so it is opted into here rather than out of. Skipping it costs nothing permanent - the
+; Capture page offers "Add my account" whenever it is wanted.
+Name: "perflog"; Description: "Let Capture record &frame times without an administrator prompt (adds your account to the Performance Log Users group; takes effect after you sign out and back in)"; GroupDescription: "Capture:"; Flags: unchecked
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

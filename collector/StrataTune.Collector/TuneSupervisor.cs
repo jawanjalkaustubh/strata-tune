@@ -270,14 +270,20 @@ internal sealed class TuneSupervisor
     /// <summary>
     /// "Keep my tune applied at startup" (plan section 16, 2026-09-17): the renderer sends the
     /// vendor values (slider units) once per collector start when the driver reads 0 / 0, so
-    /// one program holds the tune. Refused while a run is going or a rung is applied, and
-    /// when our route already holds something (never overwrite a value we did not just read as 0).
+    /// one program holds the tune. Refused unless Tune is enabled in the state file, while a
+    /// run is going or a rung is applied, and when our route already holds something (never
+    /// overwrite a value we did not just read as 0).
     /// </summary>
     public (bool Ok, string Message) Hold(PstateDeltas vendor)
     {
         if (Active) return (false, "a run is going");
         return Mutate(() =>
         {
+            // The file's flag, not only the renderer's: a caller whose setting disagrees with
+            // this machine's state (Tune turned off in another instance, a stale renderer)
+            // must not get a clock write out of the elevated route, the same gate as a start.
+            if (!_store.Current.Enabled)
+                return (false, "Tune is not enabled: turn it on in Settings and accept the warning first");
             if (_store.Current.State == TuneRollback.Pending) return (false, "a rung is still applied");
             if (NvapiPstates.ReadDeltas(out _) is { Deltas: var now } && (now.CoreKhz != 0 || now.MemKhz != 0))
                 return (false, $"our route already holds core {now.CoreKhz / 1000} / memory {now.MemKhz / 1000} MHz; nothing written");

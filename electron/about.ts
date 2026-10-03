@@ -179,7 +179,9 @@ export function parseDxdiag(text: string): Pick<DirectXInfo, 'version' | 'device
   return { version, devices: devices.filter((d) => d.name && !/^unknown$/i.test(d.name)) };
 }
 
-const DXDIAG_CACHE = () => path.join(app.getPath('userData'), 'dxdiag.json');
+// Under the collector's own folder, not userData: that is the one folder the
+// uninstaller offers to delete and the one about:system names as dataFolder.
+const DXDIAG_CACHE = () => path.join(tuneDataDir(), 'dxdiag.json');
 const DXDIAG_MAX_AGE_MS = 30 * 86_400_000;
 /** dxdiag enumerates every device and takes 20 s on the dev box; it is run once per Windows build and month. */
 const DXDIAG_TIMEOUT_MS = 90_000;

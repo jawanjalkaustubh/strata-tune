@@ -32,11 +32,13 @@ internal static class HandshakeFile
     /// <summary>Threat: the token this file carries. The DACL goes on the file, not on the
     /// folder: %LOCALAPPDATA%\Strata Tune is shared with the unelevated UI, which writes the
     /// disclaimer acceptance and its own logs there, so a Users-read-only folder would break
-    /// the app. On the file: inheritance cut, administrators and SYSTEM full control, and the
-    /// collector's own SID read — the elevated process runs as the same account the unelevated
-    /// Electron UI does, so the UI can still poll the file while no other principal is named.
-    /// The peer-process check in <see cref="Auth"/> is the real guard against a same-user
-    /// process that reads the token anyway; this narrows who can.</summary>
+    /// the app. On the file: inheritance cut, administrators and SYSTEM full control, and read
+    /// for the collector's own SID plus the launching user's — usually one and the same account,
+    /// but when UAC elevated this process under another one (plan section 5, the family PC) the
+    /// standard user who runs the UI is a different principal and without its ACE the UI polls
+    /// a file it may not read, forever. No other principal is named. The peer-process check in
+    /// <see cref="Auth"/> is the real guard against a same-user process that reads the token
+    /// anyway; this narrows who can.</summary>
     private static void SecureFile(string file, Action<string> log)
     {
         try
@@ -48,14 +50,50 @@ internal static class HandshakeFile
             security.AddAccessRule(new FileSystemAccessRule(administrators, FileSystemRights.FullControl, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
             security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
                 FileSystemRights.FullControl, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
-            if (WindowsIdentity.GetCurrent().User is { } self)
+            var self = WindowsIdentity.GetCurrent().User;
+            if (self is not null)
                 security.AddAccessRule(new FileSystemAccessRule(self, FileSystemRights.Read, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
+            if (LaunchingUser(Path.GetDirectoryName(file)!, self) is { } launcher)
+                security.AddAccessRule(new FileSystemAccessRule(launcher, FileSystemRights.Read, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
             new FileInfo(file).SetAccessControl(security);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             log($"handshake: could not restrict the ACL of collector.json: {e.Message}");
         }
+    }
+
+    /// <summary>The account the UI runs as, taken from the first directory on the handshake's
+    /// path that neither this elevated identity, Administrators nor SYSTEM owns: the UI passes
+    /// --handshake under its own %LOCALAPPDATA%, so on the elevated-under-another-account path
+    /// that is the launching user's profile folder. Folders an earlier elevated run created are
+    /// skipped for that reason. Null when the whole chain is ours (the ordinary case, where the
+    /// collector's own SID above is already the launching user) or when the owners cannot be
+    /// read — never a reason to leave the file's inherited ACL in place, so this has its own
+    /// try and does not share the caller's.</summary>
+    private static SecurityIdentifier? LaunchingUser(string dir, SecurityIdentifier? self)
+    {
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        try
+        {
+            for (var d = new DirectoryInfo(dir); d is not null; d = d.Parent)
+            {
+                if (!d.Exists)
+                    continue;
+                // An account, never a service: the walk reaches the volume root on the ordinary
+                // single-account box (C:\ is owned by NT SERVICE\TrustedInstaller on a stock
+                // install), and that is a chain with no launching user in it rather than a
+                // principal to name on the token file.
+                if (d.GetAccessControl().GetOwner(typeof(SecurityIdentifier)) is SecurityIdentifier owner
+                    && owner.IsAccountSid() && owner != administrators && owner != system && owner != self)
+                    return owner;
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+        }
+        return null;
     }
 
     /// <summary>The pid in the existing file when it names another running collector: a live

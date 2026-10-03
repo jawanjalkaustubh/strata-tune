@@ -88,20 +88,29 @@ export function sessionId(startedAt: Date, exe: string): string {
 class NdjsonGz {
   private readonly gzip = zlib.createGzip();
   private readonly done: Promise<void>;
+  /** Why the stream died (a full volume, a file an AV scan holds): the first error wins and write() stops there. */
+  failed: Error | null = null;
   rows = 0;
 
   constructor(file: string) {
     const out = fs.createWriteStream(file);
     this.done = new Promise<void>((resolve, reject) => {
+      const fail = (e: Error) => {
+        this.failed ??= e;
+        reject(e);
+      };
       out.on('finish', resolve);
-      out.on('error', reject);
-      this.gzip.on('error', reject);
+      out.on('error', fail);
+      this.gzip.on('error', fail);
     });
+    // Nothing awaits done until close(), minutes into a capture: without this, a failure before then is an unhandled rejection.
+    this.done.catch(() => undefined);
     this.gzip.pipe(out);
   }
 
   write(rows: readonly unknown[]): void {
-    if (rows.length === 0) return;
+    // gzip.pipe(out) is a plain pipe, so the gzip survives a dead sink and would take the rest of the capture into nothing.
+    if (rows.length === 0 || this.failed) return;
     this.rows += rows.length;
     this.gzip.write(rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
   }
@@ -139,6 +148,12 @@ export class SessionWriter {
 
   writeGpu(sample: GpuSample): void {
     this.gpu.write([sample]);
+  }
+
+  /** The first stream failure of this capture, or null, so the capture page can say it while the capture still runs. */
+  get failed(): string | null {
+    const e = this.frames.failed ?? this.sensors.failed ?? this.gpu.failed;
+    return e ? e.message : null;
   }
 
   private closeAll(): Promise<void> {

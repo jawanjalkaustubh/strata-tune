@@ -142,7 +142,12 @@ export function registerTuneIpc(ipc: IpcMain, collector: CollectorClient, send: 
   ipc.handle('tune:stop', () => client.stop());
   ipc.handle('tune:revert', () => client.revert());
   ipc.handle('tune:release', () => client.release());
-  ipc.handle('tune:hold', (_e, vendor: PstateDeltas) => client.hold(vendor));
+  ipc.handle('tune:hold', (_e, vendor: PstateDeltas) => {
+    // The payload check tune:start already makes: a hold is a P0 clock write, so it goes no further than here without two integer MHz.
+    const held = vendorValue(vendor);
+    if (!held) throw new Error('A hold needs a core and a memory offset in whole MHz');
+    return client.hold(held);
+  });
   ipc.handle('tune:export', () => client.export());
   ipc.handle('tune:flight', () => client.flight());
   ipc.on('tune:subscribe', () => (wanted = true));

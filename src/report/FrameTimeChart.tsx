@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Measurements, StutterCase, StutterMark, TimelinePoint } from './report-types';
 
 interface Props {
@@ -74,7 +74,9 @@ export const FrameTimeChart: React.FC<Props> = ({ timeline, stutters, measuremen
   const [ref, W] = useWidth();
   const innerW = W - PAD.left - PAD.right;
   const innerH = H - PAD.top - PAD.bottom;
-  const yMax = yCeiling(m, stutters);
+  // yCeiling sorts the stutter sizes and the clipped test walks them again, so both
+  // are memoised: a window drag re-renders on every ResizeObserver callback.
+  const yMax = useMemo(() => yCeiling(m, stutters), [m, stutters]);
   const xMax = Math.max(durationS, timeline[timeline.length - 1]?.t ?? 0, 1);
   const x = (t: number) => PAD.left + (t / xMax) * innerW;
   const y = (ms: number) => PAD.top + innerH - (Math.min(ms, yMax) / yMax) * innerH;
@@ -93,7 +95,7 @@ export const FrameTimeChart: React.FC<Props> = ({ timeline, stutters, measuremen
   const worstLabelY = typicalY - worstY < 12 ? typicalY - 12 : worstY;
   const labelX = PAD.left + 6;
   const showWorst = m.worst1PctMs > m.typicalMs;
-  const clipped = stutters.some((s) => s.ms > yMax);
+  const clipped = useMemo(() => stutters.some((s) => s.ms > yMax), [stutters, yMax]);
 
   return (
     <div ref={ref}>

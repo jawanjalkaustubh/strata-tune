@@ -72,6 +72,23 @@ func copyBandwidth(bufferBytes: Int, passes: Int) -> (best: Double, median: Doub
     let pso = pipeline("copyk")
     let n = bufferBytes / 16
     guard let a = device.makeBuffer(length: n * 16, options: .storageModePrivate), let b = device.makeBuffer(length: n * 16, options: .storageModePrivate) else { fail("Could not allocate \(bufferBytes) bytes", code: 3) }
+    // Random bytes in the source before the first pass, so no zero-page or compression shortcut in
+    // the driver can make the copy cheaper than a real workload's (BenchRun.cs fills its source for
+    // the same reason). One 16 MiB chunk blitted over the buffer is as good as fresh data:
+    // compression works on blocks far smaller than that.
+    let chunkBytes = min(1 << 24, n * 16)
+    var chunk = [UInt64](repeating: 0, count: chunkBytes / 8)
+    var rng = SystemRandomNumberGenerator()
+    for i in 0..<chunk.count { chunk[i] = rng.next() }
+    guard let staging = chunk.withUnsafeBytes({ device.makeBuffer(bytes: $0.baseAddress!, length: chunkBytes, options: .storageModeShared) }) else { fail("Could not allocate the \(chunkBytes) byte staging buffer", code: 3) }
+    let filling = queue.makeCommandBuffer()!
+    let blit = filling.makeBlitCommandEncoder()!
+    for offset in stride(from: 0, to: n * 16, by: chunkBytes) {
+        blit.copy(from: staging, sourceOffset: 0, to: a, destinationOffset: offset, size: min(chunkBytes, n * 16 - offset))
+    }
+    blit.endEncoding()
+    filling.commit()
+    filling.waitUntilCompleted()
     var rates: [Double] = []
     for _ in 0..<passes {
         let cb = queue.makeCommandBuffer()!
@@ -91,22 +108,25 @@ func copyBandwidth(bufferBytes: Int, passes: Int) -> (best: Double, median: Doub
 }
 
 /// MPS matmul of two N x N matrices: 2N^3 flops per pass. fp16 is half storage with the same kernel, the Windows worker's "fp16storage".
+/// The median of the passes, not the best: the JSON field names are the Windows bench's and BenchRun.cs
+/// reports a median under them, so a best-of here would show every Mac faster than a PC of equal throughput.
 func matmulTflops(n: Int, half: Bool, passes: Int) -> Double {
     let bytes = half ? 2 : 4
     let desc = MPSMatrixDescriptor(rows: n, columns: n, rowBytes: n * bytes, dataType: half ? .float16 : .float32)
     func matrix() -> MPSMatrix { MPSMatrix(buffer: device.makeBuffer(length: n * n * bytes, options: .storageModePrivate)!, descriptor: desc) }
     let (a, b, c) = (matrix(), matrix(), matrix())
     let mm = MPSMatrixMultiplication(device: device, transposeLeft: false, transposeRight: false, resultRows: n, resultColumns: n, interiorColumns: n, alpha: 1, beta: 0)
-    var best = 0.0
+    var rates: [Double] = []
     for _ in 0..<passes {
         let cb = queue.makeCommandBuffer()!
         mm.encode(commandBuffer: cb, leftMatrix: a, rightMatrix: b, resultMatrix: c)
         cb.commit()
         cb.waitUntilCompleted()
         let s = cb.gpuEndTime - cb.gpuStartTime
-        if s > 0 { best = max(best, 2.0 * Double(n) * Double(n) * Double(n) / s / 1e12) }
+        if s > 0 { rates.append(2.0 * Double(n) * Double(n) * Double(n) / s / 1e12) }
     }
-    return best
+    rates.sort()
+    return rates.isEmpty ? 0 : rates[rates.count / 2]
 }
 
 /// Metal 4 tensor ops (MetalPerformancePrimitives, macOS 26): the GPU's matrix path at int8 with int32
@@ -138,6 +158,7 @@ kernel void mm_i8(device int8_t* a [[buffer(0)]], device int8_t* b [[buffer(1)]]
 kernel void mm_f16(device half* a [[buffer(0)]], device half* b [[buffer(1)]], device float* c [[buffer(2)]], constant uint& n [[buffer(3)]], uint2 tgid [[threadgroup_position_in_grid]]) { mm_tile<half, float>(a, b, c, n, tgid); }
 """
 
+/// The median of the passes, as matmulTflops: one bench must not mix a best-of figure with a median one.
 func tensorOps(n: Int, passes: Int) -> (int8Tops: Double, fp16Tflops: Double)? {
     guard #available(macOS 26.0, *) else { return nil }
     let opts = MTLCompileOptions()
@@ -147,7 +168,7 @@ func tensorOps(n: Int, passes: Int) -> (int8Tops: Double, fp16Tflops: Double)? {
         guard let fn = lib.makeFunction(name: name), let pso = try? device.makeComputePipelineState(function: fn) else { return nil }
         guard let a = device.makeBuffer(length: n * n * elemA, options: .storageModePrivate), let b = device.makeBuffer(length: n * n * elemA, options: .storageModePrivate), let c = device.makeBuffer(length: n * n * elemC, options: .storageModePrivate) else { return nil }
         var nn = UInt32(n)
-        var best = 0.0
+        var rates: [Double] = []
         for _ in 0..<passes {
             let cb = queue.makeCommandBuffer()!
             let enc = cb.makeComputeCommandEncoder()!
@@ -162,9 +183,11 @@ func tensorOps(n: Int, passes: Int) -> (int8Tops: Double, fp16Tflops: Double)? {
             cb.waitUntilCompleted()
             if cb.status == .error { return nil }
             let s = cb.gpuEndTime - cb.gpuStartTime
-            if s > 0 { best = max(best, 2.0 * Double(n) * Double(n) * Double(n) / s / 1e12) }
+            if s > 0 { rates.append(2.0 * Double(n) * Double(n) * Double(n) / s / 1e12) }
         }
-        return best > 0 ? best : nil
+        rates.sort()
+        let median = rates.isEmpty ? 0 : rates[rates.count / 2]
+        return median > 0 ? median : nil
     }
     guard let i8 = run("mm_i8", elemA: 1, elemC: 4), let f16 = run("mm_f16", elemA: 2, elemC: 4) else { return nil }
     return (i8, f16)
@@ -241,7 +264,11 @@ func gpuLoad(seconds: Double, heavy: Bool) {
     }
 }
 
-/// Every logical CPU runs the logistic-map FMA loop the Windows worker runs, so the cores boost as they would under a real all-core load.
+/// Every logical CPU runs the logistic map over eight independent eight-wide float vectors, the kernel
+/// CpuLoad.cs runs on Windows. One scalar dependent chain per thread leaves the vector FP units idle, and
+/// a load that never touches them draws far under the package limit and boosts higher than a real all-core
+/// workload would: the audit then judges cooling, clocks and power from samples no such workload produces.
+/// The threads keep the default QoS - lowering it on macOS moves them to the E-cores.
 func cpuLoad(seconds: Double) {
     let threads = ProcessInfo.processInfo.activeProcessorCount
     let deadline = Date().addingTimeInterval(seconds)
@@ -249,11 +276,27 @@ func cpuLoad(seconds: Double) {
     for t in 0..<threads {
         group.enter()
         Thread.detachNewThread {
-            var x = 0.1 + Double(t) * 0.001
+            // Distinct seeds per thread, chain and lane, all strictly inside (0, 1): chaotic, so the
+            // bits keep toggling, and bounded, so no infinities or denormals.
+            func seed(_ chain: Int) -> SIMD8<Float> {
+                var v = SIMD8<Float>()
+                for i in 0..<8 {
+                    v[i] = 0.1 + 0.8 * (Float(t * 31 + chain * 7 + i) * 0.6180339887).truncatingRemainder(dividingBy: 1)
+                }
+                return v
+            }
+            let r = SIMD8<Float>(repeating: 3.99)
+            let one = SIMD8<Float>(repeating: 1)
+            var x0 = seed(0), x1 = seed(1), x2 = seed(2), x3 = seed(3)
+            var x4 = seed(4), x5 = seed(5), x6 = seed(6), x7 = seed(7)
             var sink = 0.0
             while Date() < deadline {
-                for _ in 0..<1_000_000 { x = 3.9 * x * (1 - x) }
-                sink += x
+                // About a millisecond of work between deadline checks, so the run ends on time.
+                for _ in 0..<65_536 {
+                    x0 = r * x0 * (one - x0); x1 = r * x1 * (one - x1); x2 = r * x2 * (one - x2); x3 = r * x3 * (one - x3)
+                    x4 = r * x4 * (one - x4); x5 = r * x5 * (one - x5); x6 = r * x6 * (one - x6); x7 = r * x7 * (one - x7)
+                }
+                sink += Double(x0[0] + x1[0] + x2[0] + x3[0] + x4[0] + x5[0] + x6[0] + x7[0])
             }
             if sink == -1 { print("never") }
             group.leave()

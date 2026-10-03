@@ -18,6 +18,7 @@ import { spawn, execFileSync, type ChildProcess } from 'child_process';
 import { app, dialog, BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from 'electron';
 import type { CollectorClient } from './collector';
 import { KEEP_ALIVE, OLLAMA, ollamaError, ollamaJson, type BenchError } from './bench';
+import { heldBySibling, PresenceFile } from './presence';
 import type { GpuFacts, SensorMeta } from '../src/collector-types';
 import {
   DEFAULT_RUNS, DEPTHS, IDLE_SECONDS, NUM_CTX, PREDICT_TOKENS, SAMPLE_MS, SEED, numCtxFor, promptForRun, parseBenchFile, parseBenchyJson, summarise, supersede, validBenchy, validResult,
@@ -209,6 +210,9 @@ interface Ps {
 let current: AbortController | null = null;
 let inFlight: Promise<LlmBenchResult | BenchError> | null = null;
 
+/** Strata Tune's own presence (electron/presence.ts): while a benchmark holds a model, the siblings' unload rule counts us too. */
+const presence = new PresenceFile('tune');
+
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
     if (signal.aborted) return reject(new DOMException('aborted', 'AbortError'));
@@ -238,9 +242,14 @@ async function run(req: LlmBenchRequest, collector: CollectorClient | null, prog
       family: show.details?.family ?? '',
       sizeBytes: tag?.size ?? 0
     };
+    // The evict below is unconditional, so the family rule is checked first: a model a live sibling
+    // Strata app holds is never taken from it, and the sentence names the holder. Freeing it is the user's own call.
+    const held = await heldBySibling();
+    if (held) return { error: `${held}; the LLM benchmark would evict it. Free the GPU in that app first.` };
     // Evict so run 1 is a cold load: the figure Ollama's verbose output calls load duration.
     report('evict');
     await ollamaJson('/api/generate', { model: req.model, keep_alive: 0 }, 10_000, signal);
+    presence.unloaded(req.model);
     await sampler.prepare();
     report('idle');
     const idle: LlmSample[] = [];
@@ -252,6 +261,8 @@ async function run(req: LlmBenchRequest, collector: CollectorClient | null, prog
       for (let i = 1; i <= runs; i++) {
         report(depth === 0 && i === 1 ? 'load' : 'run', i, depth);
         sampler.start(busy);
+        // At send time, not at completion: from here the siblings see Strata Tune holding this model.
+        presence.loaded(req.model);
         let g: Generate;
         try {
           g = await ollamaJson<Generate>(
@@ -385,6 +396,7 @@ async function runBenchy(req: LlmBenchRequest, progress: (p: BenchyProgress) => 
     family = show.details?.family ?? '';
     // llama-benchy speaks Ollama's OpenAI endpoint, which takes no context option: the model runs at
     // Ollama's own window, so load it once and read that window, then skip any depth it would truncate.
+    presence.loaded(req.model);
     await ollamaJson('/api/generate', { model: req.model, prompt: 'hi', stream: false, keep_alive: KEEP_ALIVE, options: { num_predict: 1 } }, GENERATE_TIMEOUT_MS);
     const ps = await ollamaJson<Ps>('/api/ps');
     contextLength = (ps.models ?? []).find((m) => m.name === req.model)?.context_length ?? null;
@@ -431,7 +443,7 @@ async function runBenchy(req: LlmBenchRequest, progress: (p: BenchyProgress) => 
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      killBenchy(child);
     }, BENCHY_TIMEOUT_MS);
     const done = (code: number | null) => {
       clearTimeout(timer);
@@ -442,6 +454,8 @@ async function runBenchy(req: LlmBenchRequest, progress: (p: BenchyProgress) => 
     child.on('error', () => done(-1));
     child.on('close', (code) => done(code));
   });
+  // A sweep that was stopped or timed out may still have written a partial file; nothing reads it.
+  if (outcome.cancelled || outcome.timedOut) fs.rm(out, { force: true }, () => {});
   if (outcome.cancelled) return { error: 'llama-benchy stopped', code: 'cancelled' };
   if (outcome.timedOut) return { error: `llama-benchy did not finish within ${BENCHY_TIMEOUT_MS / 60_000} minutes` };
   let text = '';
@@ -472,11 +486,28 @@ async function runBenchy(req: LlmBenchRequest, progress: (p: BenchyProgress) => 
   return result;
 }
 
+/**
+ * uvx runs llama-benchy as a child process of its own, so killing uvx alone leaves that python
+ * sweep driving Ollama for the rest of its runs after the page says it stopped. taskkill /T goes
+ * first: once uvx is gone Windows has no tree left to walk.
+ */
+function killBenchy(child: ChildProcess): void {
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      execFileSync('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, timeout: 10_000, stdio: 'ignore' });
+      return;
+    } catch {
+      /* already gone; the plain kill below is the fallback */
+    }
+  }
+  child.kill();
+}
+
 function cancelBenchy() {
   const child = benchyChild;
   if (!child) return;
   benchyChild = null;
-  child.kill();
+  killBenchy(child);
 }
 
 // ---------------------------------------------------------------- export/import
